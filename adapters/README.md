@@ -61,7 +61,5 @@ cp adapters/claude/skills/byoridb-memory/SKILL.md \
 - 훅은 MCP를 **직접 호출하지 않는다** — 리마인더 컨텍스트만 주입한다. 실제 기록/조회는 에이전트가 스킬을 따라 수행한다.
 - `memory_recall`은 기본 `note` layer의 이름·본문 substring 검색이다. typed traversal은
   schema가 준비된 경우 `memory_query`로 수행한다.
-- `memory_remember`의 signed name hash가 음수 VID를 만들면 현재 INSERT planner가 거부한다.
-  이 버그가 수정되기 전에는 일부 이름의 note write가 실패할 수 있다.
 - 타입드 노드는 `INSERT VERTEX`에 INT64 vid가 필요하다. canonical name→안정적 vid 레시피는 `SKILL.md` 참조(`status`는 예약어라 상태 property는 `state` 사용).
 - 이 사본은 스냅샷이다. 라이브를 고치면 여기도 갱신할 것(반대도 마찬가지).

@@ -92,8 +92,6 @@ rm -rf "$HOME/.codex/skills/byoridb-memory"
 
 - MCP 서버는 리마인더가 아니라 실제 데이터 도구다. **기억할지 말지의 정책은 스킬**(`byoridb-memory`)에 있다.
 - 기본 설치가 즉시 제공하는 것은 `note`/`rel` memory다. typed wiki schema는 아직 자동 생성하지 않는다.
-- `memory_remember`의 signed name hash가 음수 VID를 만들면 현재 INSERT planner가 거부한다.
-  이 버그가 수정되기 전에는 기본 note write가 일부 이름에서 실패할 수 있다.
 - hook은 capture를 직접 실행하지 않고 에이전트에게 체크포인트를 상기시킨다.
 - current/history dual-write는 비원자적이며 같은 millisecond 재기록은 history key 충돌 위험(bitemporal v1 제약).
 - 로컬 단일 노드 전용. 분산/프로덕션 배포와 무관.

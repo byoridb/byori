@@ -124,9 +124,15 @@ def _ensure_ready():
 
 
 def _vid(name):
-    """Deterministic i64 VID from an entity name (ByoriDB VIDs are INT64)."""
+    """Deterministic non-negative i64 VID from an entity name.
+
+    Unsigned read + 63-bit mask keeps every VID in 0..=i64::MAX: engine v0.3.3's
+    INSERT planner rejects negative VIDs, and any name whose previous signed hash
+    was positive keeps the exact same VID (sign bit was 0, so the mask is a no-op)
+    — existing stored notes stay addressable. See docs/engine-contract.md.
+    """
     h = hashlib.sha1(name.encode("utf-8")).digest()[:8]
-    return int.from_bytes(h, "big", signed=True)
+    return int.from_bytes(h, "big") & 0x7FFF_FFFF_FFFF_FFFF
 
 
 def _esc(s):
@@ -256,7 +262,7 @@ def handle(msg):
         _result(id_, {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "byoridb-memory", "version": "0.1.0"},
+            "serverInfo": {"name": "byoridb-memory", "version": "0.1.1"},
         })
     elif method == "notifications/initialized":
         pass  # notification, no reply

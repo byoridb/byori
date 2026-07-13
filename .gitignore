@@ -1,2 +1,27 @@
+target/
+**/*.rs.bk
 .DS_Store
-.env*
+.idea
+*.iml
+data/
+history.txt
+.claude/
+
+# Secret files — never commit
+.env
+.env.*
+.env.local
+
+# mdBook build output
+book/book/
+
+# AI-DLC / agent working docs — internal only, kept out of the public repo.
+# (History scrubbed via git filter-repo; these patterns prevent re-tracking.)
+CLAUDE.md
+AGENTS.md
+aidlc-docs/
+.kiro/
+
+# python bytecode (installer mcp)
+__pycache__/
+*.pyc

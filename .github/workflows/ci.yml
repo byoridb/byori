@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    name: Engine contract smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Lint installer
+        run: bash -n install.sh
+
+      # Downloads the pinned ENGINE_TAG release from byoridb/byoridb and installs
+      # this checkout's assets — exactly what a user install does, minus Claude wiring.
+      - name: Install (pinned engine + local assets)
+        run: |
+          export BYORIDB_HOME="$RUNNER_TEMP/byoridb-home"
+          ./install.sh --assets . --no-claude --no-service
+          echo "BYORIDB_HOME=$BYORIDB_HOME" >> "$GITHUB_ENV"
+
+      - name: MCP roundtrip smoke
+        run: python3 tests/smoke_mcp.py
