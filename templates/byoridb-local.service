@@ -1,0 +1,11 @@
+[Unit]
+Description=ByoriDB local memory substrate
+After=network.target
+
+[Service]
+ExecStart=/bin/sh @BYORIDB_HOME@/bin/run-server.sh
+Restart=always
+WorkingDirectory=@BYORIDB_HOME@
+
+[Install]
+WantedBy=default.target

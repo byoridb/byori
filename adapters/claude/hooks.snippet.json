@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"장기 기억 그래프(byoridb MCP)가 있다. 비자명한 작업 시작 전 관련 이전 결정/버그/인시던트를 memory_recall/memory_query로 recall하고, 체크포인트(작업 종료·커밋·인시던트 해소)에서 durable 학습을 capture하라.\"}}'"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.command // \"\"' | grep -q 'git commit' && echo '{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"additionalContext\": \"커밋은 체크포인트다. 이 커밋이 durable 결정/버그/인시던트를 확정한다면, 종료 전 메모리 그래프(byoridb)에 기록했는지 확인하라.\"}}' || true"
+          }
+        ]
+      }
+    ]
+  }
+}
