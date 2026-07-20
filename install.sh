@@ -250,12 +250,14 @@ if [ "$NO_CLAUDE" != 1 ] && [ "$WITH_HOOKS" = 1 ]; then
   fi
 fi
 
-cat <<EOF
-
-${c_blue}ByoriDB local memory substrate installed.${c_off}
-  home     : $BYORIDB_HOME
-  server   : http://${HTTP_ADDR}  (health: curl -s http://${HTTP_ADDR}/health)
-  mcp      : $BYORIDB_HOME/bin/run-mcp.sh   (claude mcp list -> byoridb)
-  skill    : $SKILL_DIR/SKILL.md
-Restart Claude Code so it picks up the MCP server and skill.
-EOF
+printf '\n%sByoriDB local memory substrate installed.%s\n' "$c_blue" "$c_off"
+printf '  home     : %s\n' "$BYORIDB_HOME"
+printf '  server   : http://%s  (health: curl -s http://%s/health)\n' "$HTTP_ADDR" "$HTTP_ADDR"
+printf '  mcp      : %s/bin/run-mcp.sh\n' "$BYORIDB_HOME"
+if [ "$NO_CLAUDE" != 1 ]; then
+  printf '  skill    : %s/SKILL.md   (claude mcp list -> byoridb)\n' "$SKILL_DIR"
+fi
+if [ "$NO_CODEX" != 1 ] && command -v codex >/dev/null 2>&1; then
+  printf '  codex    : %s/SKILL.md   (codex mcp list -> byoridb)\n' "$CODEX_SKILL_DIR"
+fi
+printf 'Restart your agent CLI so it picks up the MCP server and skill.\n'
