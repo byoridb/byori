@@ -103,9 +103,7 @@ skill은 에이전트가 작업 시작 시 관련 기억을 조회하고, 결정
 
 ### Byori Manager (macOS)
 
-터미널 대신 설치형 앱을 사용하려면 릴리스의 `ByoriManager-*.dmg`를 열어
-**Byori Manager.app**을 Applications로 드래그합니다. 앱에서 다음 작업을 각각
-확인하고 실행할 수 있습니다.
+터미널 대신 설치형 앱을 사용할 수 있습니다. 앱에서 다음 작업을 각각 확인하고 실행합니다.
 
 - ByoriDB 설치·온라인 업데이트·시작·중지·재시작과 health/log 확인
 - Claude Code와 Codex CLI 감지 및 공식 설치기를 통한 설치·업데이트
@@ -115,9 +113,28 @@ skill은 에이전트가 작업 시작 시 관련 기억을 조회하고, 결정
   window/tray 하이브리드 동작
 - 최대 200개 `note`와 `rel` 관계를 탐색하는 read-only 그래프 뷰
 
-앱은 Claude/Codex 로그인 정보나 token을 읽지 않습니다. 소스 체크아웃에서 DMG를
-만드는 방법과 Developer ID 서명 옵션은 [macOS Manager 문서](docs/manager-macos.md)를
-참고합니다. 그래프는 초기 목록에서 본문을 제외하고 node를 선택할 때만 lazy-load합니다.
+앱은 Claude/Codex 로그인 정보나 token을 읽지 않습니다. 그래프는 초기 목록에서 본문을
+제외하고 node를 선택할 때만 lazy-load합니다.
+
+#### 지금은 소스에서 직접 빌드하세요
+
+> [!NOTE]
+> 정식 서명·공증된 `.dmg`는 아직 릴리스에 없습니다. Apple Developer Program(연 US$99)이
+> 있어야 Developer ID 서명이 가능한데, 그 돈이 생기면 올리겠습니다. 그때까지는 아래처럼
+> 손수 빚어 쓰세요 — 어차피 로컬에서 도는 앱이라 서명 없이도 잘 돕니다.
+
+macOS + Xcode Command Line Tools만 있으면 됩니다.
+
+```bash
+git clone https://github.com/byoridb/byori.git && cd byori
+VERSION=0.2.0-dev scripts/build-macos-dmg.sh    # dist/에 .app과 .dmg 생성 (ad-hoc 서명)
+open "dist/Byori Manager.app"                   # 바로 실행
+```
+
+빌드 옵션(`--universal`로 Intel+Apple Silicon 통합, `--sign`으로 Developer ID 서명 등)과
+공증 절차는 [macOS Manager 문서](docs/manager-macos.md)를 참고합니다. 미서명 dev 빌드는
+본인 맥에서 여는 건 문제없지만, 남에게 넘기면 Gatekeeper가 눈을 흘깁니다. 정식 서명
+DMG가 릴리스에 올라오면 그냥 열어서 Applications로 드래그하면 됩니다.
 
 ### Claude Code
 
