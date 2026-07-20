@@ -6,7 +6,7 @@ Byori 호환성과 무관하게 바뀌어도 된다. 반대로 이 문서의 표
 
 - 근거 코드: `mcp/byoridb_mcp.py`, `manager/macos/Sources/ByoriManagerCore/ByoriGraphClient.swift`,
   `install.sh`, `templates/run-server.sh`
-- 검증 조합: **byori v0.1.x ↔ engine `v0.3.3`** (`install.sh`의 `ENGINE_TAG_DEFAULT`)
+- 검증 조합: **byori v0.2.x ↔ engine `v0.3.3`** (`install.sh`의 `ENGINE_TAG_DEFAULT`)
 - 검증 방법: CI 스모크(`.github/workflows/ci.yml` → `tests/smoke_mcp.py`) — 고정
   태그 엔진을 내려받아 설치 후 remember→graph projection→typed wiki bootstrap
   →recall→temporal query roundtrip

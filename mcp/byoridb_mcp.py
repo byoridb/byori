@@ -323,7 +323,7 @@ def handle(msg):
         _result(id_, {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "byoridb-memory", "version": "0.1.1"},
+            "serverInfo": {"name": "byoridb-memory", "version": "0.2.0"},
         })
     elif method == "notifications/initialized":
         pass  # notification, no reply
