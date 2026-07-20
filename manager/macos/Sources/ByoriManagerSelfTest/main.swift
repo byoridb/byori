@@ -139,6 +139,15 @@ enum ByoriManagerSelfTest {
             throw Failure("MCP user scope must be matched exactly")
         } catch {}
 
+        // Real `claude mcp get` appends a parenthetical to the scope; verification
+        // must accept it (regression: exact "user config" match rejected a healthy
+        // registration and surfaced a spurious connect failure).
+        let realScopeRunner = RecordingRunner(
+            mcpPath: paths.mcpRunner.path,
+            scope: "User config (available in all your projects)"
+        )
+        _ = try await ManagerService(paths: paths, runner: realScopeRunner).connectMCP(.claude)
+
         let discoveryHome = root.appendingPathComponent("discovery-home", isDirectory: true)
         let discoveredByoriHome = discoveryHome.appendingPathComponent("custom-runtime", isDirectory: true)
         let launchAgents = discoveryHome.appendingPathComponent("Library/LaunchAgents", isDirectory: true)

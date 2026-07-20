@@ -413,7 +413,14 @@ public actor ManagerService {
             return false
         }
         if kind == .claude {
-            return mcpField("scope", in: result.output)?.lowercased() == "user config"
+            guard let scope = mcpField("scope", in: result.output) else { return false }
+            // `claude mcp get` prints the scope as "User config (available in all
+            // your projects)". Drop a trailing parenthetical before matching so a
+            // real user-scope registration verifies, while a different scope word
+            // (e.g. "User config backup") still fails the exact comparison.
+            let base = scope.split(separator: "(", maxSplits: 1).first
+                .map { $0.trimmingCharacters(in: .whitespaces) } ?? scope
+            return base.lowercased() == "user config"
         }
         return true
     }
