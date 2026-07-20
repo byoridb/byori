@@ -6,7 +6,7 @@
 #   curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh | bash
 #
 # Options: --with-hooks --tag vX.Y.Z --engine-tag vX.Y.Z --uninstall
-#          --binary PATH --assets DIR --no-service --no-claude
+#          --binary PATH --assets DIR --no-service --no-claude --no-codex
 #   --tag        pins the byori asset version (default: latest byori release)
 #   --engine-tag overrides the ByoriDB engine release to install
 # Env:     BYORIDB_HOME (~/.byoridb) BYORIDB_HTTP_PORT (19669) BYORIDB_GRAPH_PORT (9669)
@@ -23,9 +23,10 @@ LABEL="${BYORIDB_LABEL:-com.byoridb.local}"
 HTTP_ADDR="127.0.0.1:${HTTP_PORT}"
 GRAPH_ADDR="127.0.0.1:${GRAPH_PORT}"
 SKILL_DIR="${HOME}/.claude/skills/byoridb-memory"
+CODEX_SKILL_DIR="${HOME}/.agents/skills/byoridb-memory"
 
 TAG=""; ENGINE_TAG="${BYORI_ENGINE_TAG:-$ENGINE_TAG_DEFAULT}"
-WITH_HOOKS=0; UNINSTALL=0; BINARY=""; ASSETS=""; NO_SERVICE=0; NO_CLAUDE=0
+WITH_HOOKS=0; UNINSTALL=0; BINARY=""; ASSETS=""; NO_SERVICE=0; NO_CLAUDE=0; NO_CODEX=0
 
 c_blue=$'\033[34m'; c_red=$'\033[31m'; c_dim=$'\033[2m'; c_off=$'\033[0m'
 log()  { printf '%s==>%s %s\n' "$c_blue" "$c_off" "$*"; }
@@ -39,6 +40,7 @@ while [ $# -gt 0 ]; do
     --uninstall)  UNINSTALL=1 ;;
     --no-service) NO_SERVICE=1 ;;
     --no-claude)  NO_CLAUDE=1 ;;
+    --no-codex)   NO_CODEX=1 ;;
     --tag)        TAG="${2:-}"; shift ;;
     --engine-tag) ENGINE_TAG="${2:-}"; shift ;;
     --binary)     BINARY="${2:-}"; shift ;;
@@ -64,7 +66,8 @@ uninstall() {
     systemctl --user daemon-reload 2>/dev/null || true
   fi
   command -v claude >/dev/null 2>&1 && claude mcp remove byoridb -s user 2>/dev/null || true
-  rm -rf "$SKILL_DIR"
+  command -v codex >/dev/null 2>&1 && codex mcp remove byoridb 2>/dev/null || true
+  rm -rf "$SKILL_DIR" "$CODEX_SKILL_DIR"
   if [ -d "$BYORIDB_HOME/data" ]; then
     printf 'delete data at %s? [y/N] ' "$BYORIDB_HOME/data"; read -r ans </dev/tty || ans=n
     case "$ans" in y|Y) rm -rf "$BYORIDB_HOME";; *) warn "kept data; removed only bin/scripts"; rm -rf "$BYORIDB_HOME/bin" "$BYORIDB_HOME/byoridb_mcp.py";; esac
@@ -207,7 +210,24 @@ if [ "$NO_CLAUDE" != 1 ]; then
   get "adapters/claude/skills/byoridb-memory/SKILL.md" "$SKILL_DIR/SKILL.md"
 fi
 
-# 8) hooks (opt-in)
+# 8) Codex wiring (MCP + skill; non-fatal — the base install works without it)
+if [ "$NO_CODEX" = 1 ]; then
+  warn "skipping Codex wiring (--no-codex)"
+elif command -v codex >/dev/null 2>&1; then
+  codex mcp remove byoridb >/dev/null 2>&1 || true
+  if codex mcp add byoridb -- "$BYORIDB_HOME/bin/run-mcp.sh" >/dev/null 2>&1; then
+    log "registered MCP server 'byoridb' with Codex"
+  else
+    warn "codex mcp add failed — register manually: codex mcp add byoridb -- $BYORIDB_HOME/bin/run-mcp.sh"
+  fi
+  mkdir -p "$CODEX_SKILL_DIR"
+  get "adapters/claude/skills/byoridb-memory/SKILL.md" "$CODEX_SKILL_DIR/SKILL.md"
+  log "installing skill -> $CODEX_SKILL_DIR"
+else
+  warn "codex CLI not found — skipped Codex wiring (connect later: codex mcp add byoridb -- $BYORIDB_HOME/bin/run-mcp.sh)"
+fi
+
+# 9) hooks (opt-in)
 if [ "$NO_CLAUDE" != 1 ] && [ "$WITH_HOOKS" = 1 ]; then
   if command -v jq >/dev/null 2>&1; then
     settings="${HOME}/.claude/settings.json"; mkdir -p "${HOME}/.claude"

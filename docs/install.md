@@ -1,7 +1,8 @@
 # Byori — 설치와 관리
 
 Claude Code와 MCP 클라이언트의 **영속 기억**으로 쓸 로컬 ByoriDB를 설치한다.
-서버·MCP 서버·Claude Code용 skill을 한 번에 세팅하며, Codex는 설치 후 수동 연결한다.
+서버·MCP 서버·skill을 한 번에 세팅한다. `claude`/`codex` CLI가 있으면 각각 자동으로
+MCP를 등록하고 skill을 설치한다(`--no-claude`/`--no-codex`로 건너뜀).
 
 ## 한 줄 설치
 
@@ -27,7 +28,7 @@ curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh 
 
 ```sh
 install.sh [--with-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z] [--uninstall]
-           [--binary PATH] [--assets DIR] [--no-service] [--no-claude]
+           [--binary PATH] [--assets DIR] [--no-service] [--no-claude] [--no-codex]
 ```
 
 - `--with-hooks` — 체크포인트 reminder 훅을 `~/.claude/settings.json`에 추가(기본은 안 함).
@@ -35,12 +36,13 @@ install.sh [--with-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z] [--uninstall]
   (재실행 idempotent). 변경 전 `settings.json.bak.<timestamp>` 백업을 자동 생성한다. `jq` 필요.
 - `--tag` — byori 자산(MCP/스킬/템플릿) 버전 고정(기본: 최신 byori 릴리스).
 - `--engine-tag` — ByoriDB 엔진 릴리스 override(기본: 이 byori 버전과 함께 검증된 고정 태그).
-- `--uninstall` — 서비스 중지·해제, Claude MCP 등록 해제, Claude skill 제거.
-  **데이터는 확인 후 보존/삭제 선택.** 수동 등록한 Codex 설정은 아래 명령으로 별도 제거한다.
+- `--uninstall` — 서비스 중지·해제, Claude/Codex MCP 등록 해제, skill 제거.
+  **데이터는 확인 후 보존/삭제 선택.**
 - `--binary PATH` — 다운로드 대신 로컬 `byoridb-server` 바이너리 사용.
 - `--assets DIR` — 다운로드 대신 로컬 repo 체크아웃(`DIR`)에서 mcp.py/템플릿/스킬을 가져옴.
 - `--no-service` — launchd/systemd 등록 없이 현재 세션의 background process로 실행.
 - `--no-claude` — Claude MCP 등록, skill, hook 설치를 건너뜀.
+- `--no-codex` — Codex MCP 등록과 skill 설치를 건너뜀.
 
 환경변수: `BYORIDB_HOME`(기본 `~/.byoridb`), `BYORIDB_HTTP_PORT`(기본 19669), `BYORIDB_GRAPH_PORT`(기본 9669).
 격리 테스트: `BYORIDB_HOME=/tmp/bt BYORIDB_HTTP_PORT=29669 BYORIDB_GRAPH_PORT=29670 ./install.sh --binary … --assets …`
@@ -61,31 +63,25 @@ systemctl --user start com.byoridb.local.service
 
 ## Codex 연결
 
-기본 설치 후 stdio MCP와 skill을 수동 등록한다.
+설치기가 `codex` CLI를 감지하면 stdio MCP 등록과 skill 설치(`~/.agents/skills/`)를
+자동으로 수행하고, `--uninstall` 시 함께 제거한다(`--no-codex`로 건너뜀).
+Codex 재시작 후 `codex mcp list`로 확인한다. Claude용 hook은 Codex에 설치되지 않는다.
+
+`--no-codex`로 건너뛰었거나 나중에 연결하려면 수동으로 등록한다.
 
 ```sh
 codex mcp add byoridb -- "$HOME/.byoridb/bin/run-mcp.sh"
-mkdir -p "$HOME/.codex/skills/byoridb-memory"
+mkdir -p "$HOME/.agents/skills/byoridb-memory"
 cp "$HOME/.claude/skills/byoridb-memory/SKILL.md" \
-  "$HOME/.codex/skills/byoridb-memory/SKILL.md"
+  "$HOME/.agents/skills/byoridb-memory/SKILL.md"
 codex mcp list
 ```
 
-위 copy 명령은 기본 설치가 `~/.claude/skills/`에 참조 사본을 만든 경우다.
-`--no-claude`로 설치했다면 repository checkout에서 다음처럼 복사한다.
-
-```sh
-cp adapters/claude/skills/byoridb-memory/SKILL.md \
-  "$HOME/.codex/skills/byoridb-memory/SKILL.md"
-```
-
-현재 installer는 Codex config와 hook을 자동 변경하지 않는다.
-
-Codex 연결을 제거할 때도 수동 정리가 필요하다.
+수동 제거는 다음과 같다.
 
 ```sh
 codex mcp remove byoridb
-rm -rf "$HOME/.codex/skills/byoridb-memory"
+rm -rf "$HOME/.agents/skills/byoridb-memory"
 ```
 
 ## 한계

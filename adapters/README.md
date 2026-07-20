@@ -1,8 +1,8 @@
 # Agent Memory — ByoriDB를 코딩 에이전트의 장기 기억으로
 
 `docs/memory-ontology.md`의 설계를 구동하는 **에이전트 측 자산의 참조 사본**이다.
-설치기는 Claude Code 위치(`~/.claude/`)에 자동 설치하며, Codex에서는 같은 skill을
-`~/.codex/skills/`로 복사해 사용할 수 있다. 이 디렉터리는 버전관리·공유·재설치용이다.
+설치기는 Claude Code 위치(`~/.claude/`)에 자동 설치하며, `codex` CLI가 있으면 같은
+skill을 `~/.agents/skills/`에도 설치한다. 이 디렉터리는 버전관리·공유·재설치용이다.
 
 > v0.2.0부터 fresh install은 `note`/`rel`과 typed wiki(`module`/`decision`/`bug` 등)를
 > schema v2로 함께 자동 bootstrap하고, 기존 설치도 MCP 시작 시 자동 migration된다.
@@ -43,13 +43,13 @@ jq -s '.[0] as $a | .[1] as $b | $a * $b
 
 ### Codex
 
-로컬 서버 설치 후 MCP와 skill을 수동 등록한다.
+설치기가 `codex` CLI를 감지하면 자동 등록한다. 수동으로 하려면:
 
 ```bash
 codex mcp add byoridb -- "$HOME/.byoridb/bin/run-mcp.sh"
-mkdir -p "$HOME/.codex/skills/byoridb-memory"
+mkdir -p "$HOME/.agents/skills/byoridb-memory"
 cp adapters/claude/skills/byoridb-memory/SKILL.md \
-  "$HOME/.codex/skills/byoridb-memory/SKILL.md"
+  "$HOME/.agents/skills/byoridb-memory/SKILL.md"
 ```
 
 현재 hook snippet은 Claude Code 전용이다.
