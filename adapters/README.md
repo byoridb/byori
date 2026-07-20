@@ -4,10 +4,9 @@
 설치기는 Claude Code 위치(`~/.claude/`)에 자동 설치하며, Codex에서는 같은 skill을
 `~/.codex/skills/`로 복사해 사용할 수 있다. 이 디렉터리는 버전관리·공유·재설치용이다.
 
-> 현재 fresh install이 자동 생성하는 schema는 `note`와 `rel`뿐이다. typed wiki의
-> `module`/`decision`/`bug` 등은 dogfood PoC에서 검증됐지만 자동 bootstrap되지 않는다.
-> clean install에서는 notes layer를 사용하고, typed layer를 이미 구성한 space에서만
-> `SKILL.md`의 typed 예시를 실행한다.
+> v0.2.0부터 fresh install은 `note`/`rel`과 typed wiki(`module`/`decision`/`bug` 등)를
+> schema v2로 함께 자동 bootstrap하고, 기존 설치도 MCP 시작 시 자동 migration된다.
+> `SKILL.md`의 typed 예시를 바로 실행할 수 있다.
 
 ## 구성
 
@@ -59,6 +58,6 @@ cp adapters/claude/skills/byoridb-memory/SKILL.md \
 
 - 훅은 MCP를 **직접 호출하지 않는다** — 리마인더 컨텍스트만 주입한다. 실제 기록/조회는 에이전트가 스킬을 따라 수행한다.
 - `memory_recall`은 기본 `note` layer의 이름·본문 substring 검색이다. typed traversal은
-  schema가 준비된 경우 `memory_query`로 수행한다.
+  `memory_query`로 수행한다.
 - 타입드 노드는 `INSERT VERTEX`에 INT64 vid가 필요하다. canonical name→안정적 vid 레시피는 `SKILL.md` 참조(`status`는 예약어라 상태 property는 `state` 사용).
 - 이 사본은 스냅샷이다. 라이브를 고치면 여기도 갱신할 것(반대도 마찬가지).

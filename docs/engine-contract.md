@@ -8,7 +8,8 @@ Byori 호환성과 무관하게 바뀌어도 된다. 반대로 이 문서의 표
   `install.sh`, `templates/run-server.sh`
 - 검증 조합: **byori v0.1.x ↔ engine `v0.3.3`** (`install.sh`의 `ENGINE_TAG_DEFAULT`)
 - 검증 방법: CI 스모크(`.github/workflows/ci.yml` → `tests/smoke_mcp.py`) — 고정
-  태그 엔진을 내려받아 설치 후 remember→graph projection→recall→temporal query roundtrip
+  태그 엔진을 내려받아 설치 후 remember→graph projection→typed wiki bootstrap
+  →recall→temporal query roundtrip
 
 ## 엔진 버전 올리기 체크리스트
 
@@ -82,8 +83,16 @@ CREATE SPACE IF NOT EXISTS <space>(vid_type=INT64)
 USE <space>
 CREATE TAG IF NOT EXISTS note(kind STRING, name STRING, body STRING, ts INT64)
 CREATE EDGE IF NOT EXISTS rel(kind STRING)
+CREATE TAG IF NOT EXISTS decision(name STRING, body STRING, state STRING, ts INT64)
+                                               -- typed wiki tag 7종 동일 패턴 (schema v2)
+CREATE EDGE IF NOT EXISTS affects(ts INT64)    -- typed wiki edge 8종 동일 패턴 (schema v2)
 INSERT VERTEX note(kind, name, body, ts) VALUES <vid>:('<s>', '<s>', '<s>', <i64>)
+INSERT VERTEX decision(name, body, state, ts) VALUES <vid>:('<s>', '<s>', '<s>', <i64>)
 INSERT EDGE rel(kind) VALUES <vid>-><vid>:('<s>')
+INSERT EDGE affects(ts) VALUES <vid>-><vid>:(<i64>)
+MATCH (d:decision)-[:affects]->(m:module)
+  RETURN d.decision.name AS decision, m.module.name AS module,
+         d.decision.state AS state ORDER BY decision ASC LIMIT <n>
 MATCH (n:note) WHERE (n.note.name CONTAINS '<s>' OR n.note.body CONTAINS '<s>')
   AND n.note.kind == '<s>'
   RETURN n.note.name AS name, ... ORDER BY ts DESC LIMIT <n>
@@ -104,6 +113,10 @@ vertex INT64 VID를 반환하고, `ORDER BY`는 projection alias(`vid`, `src`, `
 적용한다. Manager는 200개 node와 500개 edge까지만 표시하고 각각 한 행을 더 요청해
 truncation을 감지한다. 초기 node projection에는 `body`를 넣지 않고 선택된 node만 마지막
 쿼리로 lazy-load한다.
+
+typed wiki 문장들은 MCP의 schema v2 bootstrap(`byoridb_mcp.py._migrate`)과 스모크의
+typed roundtrip이 발행한다. schema version은 예약 이름 `byori:schema-version`의
+`note` vertex로 기록된다(위 note INSERT와 동일 표면).
 
 `memory_query`는 raw nGQL escape hatch이므로 사용자는 `GO`/`LOOKUP` 등 그 이상을
 쓸 수 있지만, **계약(스모크 게이트)은 위 부분집합만** 보장한다.

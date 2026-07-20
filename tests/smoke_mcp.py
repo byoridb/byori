@@ -3,7 +3,8 @@
 
 Covers the surface promised in docs/engine-contract.md:
   remember (INSERT VERTEX/EDGE, non-negative VID) -> recall (MATCH/CONTAINS)
-  -> graph projections (id/ORDER BY/LIMIT/OFFSET) -> query
+  -> graph projections (id/ORDER BY/LIMIT/OFFSET) -> typed wiki bootstrap
+  (schema v2 note + typed INSERT/MATCH roundtrip) -> query
   (FETCH ... AS OF temporal read).
 
 Prereq: `install.sh` has run and the server is healthy (CI does this first).
@@ -139,6 +140,43 @@ def main():
     }
     assert expected_edge in edge_rows, f"FAIL: projected edge missing: {edge_rows}"
     print("ok graph edge projection")
+
+    # typed wiki bootstrap: _ensure_ready migrated the fresh space to schema
+    # v2 and stamped the version note.
+    ver_rows = query_rows(
+        f"MATCH (n:note) WHERE id(n) == {expected_vid('byori:schema-version')} "
+        "RETURN n.note.body AS body LIMIT 1",
+        ["body"],
+    )
+    assert ver_rows and ver_rows[0]["body"] == "2", f"FAIL: schema version: {ver_rows}"
+    print("ok schema version note (v2)")
+
+    # typed roundtrip on the bootstrapped schema, in SKILL.md's shape:
+    # decision --affects--> module, read back as a MATCH traversal.
+    d_vid, m_vid = expected_vid("decision:smoke-typed"), expected_vid("module:smoke-typed")
+    now = int(time.time() * 1000)
+    tool("memory_query", {"ngql": (
+        f"INSERT VERTEX decision(name, body, state, ts) VALUES "
+        f"{d_vid}:('decision:smoke-typed', 'smoke rationale', 'active', {now})"
+    )})
+    tool("memory_query", {"ngql": (
+        f"INSERT VERTEX module(name, summary, ts) VALUES "
+        f"{m_vid}:('module:smoke-typed', 'smoke module', {now})"
+    )})
+    tool("memory_query", {"ngql": f"INSERT EDGE affects(ts) VALUES {d_vid}->{m_vid}:({now})"})
+    typed_rows = query_rows(
+        "MATCH (d:decision)-[:affects]->(m:module) "
+        "RETURN d.decision.name AS decision, m.module.name AS module, "
+        "d.decision.state AS state ORDER BY decision ASC LIMIT 10",
+        ["decision", "module", "state"],
+    )
+    expected_typed = {
+        "decision": "decision:smoke-typed",
+        "module": "module:smoke-typed",
+        "state": "active",
+    }
+    assert expected_typed in typed_rows, f"FAIL: typed traversal: {typed_rows}"
+    print("ok typed wiki roundtrip (decision -[affects]-> module)")
 
     # recall: MATCH + CONTAINS finds both freshly written notes.
     text = tool("memory_recall", {"text": marker, "limit": 10})

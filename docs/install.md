@@ -17,7 +17,7 @@ curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh 
 | 구성 | 위치 | 역할 |
 |---|---|---|
 | `byoridb-server` (+`byoridb-cli`) | `~/.byoridb/bin/` | 로컬 ByoriDB (gRPC 9669 / HTTP 19669, `127.0.0.1` 바인딩) |
-| `byoridb_mcp.py` | `~/.byoridb/` | `memory_remember`/`memory_recall`/`memory_query` 도구를 stdio로 노출. `claude_memory`의 `note`/`rel` schema 자동 부트스트랩 |
+| `byoridb_mcp.py` | `~/.byoridb/` | `memory_remember`/`memory_recall`/`memory_query` 도구를 stdio로 노출. 시작 시 `claude_memory` schema를 현재 버전(v2: `note`/`rel` + typed wiki)으로 자동 부트스트랩·migration |
 | 상시 실행 서비스 | launchd `com.byoridb.local`(macOS) / systemd --user(Linux) | 부팅 시 자동 기동 + KeepAlive |
 | `env` | `~/.byoridb/env` (chmod 600) | 랜덤 생성된 root 비밀번호 |
 | 스킬 | `~/.claude/skills/byoridb-memory/SKILL.md` | 언제/무엇을 기억·회수할지의 정책 |
@@ -91,7 +91,8 @@ rm -rf "$HOME/.codex/skills/byoridb-memory"
 ## 한계
 
 - MCP 서버는 리마인더가 아니라 실제 데이터 도구다. **기억할지 말지의 정책은 스킬**(`byoridb-memory`)에 있다.
-- 기본 설치가 즉시 제공하는 것은 `note`/`rel` memory다. typed wiki schema는 아직 자동 생성하지 않는다.
+- schema 부트스트랩(v2: `note`/`rel` + typed wiki)은 additive migration이다. 적용 버전은
+  `byori:schema-version` note로 확인한다.
 - hook은 capture를 직접 실행하지 않고 에이전트에게 체크포인트를 상기시킨다.
 - current/history dual-write는 비원자적이며 같은 millisecond 재기록은 history key 충돌 위험(bitemporal v1 제약).
 - 로컬 단일 노드 전용. 분산/프로덕션 배포와 무관.

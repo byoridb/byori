@@ -17,9 +17,9 @@ description: >-
 
 A local, always-on ByoriDB instance is your long-term memory. You reach it through
 the **`byoridb` MCP server**, which exposes three tools over a dedicated
-`claude_memory` space. The basic notes schema is bootstrapped automatically;
-the typed wiki schema is currently a dogfood prototype and is not created on a
-fresh install:
+`claude_memory` space. Both layers below are bootstrapped automatically: on startup
+the MCP server migrates the space to the current memory schema (v2 = notes +
+typed wiki), recording the version in the reserved note `byori:schema-version`:
 
 - **`memory_remember(name, kind, body, relates_to?)`** — store/update a **note** vertex.
 - **`memory_recall(text?, kind?, limit?)`** — retrieve **notes**, most-recent first.
@@ -35,14 +35,12 @@ fresh install:
 | Edge | generic `rel` | typed: `depends_on / affects / caused_by / fixed_by / supersedes / about / relates_to` |
 | Write | `memory_remember` (vid auto-hashed) | `memory_query` + `INSERT VERTEX/EDGE` (vid you supply) |
 | Read | `memory_recall` | `memory_query` (`LOOKUP / FETCH / GO / MATCH`) |
-| Availability | schema on every fresh install; known negative-VID write blocker below | only in a space where the typed schema was prepared manually |
+| Availability | schema on every fresh install | bootstrapped automatically since schema v2 (MCP startup migration) |
 
 Rule of thumb: if the thing **connects to other things** (a decision that affects
 modules and supersedes an older decision; a bug caused by X and fixed by Y), use the
-wiki layer **only when its schema is already available** so recall becomes a *traversal*.
-On a clean install, fall back to Layer 1 rather than creating ad-hoc typed schema. If
-it's an isolated fact (a preference, a lone gotcha), a note is enough. Do NOT record
-the same thing in both layers.
+wiki layer so recall becomes a *traversal*. If it's an isolated fact (a preference,
+a lone gotcha), a note is enough. Do NOT record the same thing in both layers.
 
 ---
 
@@ -67,10 +65,9 @@ memory_recall(text="korean")
 The graph you build here reads like a wiki: from any node, follow typed edges to
 learn *why it is the way it is*.
 
-> **Current availability:** a fresh installer run creates only `note` and `rel`.
-> Do not issue the typed `INSERT` examples below until the target space already
-> contains the typed schema from the Memory-Wiki PoC/manual setup. Until automatic
-> bootstrap ships, use Layer 1 on a clean install instead of inventing schema ad hoc.
+> **Availability:** the MCP server bootstraps this schema automatically (schema v2)
+> on fresh installs and migrates older spaces on startup. If you suspect a stale
+> pre-v2 MCP, `memory_query("SHOW TAGS")` confirms; never invent ad-hoc typed schema.
 
 ### Node tags & properties
 - `module(name, summary, ts)` — code module/crate/subsystem
@@ -151,11 +148,8 @@ Then "왜 이게 터졌나?" is one traversal — `GO FROM <incident_vid> OVER c
 "무엇이 재발을 막았나?" is `GO ... OVER fixed_by`. A fact with no causal edges is a dead end.
 
 ### Gotchas (실측)
-- **Known blocker in `memory_remember`** — its signed SHA-1 name hash can produce a
-  negative VID, while the current INSERT planner accepts only an integer literal and
-  rejects unary-negative expressions. Some names therefore fail to write until the
-  hash is constrained to a nonnegative i64 or the planner folds negative literals.
-  Do not rename the same fact just to retry; that fragments canonical identity.
+- **`memory_remember`의 VID는 비음수 63bit** — sha1 해시를 unsigned로 읽고 63bit
+  마스킹하므로 어떤 이름이든 쓸 수 있다(과거 음수 해시 거부 이슈는 해소됨).
 - **`status`는 예약어** → 상태 property명은 `state`(또는 `resolved`)를 쓴다.
 - **문자열 vid 미지원** → 위 hash 레시피로 INT64 vid를 만들어 명시적으로 넣는다.
 - **`memory_recall`은 `note` tag만 읽는다** → 타입드 노드는 `memory_query`로만 조회된다.
@@ -166,10 +160,7 @@ Then "왜 이게 터졌나?" is one traversal — `GO FROM <incident_vid> OVER c
 ## When to REMEMBER
 
 Record durable knowledge the moment it's established — never make the user say it
-twice. Before using Layer 2, check its availability with `memory_query("SHOW TAGS")`
-and `memory_query("SHOW EDGES")`. If the typed tags/edges are absent, route the same
-knowledge to one canonical Layer 1 note; do not invent partial schema during the task.
-When Layer 2 is available, route by type:
+twice. Route by type:
 
 - Decision + *why* → wiki `decision`, `affects` the modules, `supersedes` any prior.
 - Recurring bug/gotcha + resolution → wiki `bug`, `caused_by` / `fixed_by`.
@@ -194,9 +185,9 @@ to its transferable shape, or drop it.
 
 ## When to RECALL
 
-- **At the start of a non-trivial task or work phase** — `memory_recall` for notes. When
-  the typed schema exists, also use `memory_query` (`LOOKUP`/`GO`/`MATCH`) to traverse
-  the wiki around the relevant module/topic. Pull prior decisions, known bugs, and past
+- **At the start of a non-trivial task or work phase** — `memory_recall` for notes,
+  and `memory_query` (`LOOKUP`/`GO`/`MATCH`) to traverse the wiki around the relevant
+  module/topic. Pull prior decisions, known bugs, and past
   incidents for that area *first*, so you don't re-derive a settled decision or repeat
   a resolved mistake.
 - When the user references the past ("저번에 정한", "그때 왜", "기억하지?").

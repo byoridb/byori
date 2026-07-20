@@ -32,6 +32,35 @@ USER = os.environ.get("BYORIDB_USER", "root")
 PASSWORD = os.environ.get("BYORIDB_ROOT_PASSWORD") or os.environ.get("BYORIDB_PASSWORD", "")
 SPACE = os.environ.get("BYORIDB_MEMORY_SPACE", "claude_memory")
 
+# Memory schema version of the space, recorded in a reserved `note` vertex.
+# v1 = base note/rel only (pre-versioning installs carry no version note).
+# v2 = + typed wiki ontology (docs/memory-ontology.md §4, adapters SKILL.md).
+SCHEMA_VERSION = 2
+SCHEMA_VERSION_NAME = "byori:schema-version"
+
+# Additive-only statements (IF NOT EXISTS): re-running against a space that
+# already carries the dogfood PoC schema is safe, existing tags keep their
+# shape. `status` is an nGQL reserved word — properties use state/resolved.
+MIGRATIONS = {
+    2: (
+        "CREATE TAG IF NOT EXISTS module(name STRING, summary STRING, ts INT64)",
+        "CREATE TAG IF NOT EXISTS decision(name STRING, body STRING, state STRING, ts INT64)",
+        "CREATE TAG IF NOT EXISTS bug(name STRING, body STRING, state STRING, ts INT64)",
+        "CREATE TAG IF NOT EXISTS incident(name STRING, body STRING, resolved STRING, ts INT64)",
+        "CREATE TAG IF NOT EXISTS concept(name STRING, body STRING, ts INT64)",
+        "CREATE TAG IF NOT EXISTS entity(name STRING, body STRING, ts INT64)",
+        "CREATE TAG IF NOT EXISTS task(name STRING, body STRING, state STRING, ts INT64)",
+        "CREATE EDGE IF NOT EXISTS part_of(ts INT64)",
+        "CREATE EDGE IF NOT EXISTS depends_on(ts INT64)",
+        "CREATE EDGE IF NOT EXISTS affects(ts INT64)",
+        "CREATE EDGE IF NOT EXISTS caused_by(ts INT64)",
+        "CREATE EDGE IF NOT EXISTS fixed_by(ts INT64)",
+        "CREATE EDGE IF NOT EXISTS supersedes(ts INT64)",
+        "CREATE EDGE IF NOT EXISTS about(ts INT64)",
+        "CREATE EDGE IF NOT EXISTS relates_to(ts INT64)",
+    ),
+}
+
 PROTOCOL_VERSION = "2024-11-05"
 _session = {"id": None, "ready": False}
 
@@ -102,8 +131,9 @@ def _ensure_ready():
                 _raw_query(stmt)
             # pin session to the memory space for subsequent queries
             _raw_query(f"USE {SPACE}")
+            _migrate()
             _session["ready"] = True
-            log(f"memory space '{SPACE}' ready")
+            log(f"memory space '{SPACE}' ready (schema v{SCHEMA_VERSION})")
             return
         except urllib.error.HTTPError as e:
             # Fail fast on auth errors: retrying a wrong password would trip the
@@ -121,6 +151,37 @@ def _ensure_ready():
             _session["id"] = None
             time.sleep(2)
     raise RuntimeError(f"could not bootstrap ByoriDB after retries: {last}")
+
+
+def _schema_version():
+    """Schema version recorded in the space. No version note = v1 (note/rel
+    only): both a fresh space (base DDL just ran) and a pre-versioning install
+    start there and take every later migration."""
+    body = _raw_query(
+        f"MATCH (n:note) WHERE id(n) == {_vid(SCHEMA_VERSION_NAME)} "
+        "RETURN n.note.body AS body LIMIT 1"
+    )
+    rows = body.get("results") or []
+    if not rows:
+        return 1
+    try:
+        return int(rows[0].get("body"))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _migrate():
+    """Apply additive migrations up to SCHEMA_VERSION, stamping the version
+    note after each step so an interrupted run resumes where it stopped."""
+    for version in range(_schema_version() + 1, SCHEMA_VERSION + 1):
+        for stmt in MIGRATIONS[version]:
+            _raw_query(stmt)
+        _raw_query(
+            f"INSERT VERTEX note(kind, name, body, ts) VALUES "
+            f"{_vid(SCHEMA_VERSION_NAME)}:('schema', '{SCHEMA_VERSION_NAME}', "
+            f"'{version}', {int(time.time() * 1000)})"
+        )
+        log(f"memory schema migrated to v{version}")
 
 
 def _vid(name):

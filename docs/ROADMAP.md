@@ -30,11 +30,15 @@ backup / upgrade --plan / rollback / uninstall`.
 - `byoridb-tray` prototype의 상태 모델은 참고하되 하드코딩 경로와 동기 process 실행은
   재사용하지 않음
 
-## P5 — memory schema versioning + migration
+## P5 — memory schema versioning + migration ✅ (v0.2.0)
 
-- `claude_memory` space에 `schema_version` 노드, `byori migrate`로 단계적 이행
-- typed wiki ontology(`module`/`decision`/`bug`/`incident`/`concept`/`task` +
-  causal edge)를 fresh install에서 자동 bootstrap — `docs/memory-ontology.md` 참조
+- ✅ `claude_memory` space에 `byori:schema-version` note — MCP 시작 시 버전을 읽고
+  부족한 additive migration만 적용
+- ✅ typed wiki ontology(`module`/`decision`/`bug`/`incident`/`concept`/`entity`/`task`
+  + causal edge)를 schema v2로 fresh install 자동 bootstrap + 기존 설치 자동 migration
+  — `docs/memory-ontology.md` 참조
+- 남음: 비-additive(파괴적) migration의 명시적 단계 실행(`byori migrate`) — P4의
+  공용 관리 코어/CLI로 수렴
 
 ## P6 — project registry + 자동 ingestion
 
