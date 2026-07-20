@@ -31,8 +31,8 @@ install.sh [--with-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z] [--uninstall]
 ```
 
 - `--with-hooks` — 체크포인트 reminder 훅을 `~/.claude/settings.json`에 추가(기본은 안 함).
-  현재 jq merge는 기존 `SessionStart`/`PreToolUse` 배열을 append하지 않고 교체하므로 먼저
-  settings를 백업하고 같은 event hook이 있는지 확인할 것.
+  기존 `SessionStart`/`PreToolUse` 배열에 append하며 이미 같은 hook이 있으면 건너뛴다
+  (재실행 idempotent). 변경 전 `settings.json.bak.<timestamp>` 백업을 자동 생성한다. `jq` 필요.
 - `--tag` — byori 자산(MCP/스킬/템플릿) 버전 고정(기본: 최신 byori 릴리스).
 - `--engine-tag` — ByoriDB 엔진 릴리스 override(기본: 이 byori 버전과 함께 검증된 고정 태그).
 - `--uninstall` — 서비스 중지·해제, Claude MCP 등록 해제, Claude skill 제거.

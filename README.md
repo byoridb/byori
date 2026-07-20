@@ -109,8 +109,8 @@ curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh 
   | bash -s -- --with-hooks
 ```
 
-현재 installer의 hook merge는 기존 `SessionStart`/`PreToolUse` 배열을 교체할 수 있으므로
-`~/.claude/settings.json`을 먼저 백업하세요.
+hook merge는 기존 `SessionStart`/`PreToolUse` 배열에 append하며(이미 있으면 건너뜀),
+변경 전 `~/.claude/settings.json.bak.<timestamp>` 백업을 남깁니다.
 
 설치 후 Claude Code를 재시작하세요. 서버·MCP·skill의 상세 위치, 옵션(`--engine-tag` 등),
 제거 방법은 [설치 문서](docs/install.md)를 참고합니다.

@@ -38,10 +38,9 @@ jq -s '.[0] as $a | .[1] as $b | $a * $b
   && mv /tmp/s.json ~/.claude/settings.json
 ```
 
-설치기의 `--with-hooks`는 아직 단순 object merge를 사용해 같은 event 배열을 교체한다.
-기존 hook이 있으면 이 수동 절차를 사용하거나 settings를 먼저 백업한다.
-
-일반적으로는 위 수동 복사 대신 [`install.sh`](../docs/install.md)를 사용한다.
+설치기의 `--with-hooks`도 같은 append 방식(중복 시 건너뜀)을 사용하고 변경 전
+`settings.json.bak.<timestamp>` 백업을 남기므로, 일반적으로는 위 수동 복사 대신
+[`install.sh`](../docs/install.md)를 사용한다.
 
 ### Codex
 

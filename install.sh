@@ -212,9 +212,19 @@ if [ "$NO_CLAUDE" != 1 ] && [ "$WITH_HOOKS" = 1 ]; then
   if command -v jq >/dev/null 2>&1; then
     settings="${HOME}/.claude/settings.json"; mkdir -p "${HOME}/.claude"
     [ -f "$settings" ] || echo '{}' > "$settings"
+    backup="${settings}.bak.$(date +%Y%m%d%H%M%S)"
+    cp "$settings" "$backup"
     get "adapters/claude/hooks.snippet.json" "$WORK/hooks.json"
-    jq -s '.[0] * .[1]' "$settings" "$WORK/hooks.json" > "$WORK/merged.json" && mv "$WORK/merged.json" "$settings"
-    log "merged checkpoint hooks into $settings"
+    # Append byori hooks to existing event arrays, skipping entries that are
+    # already present — user hooks survive and re-runs stay idempotent.
+    jq -s '
+      def merge_event($a; $b):
+        ($a // []) + [ ($b // [])[] | select(. as $n | any(($a // [])[]; . == $n) | not) ];
+      .[0] as $a | .[1] as $b | ($a * $b)
+      | .hooks.SessionStart = merge_event($a.hooks.SessionStart; $b.hooks.SessionStart)
+      | .hooks.PreToolUse   = merge_event($a.hooks.PreToolUse;   $b.hooks.PreToolUse)
+    ' "$settings" "$WORK/hooks.json" > "$WORK/merged.json" && mv "$WORK/merged.json" "$settings"
+    log "appended checkpoint hooks into $settings (backup: $backup)"
   else
     warn "jq not found — skipped hooks; install jq and re-run with --with-hooks"
   fi

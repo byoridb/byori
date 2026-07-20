@@ -162,8 +162,8 @@ GO FROM 3001 OVER depends_on YIELD $$.concept.name
 - **SessionStart 훅**: 세션 시작 시 "기억 그래프가 있으니 비자명 작업 전 recall / 체크포인트에서 capture" 컨텍스트 주입.
 - **PreToolUse(Bash) 훅**: 커맨드에 `git commit`이 포함될 때만 "커밋=체크포인트, 그래프 기록 확인" 리마인더 주입. 그 외엔 무출력·**비차단**(리마인더만).
 - 검증: JSON 유효·매치/비매치 동작과 PreToolUse 훅 라이브 발동 확인.
-- 주의: 현재 설치기의 `jq -s '.[0] * .[1]'`은 top-level 설정은 보존하지만 같은
-  event의 기존 hook 배열은 append하지 않고 교체한다. 설치 전 settings 백업이 필요하다.
+- 주의: 설치기의 hook merge는 같은 event 배열에 append(중복 건너뜀)하고 변경 전
+  `settings.json.bak.<timestamp>` 백업을 남긴다.
 - 한계: 훅은 MCP를 직접 호출 못 함(리마인더 주입만). 실제 기록은 여전히 에이전트가 수행.
 
 ### Phase 4 결과 — 온톨로지 추론 (claude_memory에서 실측)

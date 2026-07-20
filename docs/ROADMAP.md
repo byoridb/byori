@@ -25,7 +25,7 @@ backup / upgrade --plan / rollback / uninstall`.
 - Manager는 Claude/Codex를 감지하고 사용자의 명시적 동의 후 각 벤더의 **공식 설치기**를
   실행할 수 있다. 로그인은 벤더 CLI에 맡기며 vendor token은 읽거나 저장하지 않는다
 - `connect`/`disconnect`는 idempotent, 변경 전 원본 설정 백업
-  (현재 `--with-hooks`의 jq merge가 기존 event 배열을 교체하는 문제를 여기서 해소)
+  (shell installer의 `--with-hooks`도 append+백업 방식으로 동작한다)
 - macOS 앱은 SwiftUI로 구현하고 ByoriDB는 독립 launchd user service로 유지
 - `byoridb-tray` prototype의 상태 모델은 참고하되 하드코딩 경로와 동기 process 실행은
   재사용하지 않음
