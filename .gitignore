@@ -25,3 +25,8 @@ aidlc-docs/
 # python bytecode (installer mcp)
 __pycache__/
 *.pyc
+
+# macOS Manager build output
+dist/
+manager/macos/.build/
+manager/macos/.swiftpm/

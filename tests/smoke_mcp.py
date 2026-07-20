@@ -3,7 +3,8 @@
 
 Covers the surface promised in docs/engine-contract.md:
   remember (INSERT VERTEX/EDGE, non-negative VID) -> recall (MATCH/CONTAINS)
-  -> query (FETCH ... AS OF temporal read).
+  -> graph projections (id/ORDER BY/LIMIT/OFFSET) -> query
+  (FETCH ... AS OF temporal read).
 
 Prereq: `install.sh` has run and the server is healthy (CI does this first).
 Usage:  BYORIDB_HOME=<home> python3 tests/smoke_mcp.py
@@ -59,6 +60,20 @@ def tool(name, args):
     return text
 
 
+def query_rows(statement, expected_columns):
+    payload = json.loads(tool("memory_query", {"ngql": statement}))
+    required = {"results", "latency_ms", "row_count", "column_names"}
+    assert required <= payload.keys(), f"FAIL: query response shape={payload}"
+    rows = payload["results"]
+    assert isinstance(rows, list), f"FAIL: results is not a list: {payload}"
+    assert payload["column_names"] == expected_columns, f"FAIL: columns={payload}"
+    assert payload["row_count"] == len(rows), f"FAIL: row_count={payload}"
+    assert type(payload["latency_ms"]) is int and payload["latency_ms"] >= 0, (
+        f"FAIL: latency_ms={payload}"
+    )
+    return rows
+
+
 def main():
     call("initialize", {
         "protocolVersion": "2024-11-05", "capabilities": {},
@@ -86,6 +101,44 @@ def main():
     }))
     assert out["vid"] == POS_VID_LEGACY == expected_vid(POS_NAME), f"FAIL: {out}"
     print(f"ok remember pos-hash name (vid unchanged: {out['vid']})")
+
+    # Manager graph node projection: IDs remain exact Int64 JSON numbers, rows
+    # are alias-keyed and ordered, and bodies are intentionally excluded.
+    node_rows = query_rows(
+        "MATCH (n:note) "
+        "RETURN id(n) AS vid, n.note.name AS name, n.note.kind AS kind, n.note.ts AS ts "
+        "ORDER BY vid ASC LIMIT 201 OFFSET 0",
+        ["vid", "name", "kind", "ts"],
+    )
+    node_ids = [row["vid"] for row in node_rows]
+    assert node_ids == sorted(node_ids), f"FAIL: unordered node projection: {node_rows}"
+    nodes_by_name = {row.get("name"): row for row in node_rows}
+    for name, vid in ((NEG_NAME, expected_vid(NEG_NAME)), (POS_NAME, POS_VID_LEGACY)):
+        row = nodes_by_name.get(name)
+        assert row and row["vid"] == vid, f"FAIL: projected node {name}: {node_rows}"
+        assert row["kind"] == "context" and isinstance(row["ts"], int), (
+            f"FAIL: projected node metadata {name}: {row}"
+        )
+        assert "body" not in row, f"FAIL: eager body in node projection: {row}"
+    print("ok graph node projection")
+
+    # Manager graph edge projection: the remembered relates_to edge is directed
+    # from the masked negative-hash VID to the legacy positive VID.
+    edge_rows = query_rows(
+        "MATCH (a:note)-[e:rel]->(b:note) "
+        "RETURN id(a) AS src, id(b) AS dst, e.rel.kind AS kind "
+        "ORDER BY src ASC, dst ASC LIMIT 501 OFFSET 0",
+        ["src", "dst", "kind"],
+    )
+    edge_keys = [(row["src"], row["dst"]) for row in edge_rows]
+    assert edge_keys == sorted(edge_keys), f"FAIL: unordered edge projection: {edge_rows}"
+    expected_edge = {
+        "src": expected_vid(NEG_NAME),
+        "dst": POS_VID_LEGACY,
+        "kind": "relates_to",
+    }
+    assert expected_edge in edge_rows, f"FAIL: projected edge missing: {edge_rows}"
+    print("ok graph edge projection")
 
     # recall: MATCH + CONTAINS finds both freshly written notes.
     text = tool("memory_recall", {"text": marker, "limit": 10})

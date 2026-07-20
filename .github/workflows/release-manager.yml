@@ -1,0 +1,91 @@
+name: Release macOS Manager
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing release version without the v prefix (for example 0.2.0)
+        required: true
+        type: string
+
+jobs:
+  package:
+    name: Sign, notarize, and attach DMG
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    env:
+      CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+      CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: v${{ inputs.version }}
+
+      - name: Require signing and notarization secrets
+        run: |
+          test -n "$CERTIFICATE_P12"
+          test -n "$CERTIFICATE_PASSWORD"
+          test -n "$SIGN_IDENTITY"
+          test -n "$APPLE_ID"
+          test -n "$APPLE_TEAM_ID"
+          test -n "$APPLE_APP_PASSWORD"
+
+      - name: Import Developer ID certificate
+        env:
+          KEYCHAIN_PASSWORD: ${{ runner.temp }}-${{ github.run_id }}
+        run: |
+          CERTIFICATE_PATH="$RUNNER_TEMP/byori-signing.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/byori-signing.keychain-db"
+          printf '%s' "$CERTIFICATE_P12" | /usr/bin/base64 -D > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -k "$KEYCHAIN_PATH" \
+            -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+      - name: Test Swift core
+        run: |
+          swift test --package-path manager/macos
+          swift run --package-path manager/macos ByoriManagerSelfTest
+
+      - name: Build signed universal DMG
+        run: |
+          scripts/build-macos-dmg.sh \
+            --version "${{ inputs.version }}" \
+            --universal \
+            --sign "$SIGN_IDENTITY"
+
+      - name: Notarize and staple
+        run: |
+          DMG="dist/ByoriManager-${{ inputs.version }}-universal.dmg"
+          xcrun notarytool submit "$DMG" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+          hdiutil verify "$DMG"
+
+      - name: Attach DMG to release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ inputs.version }}
+          files: dist/ByoriManager-${{ inputs.version }}-universal.dmg
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Remove temporary keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/byori-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/byori-signing.p12"

@@ -25,3 +25,25 @@ jobs:
 
       - name: MCP roundtrip smoke
         run: python3 tests/smoke_mcp.py
+
+  manager-macos:
+    name: macOS Manager
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Test Swift core
+        run: |
+          swift test --package-path manager/macos
+          swift run --package-path manager/macos ByoriManagerSelfTest
+
+      - name: Build with strict concurrency checks
+        run: >-
+          swift build --package-path manager/macos --product ByoriManager
+          -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
+
+      - name: Build app and development DMG
+        run: VERSION=0.0.0 scripts/build-macos-dmg.sh
+
+      - name: Verify disk image
+        run: hdiutil verify dist/ByoriManager-0.0.0-$(uname -m).dmg
