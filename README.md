@@ -12,8 +12,9 @@ causal edge로 연결하고, 관계·시점·추론 근거를 따라가며 "무�
 **"왜 이렇게 되었는가"**까지 되짚는 시스템입니다.
 
 > [!WARNING]
-> 현재는 초기 실험 단계입니다. 로컬 단일 노드, MCP surface, 기본 notes schema는 구현되어
-> 있습니다. 저장소 전체 자동 수집과 typed wiki 자동 부트스트랩은 아직 개발 중입니다.
+> 현재는 초기 실험 단계입니다. 로컬 단일 노드, MCP surface, schema v2 typed wiki
+> 자동 부트스트랩·additive migration, macOS Manager는 구현되어 있습니다. 저장소 전체 자동
+> 수집, 단일 `byori` CLI·비-additive migration, 서명·공증된 Manager DMG 배포는 남아 있습니다.
 > 중요한 데이터의 유일한 저장소로 사용하지 마세요.
 
 ## 구조: 3개 논리 계층
@@ -25,7 +26,7 @@ Claude Code / Codex
 Byori (이 저장소)
 ├── 설치·업데이트·백업·제거        install.sh, templates/
 ├── MCP memory runtime            mcp/byoridb_mcp.py
-├── agent adapter                 adapters/claude, adapters/codex(예정)
+├── agent adapter                 adapters/ (공용 skill + Claude hook)
 └── memory ontology + migration   docs/memory-ontology.md
         │  stable HTTP/gRPC contract (엔진 버전 고정)
         ▼
@@ -205,9 +206,10 @@ bitemporal history(`AS OF`), similarity recommendation을 제공합니다. 설�
 ## 로드맵
 
 `byori setup / doctor / connect / project add / backup / upgrade / rollback` 형태의 단일
-CLI로 수렴하는 것이 목표입니다. 엔진 호환성은 [계약 문서](docs/engine-contract.md)와
-CI 스모크로 게이트하며, memory schema versioning/migration, 프로젝트 registry와 자동
-ingestion 순서로 진행합니다 — [docs/ROADMAP.md](docs/ROADMAP.md).
+CLI로 수렴하는 것이 목표입니다. P3 엔진 호환성 계약·CI, P4 macOS Manager·공용
+관리 코어, P5 additive schema v2 migration은 완료했습니다. 남은 큰 작업은 단일 CLI,
+비-additive migration, 서명·공증된 Manager DMG 배포, P6 project registry·자동
+ingestion입니다 — [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## 문서
 
