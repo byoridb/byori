@@ -32,6 +32,18 @@ public enum KnowledgeGraphClientError: LocalizedError, Sendable {
 }
 
 public actor ByoriGraphClient: KnowledgeGraphProviding {
+    /// note는 Layer 1(경량 메모), 나머지는 schema v2 typed wiki 태그(memory-ontology.md §4.1).
+    private static let noteTag = "note"
+    private static let typedWikiTags = ["module", "decision", "bug", "incident", "concept", "entity", "task"]
+    private static let nodeTags = [noteTag] + typedWikiTags
+
+    /// rel은 Layer 1의 범용 엣지, 나머지는 schema v2 typed wiki 엣지(memory-ontology.md §4.2).
+    private static let legacyEdgeKind = "rel"
+    private static let typedWikiEdgeKinds = [
+        "part_of", "depends_on", "affects", "caused_by", "fixed_by", "supersedes", "about", "relates_to",
+    ]
+    private static let edgeKinds = [legacyEdgeKind] + typedWikiEdgeKinds
+
     private struct Credentials: Sendable {
         let password: String
         let space: String
@@ -208,58 +220,118 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
             sessionID: sessionID,
             statement: "USE \(credentials.space)"
         )
-        let nodeResponse = try await query(
-            baseURL: baseURL,
-            sessionID: sessionID,
-            statement: """
-            MATCH (n:note)
-            RETURN id(n) AS vid, n.note.name AS name, n.note.kind AS kind, n.note.ts AS ts
-            ORDER BY vid ASC LIMIT \(limit + 1) OFFSET 0
-            """
-        )
-        let edgeResponse = try await query(
-            baseURL: baseURL,
-            sessionID: sessionID,
-            statement: """
-            MATCH (a:note)-[e:rel]->(b:note)
-            RETURN id(a) AS src, id(b) AS dst, e.rel.kind AS kind
-            ORDER BY src ASC, dst ASC LIMIT \(edgeLimit + 1) OFFSET 0
-            """
-        )
 
-        let nodesTruncated = nodeResponse.rows.count > limit
+        // nGQL은 UNION으로 여러 태그를 한 결과로 합쳐주지 않으므로(첫 branch만 반환),
+        // 태그/엣지 종류별로 나눠 조회한 뒤 클라이언트에서 병합한다.
+        let nodeRows = try await queryAllTags(
+            Self.nodeTags,
+            baseURL: baseURL,
+            sessionID: sessionID
+        ) { tag in Self.nodeListStatement(tag: tag, limit: limit) }
+        let edgeRows = try await queryAllTags(
+            Self.edgeKinds,
+            baseURL: baseURL,
+            sessionID: sessionID
+        ) { edgeKind in Self.edgeListStatement(edgeKind: edgeKind, limit: edgeLimit) }
+
         var seenNodes = Set<Int64>()
-        let nodes = nodeResponse.rows.prefix(limit).compactMap { row -> KnowledgeNode? in
+        var allNodes: [KnowledgeNode] = []
+        for (tag, row) in nodeRows {
             guard let id = row["vid"]?.int64Value,
                   let name = row["name"]?.stringValue,
-                  seenNodes.insert(id).inserted else { return nil }
-            return KnowledgeNode(
+                  seenNodes.insert(id).inserted else { continue }
+            let kind = tag == Self.noteTag ? (row["kind"]?.stringValue ?? Self.noteTag) : tag
+            allNodes.append(KnowledgeNode(
                 id: id,
                 name: name,
-                kind: row["kind"]?.stringValue ?? "note",
+                kind: kind,
+                tag: tag,
                 timestamp: row["ts"]?.int64Value ?? 0
-            )
+            ))
         }
+        let nodesTruncated = allNodes.count > limit
+        allNodes.sort { $0.id < $1.id }
+        let nodes = Array(allNodes.prefix(limit))
+
         let knownIDs = Set(nodes.map(\.id))
-        let edgesTruncated = edgeResponse.rows.count > edgeLimit
         var seenEdges = Set<KnowledgeEdge>()
-        let edges = edgeResponse.rows.prefix(edgeLimit).compactMap { row -> KnowledgeEdge? in
+        var allEdges: [KnowledgeEdge] = []
+        for (edgeKind, row) in edgeRows {
             guard let source = row["src"]?.int64Value,
                   let target = row["dst"]?.int64Value,
-                  knownIDs.contains(source), knownIDs.contains(target) else { return nil }
-            let edge = KnowledgeEdge(
-                source: source,
-                target: target,
-                kind: row["kind"]?.stringValue ?? "relates_to"
-            )
-            return seenEdges.insert(edge).inserted ? edge : nil
+                  knownIDs.contains(source), knownIDs.contains(target) else { continue }
+            let kind = edgeKind == Self.legacyEdgeKind ? (row["kind"]?.stringValue ?? "relates_to") : edgeKind
+            let edge = KnowledgeEdge(source: source, target: target, kind: kind)
+            guard seenEdges.insert(edge).inserted else { continue }
+            allEdges.append(edge)
         }
+        let edgesTruncated = allEdges.count > edgeLimit
+        allEdges.sort { $0.source != $1.source ? $0.source < $1.source : $0.target < $1.target }
+        let edges = Array(allEdges.prefix(edgeLimit))
+
         return KnowledgeGraphSnapshot(
             nodes: nodes,
             edges: edges,
             nodesTruncated: nodesTruncated,
             edgesTruncated: edgesTruncated
         )
+    }
+
+    /// `keys`(태그 또는 엣지 종류) 각각에 대해 `statement`로 만든 쿼리를 동시에 실행하고,
+    /// 결과 행을 어떤 key에서 왔는지와 함께 평탄화해 반환한다.
+    private func queryAllTags(
+        _ keys: [String],
+        baseURL: URL,
+        sessionID: SessionIdentifier,
+        statement: @Sendable @escaping (String) -> String
+    ) async throws -> [(key: String, row: [String: JSONValue])] {
+        try await withThrowingTaskGroup(of: [(key: String, row: [String: JSONValue])].self) { group in
+            for key in keys {
+                group.addTask {
+                    let response = try await self.query(
+                        baseURL: baseURL,
+                        sessionID: sessionID,
+                        statement: statement(key)
+                    )
+                    return response.rows.map { (key, $0) }
+                }
+            }
+            var collected: [(key: String, row: [String: JSONValue])] = []
+            for try await rows in group {
+                collected.append(contentsOf: rows)
+            }
+            return collected
+        }
+    }
+
+    private static func nodeListStatement(tag: String, limit: Int) -> String {
+        if tag == noteTag {
+            return """
+            MATCH (n:note)
+            RETURN id(n) AS vid, n.note.name AS name, n.note.kind AS kind, n.note.ts AS ts
+            ORDER BY vid ASC LIMIT \(limit + 1) OFFSET 0
+            """
+        }
+        return """
+        MATCH (n:\(tag))
+        RETURN id(n) AS vid, n.\(tag).name AS name, n.\(tag).ts AS ts
+        ORDER BY vid ASC LIMIT \(limit + 1) OFFSET 0
+        """
+    }
+
+    private static func edgeListStatement(edgeKind: String, limit: Int) -> String {
+        if edgeKind == legacyEdgeKind {
+            return """
+            MATCH (a:note)-[e:rel]->(b:note)
+            RETURN id(a) AS src, id(b) AS dst, e.rel.kind AS kind
+            ORDER BY src ASC, dst ASC LIMIT \(limit + 1) OFFSET 0
+            """
+        }
+        return """
+        MATCH (a)-[e:\(edgeKind)]->(b)
+        RETURN id(a) AS src, id(b) AS dst
+        ORDER BY src ASC, dst ASC LIMIT \(limit + 1) OFFSET 0
+        """
     }
 
     public func loadBody(paths: ManagerPaths, nodeID: Int64) async throws -> String {
