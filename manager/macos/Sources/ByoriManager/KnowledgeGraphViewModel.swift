@@ -120,12 +120,13 @@ final class KnowledgeGraphViewModel: ObservableObject {
             isLoadingBody = false
             return
         }
+        let tag = snapshot?.node(id: nodeID)?.tag ?? "note"
         selectedBody = nil
         isLoadingBody = true
         bodyTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let body = try await service.loadKnowledgeBody(nodeID: nodeID)
+                let body = try await service.loadKnowledgeBody(nodeID: nodeID, tag: tag)
                 guard !Task.isCancelled else { return }
                 bodies[nodeID] = body
                 if selectedNodeID == nodeID { selectedBody = body }

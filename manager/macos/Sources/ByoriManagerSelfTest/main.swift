@@ -275,7 +275,7 @@ enum ByoriManagerSelfTest {
             let client = ByoriGraphClient()
             let liveGraph = try await client.loadGraph(paths: livePaths, nodeLimit: 200)
             if let firstNode = liveGraph.nodes.first {
-                _ = try await client.loadBody(paths: livePaths, nodeID: firstNode.id)
+                _ = try await client.loadBody(paths: livePaths, nodeID: firstNode.id, tag: firstNode.tag)
             }
             print(
                 "ByoriManager live graph PASS "

@@ -42,8 +42,8 @@ public actor ManagerService {
         try await graphProvider.loadGraph(paths: paths, nodeLimit: limit)
     }
 
-    public func loadKnowledgeBody(nodeID: Int64) async throws -> String {
-        try await graphProvider.loadBody(paths: paths, nodeID: nodeID)
+    public func loadKnowledgeBody(nodeID: Int64, tag: String) async throws -> String {
+        try await graphProvider.loadBody(paths: paths, nodeID: nodeID, tag: tag)
     }
 
     public func installOrUpdateCLI(_ kind: AgentKind) async throws -> OperationResult {
