@@ -12,7 +12,9 @@ public struct KnowledgeNode: Identifiable, Hashable, Sendable {
         self.id = id
         self.name = name
         self.kind = kind
-        self.tag = tag ?? kind
+        // 레거시 note에서는 kind가 자유 텍스트 하위분류(예: "decision")였으므로 kind를
+        // 그대로 tag로 쓰면 안 된다 — 미지정 시 Layer 1 note로 취급하는 게 안전한 기본값.
+        self.tag = tag ?? "note"
         self.timestamp = timestamp
     }
 
