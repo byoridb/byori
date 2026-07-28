@@ -107,7 +107,7 @@ MATCH (n:<tag>)                                -- tag ∈ {module, decision, bug
 MATCH (a:note)-[e:rel]->(b:note)
   RETURN id(a) AS src, id(b) AS dst, e.rel.kind AS kind
   ORDER BY src ASC, dst ASC LIMIT 501 OFFSET 0
-MATCH (a)-[e:<edge>]->(b)                      -- edge ∈ typed wiki edge 8종(§4.2)
+MATCH (a)-[e:<edge>]->(b)                      -- edge ∈ typed wiki edge 8종(§4.2, decided_in 제외*)
   WHERE (id(a) == <vid> OR id(a) == <vid> OR ...) AND (id(b) == <vid> OR id(b) == <vid> OR ...)
   RETURN id(a) AS src, id(b) AS dst
   ORDER BY src ASC, dst ASC LIMIT 501 OFFSET 0
@@ -133,6 +133,11 @@ typed wiki edge 쿼리는 양끝 vertex 태그를 지정하지 않는 `(a)`/`(b)
 누락). 노드는 200개, 엣지는 500개까지만 표시하고 각각 한 행을 더 요청해 truncation을
 감지한다. 초기 node projection에는 `body`/`summary`를 넣지 않고 선택된 node만 마지막
 쿼리로 lazy-load한다.
+
+\* `decided_in`(decision → task)은 §4.2의 목표 스키마에는 있으나 `byoridb_mcp.py`의
+schema v2 migration에는 아직 `CREATE EDGE`가 없다 — Manager가 조회하면 미정의 edge tag
+에러가 난다. 실제로 필요해지면(§4.1의 "3번 이상 억지로 뭉개진 뒤" 승격 기준) 별도 schema
+migration을 먼저 추가할 것.
 
 typed wiki 문장들은 MCP의 schema v2 bootstrap(`byoridb_mcp.py._migrate`)과 스모크의
 typed roundtrip이 발행한다. schema version은 예약 이름 `byori:schema-version`의

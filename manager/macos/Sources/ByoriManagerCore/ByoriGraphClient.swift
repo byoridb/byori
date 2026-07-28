@@ -38,6 +38,8 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
     private static let nodeTags = [noteTag] + typedWikiTags
 
     /// rel은 Layer 1의 범용 엣지, 나머지는 schema v2 typed wiki 엣지(memory-ontology.md §4.2).
+    /// `decided_in`은 ontology 문서(§4.2)의 목표 스키마일 뿐 아직 `byoridb_mcp.py`
+    /// migration에 없다 — 여기 추가하면 미정의 edge tag 조회로 loadGraph 전체가 실패한다.
     private static let legacyEdgeKind = "rel"
     private static let typedWikiEdgeKinds = [
         "part_of", "depends_on", "affects", "caused_by", "fixed_by", "supersedes", "about", "relates_to",
