@@ -4,12 +4,15 @@ public struct KnowledgeNode: Identifiable, Hashable, Sendable {
     public let id: Int64
     public let name: String
     public let kind: String
+    /// ByoriDB 태그(`note`/`module`/`decision`/...) — 본문 조회 시 어떤 property를 읽을지 결정한다.
+    public let tag: String
     public let timestamp: Int64
 
-    public init(id: Int64, name: String, kind: String, timestamp: Int64) {
+    public init(id: Int64, name: String, kind: String, tag: String? = nil, timestamp: Int64) {
         self.id = id
         self.name = name
         self.kind = kind
+        self.tag = tag ?? kind
         self.timestamp = timestamp
     }
 
