@@ -2,7 +2,7 @@ import Foundation
 
 public protocol KnowledgeGraphProviding: Sendable {
     func loadGraph(paths: ManagerPaths, nodeLimit: Int) async throws -> KnowledgeGraphSnapshot
-    func loadBody(paths: ManagerPaths, nodeID: Int64) async throws -> String
+    func loadBody(paths: ManagerPaths, nodeID: Int64, tag: String) async throws -> String
 }
 
 public enum KnowledgeGraphClientError: LocalizedError, Sendable {
@@ -334,7 +334,7 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
         """
     }
 
-    public func loadBody(paths: ManagerPaths, nodeID: Int64) async throws -> String {
+    public func loadBody(paths: ManagerPaths, nodeID: Int64, tag: String) async throws -> String {
         let credentials = try credentials(at: paths.byoriHome.appendingPathComponent("env"))
         let baseURL = try localBaseURL(port: paths.httpPort)
         let sessionID = try await createSession(baseURL: baseURL, password: credentials.password)
@@ -344,10 +344,13 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
             sessionID: sessionID,
             statement: "USE \(credentials.space)"
         )
+        // module 태그만 body 대신 summary 프로퍼티를 쓴다(memory-ontology.md §4.1).
+        let resolvedTag = Self.nodeTags.contains(tag) ? tag : Self.noteTag
+        let property = resolvedTag == "module" ? "summary" : "body"
         let response = try await query(
             baseURL: baseURL,
             sessionID: sessionID,
-            statement: "MATCH (n:note) WHERE id(n) == \(nodeID) RETURN n.note.body AS body LIMIT 1"
+            statement: "MATCH (n:\(resolvedTag)) WHERE id(n) == \(nodeID) RETURN n.\(resolvedTag).\(property) AS body LIMIT 1"
         )
         return response.rows.first?["body"]?.stringValue ?? ""
     }
