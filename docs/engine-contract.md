@@ -108,6 +108,7 @@ MATCH (a:note)-[e:rel]->(b:note)
   RETURN id(a) AS src, id(b) AS dst, e.rel.kind AS kind
   ORDER BY src ASC, dst ASC LIMIT 501 OFFSET 0
 MATCH (a)-[e:<edge>]->(b)                      -- edge ∈ typed wiki edge 8종(§4.2)
+  WHERE (id(a) == <vid> OR id(a) == <vid> OR ...) AND (id(b) == <vid> OR id(b) == <vid> OR ...)
   RETURN id(a) AS src, id(b) AS dst
   ORDER BY src ASC, dst ASC LIMIT 501 OFFSET 0
 MATCH (n:note) WHERE id(n) == <vid> RETURN n.note.body AS body LIMIT 1
@@ -123,9 +124,15 @@ vertex INT64 VID를 반환하고, `ORDER BY`는 projection alias(`vid`, `src`, `
 합치지 않고 첫 branch 결과만 반환하는 것을 실측으로 확인했으므로 이에 의존하지 않는다.**
 typed wiki edge 쿼리는 양끝 vertex 태그를 지정하지 않는 `(a)`/`(b)` 패턴을 쓴다(같은 edge
 종류라도 양끝 태그 조합이 여러 가지일 수 있으므로) — 엔진은 태그 미지정 vertex 패턴
-매치를 지원해야 한다. 노드는 200개, 엣지는 500개까지만 표시하고 각각 한 행을 더 요청해
-truncation을 감지한다. 초기 node projection에는 `body`/`summary`를 넣지 않고 선택된
-node만 마지막 쿼리로 lazy-load한다.
+매치를 지원해야 한다. edge 쿼리는 항상 이번 node projection에서 확정된 표시 대상 vid
+목록을 `id(a) == <vid> OR ...`로 OR 체이닝해 서버 측에서 먼저 걸러야 한다 — **엔진이
+`WHERE <expr> IN [...]`를 지원하지 않는 것을 실측으로 확인했다(리스트 원소가 하나여도
+무조건 0행)**, 반드시 `==`의 OR 체이닝을 쓴다. 이 필터가 없으면 종류별 LIMIT 501
+컷오프가 어차피 표시되지 않을 endpoint의 edge에 낭비되어, 실제 표시 가능한 edge가
+501번째 이후로 밀려나도 잘려나간 사실을 감지하지 못한다(edgesTruncated 오탐 없이 edge
+누락). 노드는 200개, 엣지는 500개까지만 표시하고 각각 한 행을 더 요청해 truncation을
+감지한다. 초기 node projection에는 `body`/`summary`를 넣지 않고 선택된 node만 마지막
+쿼리로 lazy-load한다.
 
 typed wiki 문장들은 MCP의 schema v2 bootstrap(`byoridb_mcp.py._migrate`)과 스모크의
 typed roundtrip이 발행한다. schema version은 예약 이름 `byori:schema-version`의

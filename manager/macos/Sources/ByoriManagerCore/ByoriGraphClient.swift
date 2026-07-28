@@ -44,6 +44,13 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
     ]
     private static let edgeKinds = [legacyEdgeKind] + typedWikiEdgeKinds
 
+    /// 같은 vid에 여러 태그가 붙을 수 있다(note → typed 승격 후 note 태그가 남는 경우).
+    /// queryAllTags는 태그별로 동시에 실행되므로 완료 순서가 매번 달라질 수 있어,
+    /// 어떤 태그가 "이긴다"를 고정 우선순위로 강제한다 — typed가 note보다 우선.
+    private static let nodeTagPriority: [String: Int] = Dictionary(
+        uniqueKeysWithValues: (typedWikiTags + [noteTag]).enumerated().map { ($1, $0) }
+    )
+
     private struct Credentials: Sendable {
         let password: String
         let space: String
@@ -228,15 +235,15 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
             baseURL: baseURL,
             sessionID: sessionID
         ) { tag in Self.nodeListStatement(tag: tag, limit: limit) }
-        let edgeRows = try await queryAllTags(
-            Self.edgeKinds,
-            baseURL: baseURL,
-            sessionID: sessionID
-        ) { edgeKind in Self.edgeListStatement(edgeKind: edgeKind, limit: edgeLimit) }
 
+        // 태그별 동시 조회는 완료 순서가 매번 달라질 수 있으므로, 같은 vid가 여러 태그를
+        // 가진 경우(승격 후 note 태그가 남는 경우) 어떤 태그가 이기는지 고정한다.
+        let orderedNodeRows = nodeRows.sorted {
+            (Self.nodeTagPriority[$0.key] ?? Int.max) < (Self.nodeTagPriority[$1.key] ?? Int.max)
+        }
         var seenNodes = Set<Int64>()
         var allNodes: [KnowledgeNode] = []
-        for (tag, row) in nodeRows {
+        for (tag, row) in orderedNodeRows {
             guard let id = row["vid"]?.int64Value,
                   let name = row["name"]?.stringValue,
                   seenNodes.insert(id).inserted else { continue }
@@ -253,20 +260,39 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
         allNodes.sort { $0.id < $1.id }
         let nodes = Array(allNodes.prefix(limit))
 
-        let knownIDs = Set(nodes.map(\.id))
+        guard !nodes.isEmpty else {
+            return KnowledgeGraphSnapshot(nodes: nodes, edges: [], nodesTruncated: nodesTruncated, edgesTruncated: false)
+        }
+
+        // 표시될 node 집합으로 서버 측에서 미리 걸러야, 엣지 종류별 LIMIT 컷오프가
+        // "보이지 않는 endpoint로 향하는 엣지"에 낭비되어 표시 가능한 엣지를 놓치지 않는다.
+        // 엔진이 `IN` 연산자를 지원하지 않으므로(실측: 리스트가 1개여도 무조건 0행)
+        // `==`을 OR로 체이닝한다 — engine-contract.md 참고.
+        let knownIDs = nodes.map(\.id).sorted()
+        let visibleIDFilter = Self.idOrClause(field: "id(a)", ids: knownIDs)
+            + " AND " + Self.idOrClause(field: "id(b)", ids: knownIDs)
+        let edgeRows = try await queryAllTags(
+            Self.edgeKinds,
+            baseURL: baseURL,
+            sessionID: sessionID
+        ) { edgeKind in Self.edgeListStatement(edgeKind: edgeKind, visibleIDFilter: visibleIDFilter, limit: edgeLimit) }
+
         var seenEdges = Set<KnowledgeEdge>()
         var allEdges: [KnowledgeEdge] = []
         for (edgeKind, row) in edgeRows {
             guard let source = row["src"]?.int64Value,
-                  let target = row["dst"]?.int64Value,
-                  knownIDs.contains(source), knownIDs.contains(target) else { continue }
+                  let target = row["dst"]?.int64Value else { continue }
             let kind = edgeKind == Self.legacyEdgeKind ? (row["kind"]?.stringValue ?? "relates_to") : edgeKind
             let edge = KnowledgeEdge(source: source, target: target, kind: kind)
             guard seenEdges.insert(edge).inserted else { continue }
             allEdges.append(edge)
         }
         let edgesTruncated = allEdges.count > edgeLimit
-        allEdges.sort { $0.source != $1.source ? $0.source < $1.source : $0.target < $1.target }
+        allEdges.sort { lhs, rhs in
+            if lhs.source != rhs.source { return lhs.source < rhs.source }
+            if lhs.target != rhs.target { return lhs.target < rhs.target }
+            return lhs.kind < rhs.kind
+        }
         let edges = Array(allEdges.prefix(edgeLimit))
 
         return KnowledgeGraphSnapshot(
@@ -319,19 +345,27 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
         """
     }
 
-    private static func edgeListStatement(edgeKind: String, limit: Int) -> String {
+    private static func edgeListStatement(edgeKind: String, visibleIDFilter: String, limit: Int) -> String {
         if edgeKind == legacyEdgeKind {
             return """
             MATCH (a:note)-[e:rel]->(b:note)
+            WHERE \(visibleIDFilter)
             RETURN id(a) AS src, id(b) AS dst, e.rel.kind AS kind
             ORDER BY src ASC, dst ASC LIMIT \(limit + 1) OFFSET 0
             """
         }
         return """
         MATCH (a)-[e:\(edgeKind)]->(b)
+        WHERE \(visibleIDFilter)
         RETURN id(a) AS src, id(b) AS dst
         ORDER BY src ASC, dst ASC LIMIT \(limit + 1) OFFSET 0
         """
+    }
+
+    /// 엔진이 `WHERE <expr> IN [...]`을 지원하지 않으므로(실측: 항상 0행 반환),
+    /// `==`을 OR로 체이닝해 "field가 ids 중 하나와 같다"를 표현한다.
+    private static func idOrClause(field: String, ids: [Int64]) -> String {
+        "(" + ids.map { "\(field) == \($0)" }.joined(separator: " OR ") + ")"
     }
 
     public func loadBody(paths: ManagerPaths, nodeID: Int64, tag: String) async throws -> String {
