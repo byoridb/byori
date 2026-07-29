@@ -15,12 +15,15 @@ jobs:
       - name: Lint installer
         run: bash -n install.sh
 
+      - name: Test MCP contract
+        run: python3 -m unittest tests/test_mcp_contract.py
+
       # Downloads the pinned ENGINE_TAG release from byoridb/byoridb and installs
-      # this checkout's assets — exactly what a user install does, minus Claude wiring.
+      # this checkout's assets — exactly what a user install does, minus agent wiring.
       - name: Install (pinned engine + local assets)
         run: |
           export BYORIDB_HOME="$RUNNER_TEMP/byoridb-home"
-          ./install.sh --assets . --no-claude --no-service
+          ./install.sh --assets . --no-claude --no-codex --no-service
           echo "BYORIDB_HOME=$BYORIDB_HOME" >> "$GITHUB_ENV"
 
       - name: MCP roundtrip smoke

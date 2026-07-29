@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Engine-contract smoke: drive an installed byori MCP over stdio JSON-RPC.
 
-Covers the surface promised in docs/engine-contract.md:
+Covers the MCP/engine surface used by Byori:
   remember (INSERT VERTEX/EDGE, non-negative VID) -> recall (MATCH/CONTAINS)
   -> graph projections (id/ORDER BY/LIMIT/OFFSET) -> typed wiki bootstrap
-  (schema v2 note + typed INSERT/MATCH roundtrip) -> Manager typed graph
+  (schema v2 + structured upsert/read/link roundtrip) -> Manager typed graph
   projection (tag-only node MATCH, untyped-endpoint edge MATCH with a
-  visible-ID WHERE filter, module summary lazy-load) -> query
-  (FETCH ... AS OF temporal read).
+  visible-ID WHERE filter, module summary lazy-load) -> read-only query
+  (FETCH ... AS OF temporal read + mutation denial) -> safe profile filtering.
 
 Prereq: `install.sh` has run and the server is healthy (CI does this first).
 Usage:  BYORIDB_HOME=<home> python3 tests/smoke_mcp.py
+        BYORIDB_MCP=<checkout>/mcp/byoridb_mcp.py python3 tests/smoke_mcp.py
 """
 import hashlib
 import json
@@ -20,7 +21,8 @@ import sys
 import time
 
 HOME = os.environ.get("BYORIDB_HOME", os.path.expanduser("~/.byoridb"))
-MCP = os.path.join(HOME, "bin", "run-mcp.sh")
+MCP = os.environ.get("BYORIDB_MCP", os.path.join(HOME, "bin", "run-mcp.sh"))
+MCP_COMMAND = [sys.executable, MCP] if MCP.endswith(".py") else [MCP]
 MASK = 0x7FFF_FFFF_FFFF_FFFF
 
 # Fixed names with known hash signs under the OLD signed scheme:
@@ -34,13 +36,28 @@ def expected_vid(name):
     return int.from_bytes(hashlib.sha1(name.encode()).digest()[:8], "big") & MASK
 
 
-proc = subprocess.Popen(
-    [MCP], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=sys.stderr, text=True
-)
+def legacy_wiki_vid(name):
+    return int(hashlib.sha1(name.encode()).hexdigest()[:15], 16)
+
+
+def start_mcp(profile):
+    env = os.environ.copy()
+    env["BYORIDB_MCP_PROFILE"] = profile
+    return subprocess.Popen(
+        MCP_COMMAND,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=sys.stderr,
+        text=True,
+        env=env,
+    )
+
+
+proc = start_mcp("legacy")
 _id = 0
 
 
-def call(method, params=None):
+def exchange(method, params=None):
     global _id
     _id += 1
     proc.stdin.write(
@@ -53,7 +70,13 @@ def call(method, params=None):
             raise SystemExit("FAIL: MCP closed stdout")
         msg = json.loads(line)
         if msg.get("id") == _id:
-            return msg["result"]
+            return msg
+
+
+def call(method, params=None):
+    msg = exchange(method, params)
+    assert "error" not in msg, f"FAIL: {method} -> {msg['error']}"
+    return msg["result"]
 
 
 def tool(name, args):
@@ -63,8 +86,8 @@ def tool(name, args):
     return text
 
 
-def query_rows(statement, expected_columns):
-    payload = json.loads(tool("memory_query", {"ngql": statement}))
+def query_rows(statement, expected_columns, tool_name="memory_query"):
+    payload = json.loads(tool(tool_name, {"ngql": statement}))
     required = {"results", "latency_ms", "row_count", "column_names"}
     assert required <= payload.keys(), f"FAIL: query response shape={payload}"
     rows = payload["results"]
@@ -78,13 +101,19 @@ def query_rows(statement, expected_columns):
 
 
 def main():
+    global proc, _id
     call("initialize", {
         "protocolVersion": "2024-11-05", "capabilities": {},
         "clientInfo": {"name": "smoke", "version": "0"},
     })
     tools = {t["name"] for t in call("tools/list")["tools"]}
-    assert tools == {"memory_remember", "memory_recall", "memory_query"}, f"FAIL: tools={tools}"
-    print("ok tools/list")
+    legacy_tools = {"memory_remember", "memory_recall", "memory_query"}
+    structured_tools = {
+        "memory_query_read", "memory_wiki_upsert", "memory_link",
+        "memory_read", "memory_delete", "memory_export",
+    }
+    assert legacy_tools | structured_tools <= tools, f"FAIL: legacy tools={tools}"
+    print("ok tools/list (legacy compatibility + structured tools)")
 
     marker = f"smoke-{int(time.time())}"
 
@@ -153,19 +182,161 @@ def main():
     assert ver_rows and ver_rows[0]["body"] == "2", f"FAIL: schema version: {ver_rows}"
     print("ok schema version note (v2)")
 
-    # typed roundtrip on the bootstrapped schema, in SKILL.md's shape:
-    # decision --affects--> module, read back as a MATCH traversal.
+    # Byori v0.2.0 taught clients to raw-insert typed nodes at a 60-bit VID.
+    # The structured API must discover that node by canonical name and keep its
+    # original VID so upgrades do not fork the entity or strand its edges/history.
+    legacy_name = "decision:smoke-v020-legacy-vid"
+    legacy_vid = legacy_wiki_vid(legacy_name)
+    current_vid = expected_vid(legacy_name)
+    assert legacy_vid != current_vid, "FAIL: legacy compatibility fixture VIDs are equal"
+    tool("memory_query", {
+        "ngql": (
+            "INSERT VERTEX decision(name, body, state, ts) VALUES "
+            f"{legacy_vid}:('{legacy_name}', 'v0.2 raw node', 'active', {int(time.time() * 1000)})"
+        )
+    })
+    legacy_read = json.loads(tool("memory_read", {
+        "type": "decision", "name": legacy_name,
+    }))
+    assert [item["vid"] for item in legacy_read["items"]] == [str(legacy_vid)], (
+        f"FAIL: legacy typed read: {legacy_read}"
+    )
+    legacy_updated = json.loads(tool("memory_wiki_upsert", {
+        "type": "decision", "name": legacy_name,
+        "body": "updated through structured API", "state": "active",
+    }))
+    assert legacy_updated["vid"] == str(legacy_vid), f"FAIL: legacy upsert: {legacy_updated}"
+    legacy_rows = query_rows(
+        f"MATCH (n:decision) WHERE n.decision.name == '{legacy_name}' "
+        "RETURN id(n) AS vid, n.decision.body AS body ORDER BY vid ASC LIMIT 2",
+        ["vid", "body"],
+    )
+    assert legacy_rows == [{"vid": legacy_vid, "body": "updated through structured API"}], (
+        f"FAIL: legacy typed node forked or stale: {legacy_rows}"
+    )
+    print("ok v0.2 typed VID compatibility (canonical-name reuse)")
+
+    # Structured typed roundtrip: server-side VID derivation, normalized reads,
+    # and a validated decision --affects--> module link.
     d_vid, m_vid = expected_vid("decision:smoke-typed"), expected_vid("module:smoke-typed")
-    now = int(time.time() * 1000)
-    tool("memory_query", {"ngql": (
-        f"INSERT VERTEX decision(name, body, state, ts) VALUES "
-        f"{d_vid}:('decision:smoke-typed', 'smoke rationale', 'active', {now})"
-    )})
-    tool("memory_query", {"ngql": (
-        f"INSERT VERTEX module(name, summary, ts) VALUES "
-        f"{m_vid}:('module:smoke-typed', 'smoke module', {now})"
-    )})
-    tool("memory_query", {"ngql": f"INSERT EDGE affects(ts) VALUES {d_vid}->{m_vid}:({now})"})
+    decision = json.loads(tool("memory_wiki_upsert", {
+        "type": "decision",
+        "name": "decision:smoke-typed",
+        "body": "smoke rationale",
+        "state": "active",
+    }))
+    module = json.loads(tool("memory_wiki_upsert", {
+        "type": "module",
+        "name": "module:smoke-typed",
+        "body": "smoke module",
+    }))
+    assert decision["vid"] == str(d_vid) and module["vid"] == str(m_vid), (
+        f"FAIL: structured VIDs decision={decision}, module={module}"
+    )
+    assert isinstance(decision["vid"], str) and isinstance(module["vid"], str), (
+        "FAIL: structured VIDs must be decimal strings"
+    )
+    linked = json.loads(tool("memory_link", {
+        "relation": "affects",
+        "source": {"type": "decision", "name": "decision:smoke-typed"},
+        "target": {"type": "module", "name": "module:smoke-typed"},
+    }))
+    assert linked["ok"] and linked["source"]["vid"] == str(d_vid), f"FAIL: {linked}"
+
+    unlinked = json.loads(tool("memory_link", {
+        "action": "delete",
+        "relation": "affects",
+        "source": {"type": "decision", "name": "decision:smoke-typed"},
+        "target": {"type": "module", "name": "module:smoke-typed"},
+    }))
+    assert unlinked["ok"] and unlinked["action"] == "delete", f"FAIL: {unlinked}"
+    removed_rows = query_rows(
+        "MATCH (a)-[e:affects]->(b) "
+        f"WHERE id(a) == {d_vid} AND id(b) == {m_vid} "
+        "RETURN id(a) AS src, id(b) AS dst LIMIT 1",
+        ["src", "dst"],
+    )
+    assert not removed_rows, f"FAIL: structured edge delete: {removed_rows}"
+    tool("memory_link", {
+        "relation": "affects",
+        "source": {"type": "decision", "name": "decision:smoke-typed"},
+        "target": {"type": "module", "name": "module:smoke-typed"},
+    })
+
+    structured = json.loads(tool("memory_read", {
+        "type": "decision",
+        "name": "decision:smoke-typed",
+        "include_links": True,
+    }))
+    assert any(
+        row["name"] == "decision:smoke-typed" and row["vid"] == str(d_vid)
+        for row in structured["items"]
+    ), f"FAIL: structured read: {structured}"
+    assert {
+        "relation": "affects", "source_vid": str(d_vid), "target_vid": str(m_vid)
+    } in structured["links"], f"FAIL: structured links: {structured}"
+    print("ok structured typed upsert/read/link")
+
+    exported = json.loads(tool("memory_export", {"limit": 100, "include_links": True}))
+    exported_names = {row["name"] for row in exported["items"]}
+    assert {"decision:smoke-typed", "module:smoke-typed"} <= exported_names, (
+        f"FAIL: structured export items: {exported}"
+    )
+    assert all(isinstance(row["vid"], str) for row in exported["items"]), (
+        f"FAIL: export VIDs are not decimal strings: {exported}"
+    )
+    assert {
+        "relation": "affects", "source_vid": str(d_vid), "target_vid": str(m_vid)
+    } in exported["links"], f"FAIL: structured export links: {exported}"
+    print("ok structured export")
+
+    disposable = json.loads(tool("memory_wiki_upsert", {
+        "type": "task", "name": "task:smoke-delete", "body": "delete smoke",
+    }))
+    deleted = json.loads(tool("memory_delete", {
+        "type": "task", "name": "task:smoke-delete", "cascade": False,
+    }))
+    assert deleted["deleted"] and deleted["vid"] == disposable["vid"], (
+        f"FAIL: structured delete: {deleted}"
+    )
+    missing = json.loads(tool("memory_read", {
+        "type": "task", "name": "task:smoke-delete",
+    }))
+    assert not missing["items"], f"FAIL: deleted task still readable: {missing}"
+
+    cascade_task = json.loads(tool("memory_wiki_upsert", {
+        "type": "task", "name": "task:smoke-cascade", "body": "cascade smoke",
+    }))
+    tool("memory_link", {
+        "relation": "about",
+        "source": {"type": "task", "name": "task:smoke-cascade"},
+        "target": {"type": "module", "name": "module:smoke-typed"},
+    })
+    blocked = call("tools/call", {
+        "name": "memory_delete",
+        "arguments": {
+            "type": "task", "name": "task:smoke-cascade", "cascade": False,
+        },
+    })
+    assert blocked.get("isError") and "cascade=true" in blocked["content"][0]["text"], (
+        f"FAIL: linked delete was not blocked: {blocked}"
+    )
+    cascaded = json.loads(tool("memory_delete", {
+        "type": "task", "name": "task:smoke-cascade", "cascade": True,
+    }))
+    assert cascaded["deleted"] and cascaded["vid"] == cascade_task["vid"], (
+        f"FAIL: cascade delete: {cascaded}"
+    )
+    cascade_rows = query_rows(
+        "MATCH (a)-[e:about]->(b) "
+        f"WHERE id(a) == {int(cascade_task['vid'])} "
+        "RETURN id(a) AS src, id(b) AS dst LIMIT 1",
+        ["src", "dst"],
+    )
+    assert not cascade_rows, f"FAIL: cascade left incident edge: {cascade_rows}"
+    print("ok structured edge delete + guarded/cascade vertex delete")
+
+    # Legacy raw query remains available in the legacy profile for compatibility.
     typed_rows = query_rows(
         "MATCH (d:decision)-[:affects]->(m:module) "
         "RETURN d.decision.name AS decision, m.module.name AS module, "
@@ -178,7 +349,7 @@ def main():
         "state": "active",
     }
     assert expected_typed in typed_rows, f"FAIL: typed traversal: {typed_rows}"
-    print("ok typed wiki roundtrip (decision -[affects]-> module)")
+    print("ok legacy query compatibility (decision -[affects]-> module)")
 
     # Manager typed node projection: tag-only MATCH (no note-style `kind`
     # column), id(n) stays an exact Int64 for typed tags too.
@@ -229,13 +400,45 @@ def main():
     assert text.count(marker) >= 2, f"FAIL: recall missed notes: {text}"
     print("ok recall")
 
-    # query: temporal read of the current version via AS OF just-after-now.
+    # Safe raw query: temporal read is allowed, while mutation is denied.
     as_of = int(time.time() * 1000) + 1000
-    text = tool("memory_query", {"ngql": f"FETCH PROP ON note {POS_VID_LEGACY} AS OF {as_of}"})
+    text = tool(
+        "memory_query_read",
+        {"ngql": f"FETCH PROP ON note {POS_VID_LEGACY} AS OF {as_of}"},
+    )
     assert marker in text, f"FAIL: AS OF read missed note: {text}"
-    print("ok query FETCH AS OF")
+    denied = call("tools/call", {
+        "name": "memory_query_read",
+        "arguments": {
+            "ngql": "INSERT VERTEX note(kind, name, body, ts) VALUES 99:('x','x','x',1)"
+        },
+    })
+    assert denied.get("isError") and "read-only" in denied["content"][0]["text"], (
+        f"FAIL: read-only mutation was not denied: {denied}"
+    )
+    print("ok read-only query FETCH AS OF + mutation denial")
 
     proc.kill()
+    proc.wait(timeout=5)
+
+    # The safe profile keeps compatibility note tools and structured tools but
+    # neither advertises nor dispatches the unrestricted memory_query escape hatch.
+    proc = start_mcp("safe")
+    _id = 0
+    call("initialize", {
+        "protocolVersion": "2024-11-05", "capabilities": {},
+        "clientInfo": {"name": "smoke-safe", "version": "0"},
+    })
+    safe_tools = {t["name"] for t in call("tools/list")["tools"]}
+    assert "memory_query" not in safe_tools, f"FAIL: safe tools={safe_tools}"
+    assert {"memory_remember", "memory_recall"} | structured_tools <= safe_tools, (
+        f"FAIL: safe tools={safe_tools}"
+    )
+    direct = exchange("tools/call", {"name": "memory_query", "arguments": {"ngql": "SHOW TAGS"}})
+    assert direct.get("error", {}).get("code") == -32602, f"FAIL: safe dispatch={direct}"
+    proc.kill()
+    proc.wait(timeout=5)
+    print("ok safe profile filtering")
     print("SMOKE PASS")
 
 
