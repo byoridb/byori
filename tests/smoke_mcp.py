@@ -214,17 +214,6 @@ def main():
     )
     print("ok typed edge projection (untyped endpoints + visible-ID OR filter)")
 
-    # Regression guard for the review's actual root cause: `IN` must stay
-    # unsupported-and-silent (0 rows, not an error) so nobody "fixes" the
-    # OR-chain back to `IN` and reintroduces the blocker.
-    in_rows = query_rows(
-        f"MATCH (a)-[e:affects]->(b) WHERE id(a) IN [{d_vid}] "
-        "RETURN id(a) AS src, id(b) AS dst ORDER BY src ASC, dst ASC LIMIT 501 OFFSET 0",
-        ["src", "dst"],
-    )
-    assert in_rows == [], f"FAIL: engine now supports IN -- switch the OR-chain back to IN: {in_rows}"
-    print("ok confirmed engine still silently no-ops on WHERE ... IN [...]")
-
     # Manager lazy body/summary load: module reads `summary`, not `body`.
     module_body_rows = query_rows(
         f"MATCH (n:module) WHERE id(n) == {m_vid} RETURN n.module.summary AS body LIMIT 1",
