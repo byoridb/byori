@@ -1,73 +1,104 @@
-# Byori — 설치와 관리
+**English** | [한국어](ko/install.md)
 
-Claude Code와 MCP 클라이언트의 **영속 기억**으로 쓸 로컬 ByoriDB를 설치한다.
-서버·MCP 서버·skill을 한 번에 세팅한다. `claude`/`codex` CLI가 있으면 각각 자동으로
-MCP를 등록하고 skill을 설치한다(`--no-claude`/`--no-codex`로 건너뜀).
+# Byori — Installation and Management
 
-## 한 줄 설치
+Install a local ByoriDB instance as **persistent memory** for Claude Code and MCP clients.
+The installer sets up the database server, MCP server, and skill together. If the
+`claude` or `codex` CLI is available, it also registers the MCP server and installs
+the skill automatically (use `--no-claude` or `--no-codex` to skip either integration).
+
+## One-line install
 
 ```sh
 curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh | bash
 ```
 
-> macOS(Apple Silicon/Intel) · Linux x86_64 지원. Windows 미지원.
-> 요구: `curl`, `tar`, `python3`(MCP 서버 실행용). Claude Code CLI가 있으면 MCP 서버를 자동 등록한다.
+> Supports macOS (Apple Silicon and Intel) and Linux x86_64. Windows is not supported.
+> Requirements: `curl`, `tar`, and `python3` (to run the MCP server). If the Claude
+> Code CLI is installed, the installer registers the MCP server automatically.
 
-## 무엇을 설치하나
+## What gets installed
 
-| 구성 | 위치 | 역할 |
+| Component | Location | Purpose |
 |---|---|---|
-| `byoridb-server` (+`byoridb-cli`) | `~/.byoridb/bin/` | 로컬 ByoriDB (gRPC 9669 / HTTP 19669, `127.0.0.1` 바인딩) |
-| `byoridb_mcp.py` | `~/.byoridb/` | `memory_remember`/`memory_recall`/`memory_query` 도구를 stdio로 노출. 시작 시 `claude_memory` schema를 현재 버전(v2: `note`/`rel` + typed wiki)으로 자동 부트스트랩·migration |
-| 상시 실행 서비스 | launchd `com.byoridb.local`(macOS) / systemd --user(Linux) | 부팅 시 자동 기동 + KeepAlive |
-| `env` | `~/.byoridb/env` (chmod 600) | 랜덤 생성된 root 비밀번호 |
-| 스킬 | `~/.claude/skills/byoridb-memory/SKILL.md` | 언제/무엇을 기억·회수할지의 정책 |
-| 데이터 | `~/.byoridb/data/` | redb 파일 (로컬 전용) |
+| `byoridb-server` (+`byoridb-cli`) | `~/.byoridb/bin/` | Local ByoriDB (gRPC 9669 / HTTP 19669, bound to `127.0.0.1`) |
+| `byoridb_mcp.py` | `~/.byoridb/` | Exposes compatibility note tools plus validated typed-wiki CRUD, export, and read-only query tools over stdio. The default `legacy` profile also exposes unrestricted `memory_query`. On startup, it bootstraps and migrates the configured space to schema v2 (`note`/`rel` + typed wiki) |
+| Persistent service | launchd `com.byoridb.local` (macOS) / systemd --user (Linux) | launchd uses `RunAtLoad` + `KeepAlive`; the systemd user unit is attached to `default.target` and uses `Restart=always` |
+| `env` | `~/.byoridb/env` (chmod 600) | Randomly generated root password |
+| Skill | `~/.claude/skills/byoridb-memory/SKILL.md` | Policy for what to remember, when to remember it, and when to recall it |
+| Data | `~/.byoridb/data/` | redb files (local only) |
 
-## 옵션
+## Options
 
 ```sh
 install.sh [--with-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z] [--uninstall]
            [--binary PATH] [--assets DIR] [--no-service] [--no-claude] [--no-codex]
 ```
 
-- `--with-hooks` — 체크포인트 reminder 훅을 `~/.claude/settings.json`에 추가(기본은 안 함).
-  기존 `SessionStart`/`PreToolUse` 배열에 append하며 이미 같은 hook이 있으면 건너뛴다
-  (재실행 idempotent). 변경 전 `settings.json.bak.<timestamp>` 백업을 자동 생성한다. `jq` 필요.
-- `--tag` — byori 자산(MCP/스킬/템플릿) 버전 고정(기본: 최신 byori 릴리스).
-- `--engine-tag` — ByoriDB 엔진 릴리스 override(기본: 이 byori 버전과 함께 검증된 고정 태그).
-- `--uninstall` — 서비스 중지·해제, Claude/Codex MCP 등록 해제, skill 제거.
-  **데이터는 확인 후 보존/삭제 선택.**
-- `--binary PATH` — 다운로드 대신 로컬 `byoridb-server` 바이너리 사용.
-- `--assets DIR` — 다운로드 대신 로컬 repo 체크아웃(`DIR`)에서 mcp.py/템플릿/스킬을 가져옴.
-- `--no-service` — launchd/systemd 등록 없이 현재 세션의 background process로 실행.
-- `--no-claude` — Claude MCP 등록, skill, hook 설치를 건너뜀.
-- `--no-codex` — Codex MCP 등록과 skill 설치를 건너뜀.
+- `--with-hooks` — adds checkpoint reminder hooks to `~/.claude/settings.json`
+  (disabled by default). It appends to the existing `SessionStart`/`PreToolUse`
+  arrays and skips hooks that are already present, so reruns are idempotent. Before
+  changing the file, it creates a `settings.json.bak.<timestamp>` backup. Requires `jq`.
+- `--tag` — pins the version of Byori assets (MCP, skill, and templates). The default
+  is the latest Byori release.
+- `--engine-tag` — overrides the ByoriDB engine release. The default is the pinned
+  engine version verified with this Byori release.
+- `--uninstall` — stops and unregisters the service, unregisters the Claude/Codex
+  MCP integration, and removes the skill. **You are prompted to keep or delete the data.**
+- `--binary PATH` — uses a local `byoridb-server` binary instead of downloading one.
+- `--assets DIR` — reads mcp.py, templates, and the skill from a local repository
+  checkout (`DIR`) instead of downloading them.
+- `--no-service` — runs a background process for the current session without
+  registering a launchd/systemd service.
+- `--no-claude` — skips Claude MCP registration and skill and hook installation.
+- `--no-codex` — skips Codex MCP registration and skill installation.
 
-환경변수: `BYORIDB_HOME`(기본 `~/.byoridb`), `BYORIDB_HTTP_PORT`(기본 19669), `BYORIDB_GRAPH_PORT`(기본 9669).
-격리 테스트: `BYORIDB_HOME=/tmp/bt BYORIDB_HTTP_PORT=29669 BYORIDB_GRAPH_PORT=29670 ./install.sh --binary … --assets …`
+Installer environment variables: `BYORIDB_HOME` (default: `~/.byoridb`),
+`BYORIDB_HTTP_PORT` (default: 19669), `BYORIDB_GRAPH_PORT` (default: 9669),
+`BYORIDB_LABEL` (default: `com.byoridb.local`), and `BYORI_ENGINE_TAG` (default: the
+pinned compatible engine tag).
+For an isolated test:
+`BYORIDB_HOME=/tmp/bt BYORIDB_HTTP_PORT=29669 BYORIDB_GRAPH_PORT=29670 ./install.sh --binary … --assets …`
 
-## 관리
+## MCP profiles and memory spaces
+
+The automatically registered Claude and Codex integrations do not set a profile, so they use
+`BYORIDB_MCP_PROFILE=legacy`. This exposes all nine tools, including the unrestricted raw-nGQL
+`memory_query`, for backward compatibility. `BYORIDB_MCP_PROFILE=safe` removes that one tool from
+both discovery and dispatch; it is a reduced raw-query surface, **not a read-only server**.
+`memory_remember`, `memory_wiki_upsert`, `memory_link`, and `memory_delete` can still write.
+
+`BYORIDB_MEMORY_SPACE` selects the logical memory namespace (default: `claude_memory`) and must
+match `^[A-Za-z_][A-Za-z0-9_]{0,63}$`. It prevents accidental project mixing, but all spaces use
+the same engine credential, so it is not an authorization or tenant boundary. Use separate
+instances and credentials across trust domains.
+
+Pass both variables in each MCP client's process configuration. Do not persist them by editing
+`~/.byoridb/env`: on reinstall or upgrade the installer rewrites that file and preserves only
+`BYORIDB_ROOT_PASSWORD`.
+
+## Management
 
 ```sh
-curl -s localhost:19669/health          # 상태
-claude mcp list                         # byoridb ✔ Connected 확인
-tail -f ~/.byoridb/logs/server.err      # 로그
-# macOS 중지/시작
+curl -s localhost:19669/health          # Status
+claude mcp list                         # Verify that byoridb is ✔ Connected
+tail -f ~/.byoridb/logs/server.err      # Logs
+# Stop/start on macOS
 launchctl unload -w ~/Library/LaunchAgents/com.byoridb.local.plist
 launchctl load -w ~/Library/LaunchAgents/com.byoridb.local.plist
-# Linux (기본 BYORIDB_LABEL 사용 시)
+# Linux (when using the default BYORIDB_LABEL)
 systemctl --user stop com.byoridb.local.service
 systemctl --user start com.byoridb.local.service
 ```
 
-## Codex 연결
+## Connecting Codex
 
-설치기가 `codex` CLI를 감지하면 stdio MCP 등록과 skill 설치(`~/.agents/skills/`)를
-자동으로 수행하고, `--uninstall` 시 함께 제거한다(`--no-codex`로 건너뜀).
-Codex 재시작 후 `codex mcp list`로 확인한다. Claude용 hook은 Codex에 설치되지 않는다.
+When the installer detects the `codex` CLI, it automatically registers the stdio MCP
+server and installs the skill under `~/.agents/skills/`. `--uninstall` removes both,
+and `--no-codex` skips them. Restart Codex, then verify the connection with
+`codex mcp list`. Claude hooks are not installed for Codex.
 
-`--no-codex`로 건너뛰었거나 나중에 연결하려면 수동으로 등록한다.
+If you used `--no-codex` or want to connect Codex later, register it manually:
 
 ```sh
 codex mcp add byoridb -- "$HOME/.byoridb/bin/run-mcp.sh"
@@ -77,18 +108,42 @@ cp "$HOME/.claude/skills/byoridb-memory/SKILL.md" \
 codex mcp list
 ```
 
-수동 제거는 다음과 같다.
+To remove the manual integration:
 
 ```sh
 codex mcp remove byoridb
 rm -rf "$HOME/.agents/skills/byoridb-memory"
 ```
 
-## 한계
+## Connecting NaraeClaw or another manual MCP host
 
-- MCP 서버는 리마인더가 아니라 실제 데이터 도구다. **기억할지 말지의 정책은 스킬**(`byoridb-memory`)에 있다.
-- schema 부트스트랩(v2: `note`/`rel` + typed wiki)은 additive migration이다. 적용 버전은
-  `byori:schema-version` note로 확인한다.
-- hook은 capture를 직접 실행하지 않고 에이전트에게 체크포인트를 상기시킨다.
-- current/history dual-write는 비원자적이며 같은 millisecond 재기록은 history key 충돌 위험(bitemporal v1 제약).
-- 로컬 단일 노드 전용. 분산/프로덕션 배포와 무관.
+The installer and Manager currently configure only Claude Code and Codex. They do not know a
+NaraeClaw-specific configuration format or skill directory. In a compatible host's MCP process
+configuration, use the installed runner as follows, then install the reference policy at
+`adapters/naraeclaw/skills/byoridb-memory/SKILL.md` through that host's documented mechanism:
+
+```sh
+env BYORIDB_MCP_PROFILE=safe \
+  BYORIDB_MEMORY_SPACE=my_project \
+  "$HOME/.byoridb/bin/run-mcp.sh"
+```
+
+No NaraeClaw hook is bundled. A process-specific space is also invisible to the current Manager,
+which displays only the space from its own environment. When testing the source tree before a
+release contains these tools, first install it with `./install.sh --assets .`.
+
+## Limitations
+
+- The MCP server provides actual data tools, not reminders. The `byoridb-memory` skill
+  defines **whether and what to remember**.
+- `safe` blocks only unrestricted raw nGQL. Treat structured delete/link operations as writes and
+  require the same user-intent checks you would use in `legacy`.
+- Schema bootstrap (v2: `note`/`rel` + typed wiki) is an additive migration. Check the
+  applied version in the `byori:schema-version` note.
+- `memory_export` is a bounded inspection API, not a transactional backup snapshot; deep pages
+  can shift even without concurrent writes and should not be used as a complete restore source.
+- Hooks do not capture data directly; they remind the agent to create a checkpoint.
+- The current/history dual write is not atomic, and writing again within the same
+  millisecond can collide with a history key (a bitemporal v1 limitation).
+- Byori is intended for a local single node. It is unrelated to distributed or
+  production deployments.

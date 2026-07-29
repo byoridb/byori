@@ -1,49 +1,66 @@
-# Byori 로드맵
+**English** | [한국어](ko/ROADMAP.md)
 
-byoridb 저장소에서 분리(2026-07-13)된 시점의 계획. 원칙: **의존성은 Byori → ByoriDB
-한 방향**. Byori가 검증된 엔진 릴리스를 설치·관리하고, 엔진은 Byori를 모른다.
+# Byori Roadmap
 
-## P3 — 엔진 호환성 계약 (다음 단계)
+Plan as of the split from the byoridb repository on 2026-07-13. Principle: **dependencies
+flow in one direction, from Byori to ByoriDB**. Byori installs and manages a validated
+engine release; the engine knows nothing about Byori.
 
-- `docs/engine-contract.md` 작성: MCP가 실제 사용하는 엔진 표면만 명시
-  - `/health`, 세션 로그인, 400 `Invalid session` 재로그인 시맨틱, `USE` 재-pin
-  - 사용하는 nGQL 부분집합: `CREATE SPACE/TAG/EDGE`, `INSERT`, `FETCH`(+`AS OF`),
-    `GO`, `LOOKUP`, `DELETE`
-  - env 계약: `BYORIDB_ROOT_PASSWORD`, `BYORIDB__*`
-- CI: 고정 `ENGINE_TAG` 릴리스를 내려받아 `install.sh --assets . --no-claude` 후
-  MCP roundtrip(remember→recall→query) 스모크
-- 음수 VID 버그 처리: 엔진에 planner 수정(정식) + `byoridb_mcp.py`에 hash 63bit
-  마스킹(즉시 우회). 계약 문서에 VID 범위 명시
+## P3 — Engine Compatibility Contract 🟡 (Contract and CI Complete)
 
-## P4 — Byori Manager + 공용 관리 코어
+- ✅ Created [`docs/engine-contract.md`](engine-contract.md), documenting only the engine surface that the MCP actually uses:
+  - `/health`, session login, re-login semantics for `400 Invalid session`, and re-pinning with `USE`
+  - The gated nGQL subset: `CREATE SPACE/TAG/EDGE`, `USE`, `INSERT`, `MATCH` with
+    canonical-name `WHERE` lookups plus `RETURN`/`ORDER BY`/`LIMIT`/`OFFSET`,
+    `FETCH` (+ `AS OF`), `DELETE EDGE`, and `DELETE VERTEX`
+  - Environment contract: `BYORIDB_ROOT_PASSWORD`, `BYORIDB__*`
+- ✅ CI downloads the release pinned by `ENGINE_TAG`, runs
+  `install.sh --assets . --no-claude --no-codex`, and exercises the contract with unit tests and a
+  pinned-engine smoke test. Coverage includes structured upsert/read/link/export/delete,
+  safe-profile denial of raw queries, reuse of v0.2.0 typed VIDs, edge deletion, and
+  cascading vertex deletion
+- 🟡 The 63-bit hash mask and documented VID range are in place. The canonical upstream
+  planner fix for negative VIDs remains pending in the engine
 
-macOS에서는 `.dmg`로 배포하는 SwiftUI **Byori Manager**를 우선 제공한다. 공용 관리
-코어가 설치·진단·연결·업데이트를 담당하고, 이후 같은 코어를 얇은 `byori` CLI에서도
-재사용한다: `setup / doctor / connect claude / connect codex / project add . / status /
+## P4 — Byori Manager + Shared Management Core 🟡 (Manager Implemented, Signed DMG Pending)
+
+The SwiftUI **Byori Manager** is implemented and available to build from source. A signed
+and notarized `.dmg` release is still pending. Its shared management core handles
+installation, diagnostics, connections, and updates, and will later be reused by a thin
+`byori` CLI:
+`setup / doctor / connect claude / connect codex / project add . / status /
 backup / upgrade --plan / rollback / uninstall`.
 
-- Manager는 Claude/Codex를 감지하고 사용자의 명시적 동의 후 각 벤더의 **공식 설치기**를
-  실행할 수 있다. 로그인은 벤더 CLI에 맡기며 vendor token은 읽거나 저장하지 않는다
-- `connect`/`disconnect`는 idempotent, 변경 전 원본 설정 백업
-  (shell installer의 `--with-hooks`도 append+백업 방식으로 동작한다)
-- macOS 앱은 SwiftUI로 구현하고 ByoriDB는 독립 launchd user service로 유지
-- `byoridb-tray` prototype의 상태 모델은 참고하되 하드코딩 경로와 동기 process 실행은
-  재사용하지 않음
+- Manager can detect Claude/Codex and, with the user's explicit consent, run each vendor's
+  **official installer**. Authentication remains the responsibility of the vendor CLI;
+  Manager neither reads nor stores vendor tokens
+- `connect`/`disconnect` are idempotent and back up the original configuration before changes
+  (the shell installer's `--with-hooks` option also uses append-and-back-up behavior)
+- The macOS app is implemented in SwiftUI, while ByoriDB remains an independent launchd
+  user service
+- Its state model follows the `byoridb-tray` prototype without reusing its hard-coded paths
+  or synchronous process execution
 
-## P5 — memory schema versioning + migration ✅ (v0.2.0)
+## P5 — Memory Schema Versioning + Migration 🟡 (Additive v2 + Structured MCP Complete)
 
-- ✅ `claude_memory` space에 `byori:schema-version` note — MCP 시작 시 버전을 읽고
-  부족한 additive migration만 적용
-- ✅ typed wiki ontology(`module`/`decision`/`bug`/`incident`/`concept`/`entity`/`task`
-  + causal edge)를 schema v2로 fresh install 자동 bootstrap + 기존 설치 자동 migration
-  — `docs/memory-ontology.md` 참조
-- 남음: 비-additive(파괴적) migration의 명시적 단계 실행(`byori migrate`) — P4의
-  공용 관리 코어/CLI로 수렴
+- ✅ Store a `byori:schema-version` note in the `claude_memory` space; at MCP startup,
+  read the version and apply only missing additive migrations
+- ✅ Automatically bootstrap the typed wiki ontology
+  (`module`/`decision`/`bug`/`incident`/`concept`/`entity`/`task` + causal edges) as
+  schema v2 on fresh installs, and automatically migrate existing installations; see
+  [`docs/memory-ontology.md`](memory-ontology.md)
+- ✅ Provide the structured MCP surface for validated upsert, read, traversal, linking,
+  export, and deletion, plus the `safe` profile that omits the unrestricted raw-query tool.
+  Exact canonical-name lookup preserves and reuses existing v0.2.0 typed VIDs instead of
+  creating duplicate nodes
+- Remaining: explicit staged execution of non-additive (destructive) migrations
+  (`byori migrate`), converging on the shared management core/CLI from P4
 
-## P6 — project registry + 자동 ingestion
+## P6 — Project Registry + Automatic Ingestion
 
-- `byori project add .`: 프로젝트별 namespace(space 또는 name prefix) 등록
-- 지식이 확정되는 경계(작업 종료·commit·PR·인시던트 해소)에서만 구조화 capture
-- repository의 module, symbol, dependency, document, git change를 project-aware하게
-  indexing → canonical name과 merge candidate로 파편화 방지
-- 이후: traversal + temporal + semantic ranking recall, 읽기 좋은 wiki surface
+- `byori project add .`: register a per-project namespace (a space or name prefix)
+- Perform structured capture only at boundaries where knowledge becomes established
+  (task completion, commit, PR, or incident resolution)
+- Index repository modules, symbols, dependencies, documents, and Git changes with project
+  awareness; use canonical names and merge candidates to prevent fragmentation
+- Later: traversal-, temporal-, and semantic-ranking recall, with a readable wiki surface

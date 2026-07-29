@@ -16,15 +16,24 @@ description: >-
 # ByoriDB Memory
 
 A local, always-on ByoriDB instance is your long-term memory. You reach it through
-the **`byoridb` MCP server**, which exposes three tools over a dedicated
-`claude_memory` space. Both layers below are bootstrapped automatically: on startup
-the MCP server migrates the space to the current memory schema (v2 = notes +
-typed wiki), recording the version in the reserved note `byori:schema-version`:
+the **`byoridb` MCP server** over the configured memory space (default:
+`claude_memory`). Both layers below are bootstrapped automatically: on startup the
+MCP server migrates the space to the current memory schema (v2 = notes + typed wiki),
+recording the version in the reserved note `byori:schema-version`.
 
-- **`memory_remember(name, kind, body, relates_to?)`** — store/update a **note** vertex.
+Prefer the validated structured surface:
+
+- **`memory_remember(name, kind?, body, relates_to?)`** — store/update a **note** vertex.
 - **`memory_recall(text?, kind?, limit?)`** — retrieve **notes**, most-recent first.
-- **`memory_query(ngql)`** — raw nGQL. The ONLY way to read/write the typed wiki layer,
-  and the tool for traversals, aggregations, and temporal (`AS OF`) reads.
+- **`memory_wiki_upsert(type, name, body, state?, resolved?)`** — create/update a typed node;
+  the server validates its canonical name and derives its stable VID.
+- **`memory_link(action?, relation, source, target)`** — create/update or delete a validated edge.
+- **`memory_read(type?, name?, text?, limit?, include_links?)`** — read normalized notes/wiki nodes.
+- **`memory_query_read(ngql)`** — one validated read-only traversal or temporal query.
+- **`memory_delete(...)` / `memory_export(...)`** — explicit maintenance operations.
+
+`memory_query` is a legacy unrestricted raw-nGQL escape hatch. Do not use it when a structured
+tool or `memory_query_read` is sufficient; it is unavailable when the MCP runs in `safe` profile.
 
 ## Two layers — pick by whether relationships matter
 
@@ -32,9 +41,9 @@ typed wiki), recording the version in the reserved note `byori:schema-version`:
 |---|---|---|
 | For | standalone facts, prefs, one-off gotchas | structural knowledge whose value is its **relationships** |
 | Node | single `note` tag | typed tags: `module / decision / bug / incident / concept / entity / task` |
-| Edge | generic `rel` | typed: `depends_on / affects / caused_by / fixed_by / supersedes / about / relates_to` |
-| Write | `memory_remember` (vid auto-hashed) | `memory_query` + `INSERT VERTEX/EDGE` (vid you supply) |
-| Read | `memory_recall` | `memory_query` (`LOOKUP / FETCH / GO / MATCH`) |
+| Edge | generic `rel` | typed: `part_of / depends_on / affects / caused_by / fixed_by / supersedes / about / relates_to` |
+| Write | `memory_remember` | `memory_wiki_upsert` + `memory_link` |
+| Read | `memory_recall` | `memory_read`; `memory_query_read` for traversal/`AS OF` |
 | Availability | schema on every fresh install | bootstrapped automatically since schema v2 (MCP startup migration) |
 
 Rule of thumb: if the thing **connects to other things** (a decision that affects
@@ -54,7 +63,7 @@ a lone gotcha), a note is enough. Do NOT record the same thing in both layers.
 
 ```
 memory_remember(name="pref:korean-responses", kind="preference",
-  body="항상 한국어로 응답. 기술 용어/식별자는 원문 유지.")
+  body="Always respond in Korean. Preserve technical terms and identifiers as written.")
 memory_recall(text="korean")
 ```
 
@@ -67,16 +76,16 @@ learn *why it is the way it is*.
 
 > **Availability:** the MCP server bootstraps this schema automatically (schema v2)
 > on fresh installs and migrates older spaces on startup. If you suspect a stale
-> pre-v2 MCP, `memory_query("SHOW TAGS")` confirms; never invent ad-hoc typed schema.
+> pre-v2 MCP, `memory_query_read(ngql="SHOW TAGS")` confirms; never invent ad-hoc typed schema.
 
 ### Node tags & properties
 - `module(name, summary, ts)` — code module/crate/subsystem
 - `decision(name, body, state, ts)` — `state`: `active | superseded`; `body` includes the *why*
 - `bug(name, body, state, ts)` — `state`: `open | fixed | known`
-- `incident(name, body, resolved, ts)` — `resolved`: `"true" | "false"`
+- `incident(name, body, resolved, ts)` — API `resolved`: boolean; engine storage: `"true" | "false"`
 - `concept(name, body, ts)` — domain/design concept
 - `entity(name, body, ts)` — data entity (dogfooding subjects)
-- `task(name, body, state, ts)` — work/track item
+- `task(name, body, state, ts)` — `state`: `open | in_progress | blocked | done`
 
 ### Edge types (directional)
 - `part_of` · `depends_on` : module → module
@@ -87,51 +96,45 @@ learn *why it is the way it is*.
 - `about` : task/incident → module/entity/concept
 - `relates_to` : any → any (weak link; don't overuse)
 
-### Canonical name → stable vid
+### Canonical names and server-derived VIDs
 
-`INSERT VERTEX` needs an **INT64 vid** (string vids are unsupported here). Derive a
-**stable** vid from the canonical name so that re-inserting the same name UPDATES the
-same node (and stacks a bitemporal version). Run this once per node via Bash:
-
-```bash
-python3 -c "import hashlib,sys; print(int(hashlib.sha1(sys.argv[1].encode()).hexdigest()[:15],16))" "decision:use-redb"
-# → 739708277206059021 (60-bit, fits i64, collision-negligible; same name ⇒ same vid ⇒ update)
-```
-
-Canonical names: `<type>:<stable-slug>`, never a sentence —
+Canonical names are `<type>:<stable-slug>`, never a sentence —
 `module:byoridb-executor`, `decision:use-redb`, `bug:redb-repair-crashloop`,
 `incident:aks-startup-probe`, `concept:llm-wiki-memory-graph`, `task:g2-distributed`.
+The stable slug starts with a letter or digit and may otherwise contain letters, digits, `.`,
+`_`, and `-`. `memory_wiki_upsert` checks that the name prefix matches the type. New nodes use
+a server-derived non-negative 63-bit VID returned as a decimal string. Existing canonical typed
+nodes created with Byori v0.2.0's 60-bit recipe are found by name and keep their original VID;
+reusing the canonical name updates that node and preserves its bitemporal history.
 
-### Write (memory_query)
+### Write with structured tools
 
 ```
-# vid_dec = hash("decision:use-redb"); vid_kv = hash("module:byoridb-kvstore")
-INSERT VERTEX decision(name, body, state, ts)
-  VALUES <vid_dec>:("decision:use-redb", "순수 Rust redb 채택. RocksDB C++ 툴체인 제거.", "active", <epoch_ms>)
-INSERT VERTEX module(name, summary, ts)
-  VALUES <vid_kv>:("module:byoridb-kvstore", "임베디드 redb KV. 현재뷰+이력 테이블.", <epoch_ms>)
-INSERT EDGE affects(ts) VALUES <vid_dec>-><vid_kv>:(<epoch_ms>)
+memory_wiki_upsert(type="decision", name="decision:use-redb",
+  body="Adopt pure-Rust redb; remove the RocksDB C++ toolchain.", state="active")
+memory_wiki_upsert(type="module", name="module:byoridb-kvstore",
+  body="Embedded redb KV with current-view and history tables.")
+memory_link(relation="affects",
+  source={"type":"decision","name":"decision:use-redb"},
+  target={"type":"module","name":"module:byoridb-kvstore"})
 ```
 
 ### Read — recall becomes traversal
 
 ```
-# 모든 결정 나열 (LOOKUP은 prop을 JSON 블롭으로 반환)
-LOOKUP ON decision YIELD decision.name
+# Find normalized decisions, optionally with nearby edges
+memory_read(type="decision", text="redb", include_links=true)
 
-# 깔끔한 컬럼이 필요하면 FETCH/GO 사용
-FETCH PROP ON decision <vid> YIELD decision.body, decision.state
+# Read-only graph traversal when normalized lookup is not enough
+memory_query_read(ngql="MATCH (d:decision)-[:affects]->(m:module) RETURN d.decision.name, m.module.name")
 
-# "이 모듈이 왜 이렇게 됐나" — module ← affects 역방향
-GO FROM <module_vid> OVER affects REVERSELY YIELD $$.decision.body
-
-# "그 결정을 무엇이 대체했나"
-GO FROM <old_decision_vid> OVER supersedes REVERSELY YIELD $$.decision.name
-
-# 인과 서사 한 방에
-MATCH (b:bug)-[:fixed_by]->(d:decision)-[:about]->(c:concept)
-  RETURN b.bug.name, d.decision.name, c.concept.name
+# Temporal read, using the decimal VID returned by memory_read/upsert
+memory_query_read(ngql="FETCH PROP ON decision <vid> AS OF <epoch_ms>")
 ```
+
+`memory_query_read` accepts one statement beginning with `MATCH`, `FETCH`, `GO`, `LOOKUP`,
+`SHOW`, or `WHY`. Outside quoted literals, it rejects mutations, `USE`, comments, pipelines,
+semicolons, and multiple statements. Prefer `memory_read` whenever it can express the lookup.
 
 ### Capture recipe — record the causal chain, not just the fact
 
@@ -144,16 +147,25 @@ capture the chain, not a lone symptom:
    *immediate* patch from the *permanent* fix if they differ).
 3. Link `about` / `affects` → what it touched.
 
-Then "왜 이게 터졌나?" is one traversal — `GO FROM <incident_vid> OVER caused_by` — and
-"무엇이 재발을 막았나?" is `GO ... OVER fixed_by`. A fact with no causal edges is a dead end.
+Then "why did this happen?" is one read with links or traversal over `caused_by`, and "what
+prevented it from recurring?" follows `fixed_by`. A fact with no causal edges is a dead end.
 
-### Gotchas (실측)
-- **`memory_remember`의 VID는 비음수 63bit** — sha1 해시를 unsigned로 읽고 63bit
-  마스킹하므로 어떤 이름이든 쓸 수 있다(과거 음수 해시 거부 이슈는 해소됨).
-- **`status`는 예약어** → 상태 property명은 `state`(또는 `resolved`)를 쓴다.
-- **문자열 vid 미지원** → 위 hash 레시피로 INT64 vid를 만들어 명시적으로 넣는다.
-- **`memory_recall`은 `note` tag만 읽는다** → 타입드 노드는 `memory_query`로만 조회된다.
-- **`LOOKUP ... YIELD`는 prop을 JSON 블롭으로 반환** → 개별 컬럼은 `FETCH`/`GO`로.
+### Gotchas (measured behavior)
+- **`memory_remember` VIDs are non-negative 63-bit values** — the SHA-1 hash is read
+  as unsigned and masked to 63 bits, so every name is valid (this resolves the old
+  negative-hash rejection issue).
+- **`status` is reserved** — use `state` (or `resolved`) for state properties.
+- **`memory_recall` reads only the `note` tag** — query typed nodes with `memory_read`.
+- **Structured VIDs are decimal strings** — raw engine projections and legacy note responses
+  may still expose JSON INT64 numbers; never round-trip either through an IEEE-754 `Double`.
+- **Lifecycle fields are explicit** — use `bug.state="fixed"`, `task.state="done"`, or
+  `incident.resolved=true` when recording a confirmed fix or closure.
+- **`memory_export` is bounded diagnostics, not a backup snapshot** — pagination is not
+  transactional, and deep pages can shift because results are assembled per node type before
+  global sorting, even when no concurrent write occurs.
+- **Deletion is destructive** — use `memory_delete` only after the user explicitly confirms the
+  exact type/name. If links exist, get separate confirmation before `cascade=true`; cascade can
+  remove every incoming and outgoing relationship connected to that node.
 
 ---
 
@@ -169,7 +181,7 @@ twice. Route by type:
 - A lone preference or isolated fact → note (Layer 1) regardless of Layer 2 availability.
 
 **Write at checkpoints, not every turn** — end of a task/track, a milestone, PR creation,
-incident resolution, or when the user says "기억해". Per-turn extraction turns the graph
+incident resolution, or when the user says "remember this". Per-turn extraction turns the graph
 into a searchable junk drawer (the exact failure mode this schema exists to prevent). A
 checkpoint is also the moment to do a quick pass: "what did we learn here worth keeping?"
 
@@ -186,16 +198,17 @@ to its transferable shape, or drop it.
 ## When to RECALL
 
 - **At the start of a non-trivial task or work phase** — `memory_recall` for notes,
-  and `memory_query` (`LOOKUP`/`GO`/`MATCH`) to traverse the wiki around the relevant
+  and `memory_read(include_links=true)` or `memory_query_read` to traverse the wiki around the relevant
   module/topic. Pull prior decisions, known bugs, and past
   incidents for that area *first*, so you don't re-derive a settled decision or repeat
   a resolved mistake.
-- When the user references the past ("저번에 정한", "그때 왜", "기억하지?").
+- When the user references the past ("what did we decide last time?", "why did we do that?", "remember?").
 - Before re-deriving something that feels like it was decided before.
-- Temporal: "그 결정 당시엔 뭘 알았지?" → `FETCH PROP ON <tag> <vid> AS OF <epoch_ms>`.
+- Temporal: "what did we know when we made that decision?" → `memory_query_read` with
+  `FETCH PROP ON <tag> <vid> AS OF <epoch_ms>`.
 
 ## Anti-patterns
-- **"이번엔 그냥 넘기자"** — skipping capture at a checkpoint → the next session repeats the
+- **"Let's skip it this time"** — skipping capture at a checkpoint → the next session repeats the
   same mistake. If you'd have to re-learn it, record it now.
 - **Capturing everything** — over-capture is the junk-drawer failure. One clear fact per node.
 - **Symptom without root cause** — a bug/incident with no `caused_by`/`fixed_by` is a dead
@@ -209,6 +222,6 @@ to its transferable shape, or drop it.
 ## Hygiene rules
 - Canonical `<type>:<slug>` names, never sentences. Same name = update, not a dup.
 - One clear fact per node. No transient chatter.
-- Before creating a node, recall/LOOKUP for an existing one — merge, don't fork.
+- Before creating a node, use `memory_read` to find an existing canonical one — merge, don't fork.
 - Choose the narrowest true edge type; `relates_to` is the last resort.
 - Don't double-record across both layers.

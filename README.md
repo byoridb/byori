@@ -1,140 +1,151 @@
+**English** | [한국어](docs/ko/README.md)
+
 # Byori
 
-> **Claude Code와 Codex가 프로젝트를 매번 처음부터 다시 배우지 않게 하는 로컬 지식 그래프.**
+> **A local knowledge graph that keeps coding agents from relearning your project from scratch every time.**
 
-Byori는 코딩 에이전트가 작업 중 확정한 **모듈 구조, 결정과 근거, 반복되는 버그,
-인시던트와 해결책**을 로컬 PC에 오래 보존하고 다음 세션에서 다시 탐색하게 만드는
-로컬 AI 지식 관리 도구입니다. 그래프 엔진으로는 범용 semantic graph database인
-[ByoriDB](https://github.com/byoridb/byoridb)를 설치·구동합니다.
+Byori is a local AI knowledge-management tool that preserves the **module structure,
+decisions and rationale, recurring bugs, incidents, and resolutions** established by coding
+agents during their work, so those agents can explore that knowledge again in later sessions.
+It installs and runs [ByoriDB](https://github.com/byoridb/byoridb), a general-purpose
+semantic graph database, as its graph engine.
 
-목표는 LLM이 문서를 요약해 주는 평면 위키가 아닙니다. 프로젝트 지식을 typed node와
-causal edge로 연결하고, 관계·시점·추론 근거를 따라가며 "무엇인가"뿐 아니라
-**"왜 이렇게 되었는가"**까지 되짚는 시스템입니다.
+The goal is not a flat wiki where an LLM summarizes documents. Byori connects project
+knowledge through typed nodes and causal edges, then follows relationships, points in time,
+and inference evidence to trace not only **what something is**, but **why it became that way**.
 
 > [!WARNING]
-> 현재는 초기 실험 단계입니다. 로컬 단일 노드, MCP surface, 기본 notes schema는 구현되어
-> 있습니다. 저장소 전체 자동 수집과 typed wiki 자동 부트스트랩은 아직 개발 중입니다.
-> 중요한 데이터의 유일한 저장소로 사용하지 마세요.
+> Byori is currently an early experiment. The local single-node setup, MCP surface, and
+> schema v2 (notes plus the typed wiki) are implemented. Automatic ingestion of entire
+> repositories is still under development. Do not use Byori as the only copy of important data.
 
-## 구조: 3개 논리 계층
+## Architecture: three logical layers
 
 ```text
-Claude Code / Codex
+Claude Code / Codex / NaraeClaw
         │  MCP + skill/hook adapter
         ▼
-Byori (이 저장소)
-├── 설치·업데이트·백업·제거        install.sh, templates/
-├── MCP memory runtime            mcp/byoridb_mcp.py
-├── agent adapter                 adapters/claude, adapters/codex(예정)
-└── memory ontology + migration   docs/memory-ontology.md
-        │  stable HTTP/gRPC contract (엔진 버전 고정)
+Byori (this repository)
+├── install · update · service · uninstall  install.sh, templates/
+├── MCP memory runtime                      mcp/byoridb_mcp.py
+├── agent adapters                          adapters/ (Claude/Codex + NaraeClaw reference)
+└── memory ontology + migration             docs/memory-ontology.md
+        │  pinned HTTP/nGQL contract
         ▼
 ByoriDB Core (byoridb/byoridb)
 └── graph storage/query · ontology inference · temporal history · provenance
 ```
 
-의존성 방향은 위에서 아래로만 흐릅니다. ByoriDB는 Byori를 모르고, Byori가 검증된
-엔진 릴리스를 내려받아 설치·관리합니다.
+Dependencies flow downward only. ByoriDB knows nothing about Byori; Byori downloads,
+installs, and manages a validated engine release.
 
-## 문서형 LLM Wiki와 무엇이 다른가
+## How it differs from document-based LLM wikis
 
-| 문서형 위키 / RAG | Byori가 지향하는 방식 |
+| Document wiki / RAG | What Byori aims for |
 |---|---|
-| 페이지와 요약을 검색 | module, decision, bug, incident를 typed graph로 연결 |
-| 키워드·유사도 중심 recall | `GO`/`MATCH`로 원인, 영향, 대체 관계를 traversal |
-| 최신 문서만 유지 | bitemporal history와 `AS OF`로 과거 상태 조회 |
-| 결론을 텍스트로 저장 | 추론 edge의 provenance를 `WHY`로 설명 |
-| 자유 추출로 중복이 쌓임 | 좁은 ontology와 canonical name으로 엔티티를 관리 |
-| 외부 서비스에 의존 가능 | redb 기반 데이터와 MCP 서버를 로컬에 보관 |
+| Search pages and summaries | Connect modules, decisions, bugs, and incidents in a typed graph |
+| Recall by keyword or similarity | Traverse causes, effects, and superseding relationships with `GO`/`MATCH` |
+| Keep only the latest document | Query past states through bitemporal history and `AS OF` |
+| Store conclusions as text | Explain the provenance of inferred edges with `WHY` |
+| Accumulate duplicates through free-form extraction | Manage entities with a narrow ontology and canonical names |
+| May depend on external services | Keep redb-backed data and the MCP server local |
 
-예를 들어 다음 관계를 남기면 이후 에이전트는 증상만 검색하지 않고 원인과 해결 결정,
-영향받은 모듈까지 한 흐름으로 탐색할 수 있습니다.
+For example, once the following relationships are recorded, future agents can explore the
+cause, the decision that resolved it, and the affected module as one chain instead of searching
+for the symptom alone.
 
 ```text
 incident ──caused_by──> bug ──fixed_by──> decision ──affects──> module
                                       └──supersedes──> previous decision
 ```
 
-## 동작 방식
+## How it works
 
 ```mermaid
 flowchart LR
-    A[Claude Code / Codex] --> B[Recall & checkpoint policy]
-    B <--> C[Byori MCP<br/>remember · recall · query]
+    A[Coding agent] --> B[Recall & checkpoint policy]
+    B <--> C[Byori MCP<br/>notes · typed wiki · guarded query]
     C <--> D[Local ByoriDB<br/>graph · inference · history]
     D --> E[~/.byoridb/data<br/>redb]
 ```
 
-skill은 에이전트가 작업 시작 시 관련 기억을 조회하고, 결정·버그 해결·인시던트 종료 같은
-체크포인트에서 durable knowledge를 기록하도록 안내합니다. MCP는 실제 읽기/쓰기 도구를
-제공하고, hook은 그 시점을 상기시킵니다. 현재 hook은 **리마인더만 주입**하며 MCP를 직접
-호출하지 않습니다. 기록 여부와 내용은 아직 에이전트가 판단합니다.
+The skill tells the agent to retrieve relevant memories when work begins and to record
+durable knowledge at checkpoints such as decisions, bug fixes, and incident closure. MCP
+provides the actual read/write tools. When requested at installation, the optional Claude Code
+hook reminds the agent around session start and commit checkpoints. It **only injects reminders**;
+it does not call MCP directly. The agent still decides what to record and whether to record it.
 
-## 예비 벤치마크 (dogfood)
+## Preliminary benchmark (dogfood)
 
 > [!NOTE]
-> 합성 저장소 하나에 대한 **조건별 단일 실행**(질문 5개 × 2조건, headless `claude -p`)
-> 결과입니다. 통계적으로 엄밀한 측정이 아니라 효과의 방향을 가늠하는 dogfood 수치이며,
-> 절대값은 모델·프로젝트·질문에 따라 크게 달라집니다.
+> These results come from **one run per condition** against a single synthetic repository
+> (five questions × two conditions, using headless `claude -p`). They are dogfood numbers
+> intended to show the direction of the effect, not a statistically rigorous measurement.
+> Absolute results can vary substantially by model, project, and question.
 
-과거 세션 지식 5건(결정·버그·인시던트·중단된 작업)을 byori에 기록해 둔 뒤, **코드에는
-남아 있지 않은** 그 지식을 되묻는 질문을 byori 연결 세션과 미연결 세션에서 각각 실행했습니다.
+We recorded five pieces of knowledge from previous sessions in Byori—decisions, bugs,
+incidents, and abandoned work—then asked about that knowledge, which was **not present in the
+code**, in one session connected to Byori and another without Byori.
 
-| 지표 | byori 연결 | 미연결(baseline) |
+| Metric | Connected to Byori | Not connected (baseline) |
 |---|---|---|
-| 평균 소요 시간 | **≈40초** | ≈125초 |
-| 평균 비용 | **≈$0.43** | ≈$1.15 |
-| 평균 턴 수 | **≈5** | ≈15 |
-| 코드에 없는 지식 복원 | 20/20 | 0/20 |
+| Average elapsed time | **≈40 sec** | ≈125 sec |
+| Average cost | **≈$0.43** | ≈$1.15 |
+| Average turns | **≈5** | ≈15 |
+| Knowledge recovered despite being absent from the code | 20/20 | 0/20 |
 
-미연결 세션은 질문마다 `git log`·grep·파일 정독으로 코드베이스를 다시 탐색하느라 시간·
-비용·턴이 3배 안팎으로 늘었고, "왜 이 값으로 정했나"·"과거에 무슨 사고를 겪었나"·"뭘 하다
-말았나"처럼 코드에 없는 지식은 구조적으로 복원하지 못하고 "기록 없음"으로 답했습니다.
+For every question, the unconnected session had to rediscover the codebase through `git log`,
+grep, and close reading. Time, cost, and turns grew by roughly 3×. It also could not structurally
+recover knowledge absent from the code—such as “why was this value chosen?”, “what incident
+happened before?”, or “what work was abandoned?”—and answered that no record existed.
 
-**다만 메모리는 코드 읽기를 대체하지 않습니다.** 이 실험에서 미연결 세션은 코드를 깊이
-뒤지다 실제 소스 결함 하나를 찾아낸 반면, 연결 세션은 recall을 신뢰해 그 파일을 정독하지
-않고 지나쳤습니다. recall로 답한 뒤에도 관련 코드는 검증하는 것이 두 방식의 장점을 합치는
-길입니다.
+**Memory does not replace reading the code.** In this experiment, the unconnected session dug
+deep enough to find a real source defect, while the connected session trusted recall and moved
+on without closely reading that file. The best of both approaches is to verify the relevant
+code even after recall provides an answer.
 
-## 빠른 시작
+## Quick start
 
-사전 요구사항은 `curl`, `tar`, `python3`입니다. 사전 빌드 엔진 바이너리는 macOS
-(Apple Silicon/Intel)와 Linux x86_64를 지원합니다.
+Prerequisites are `curl`, `tar`, and `python3`. Prebuilt engine binaries support macOS
+(Apple Silicon and Intel) and Linux x86_64.
 
 ### Byori Manager (macOS)
 
-터미널 대신 설치형 앱을 사용할 수 있습니다. 앱에서 다음 작업을 각각 확인하고 실행합니다.
+You can use an installable app instead of the terminal. The app lets you inspect and run each
+of the following operations:
 
-- ByoriDB 설치·온라인 업데이트·시작·중지·재시작과 health/log 확인
-- Claude Code와 Codex CLI 감지 및 공식 설치기를 통한 설치·업데이트
-- 에이전트별 `byoridb` MCP 연결·해제
-- `byoridb-memory` Skill 설치·업데이트·제거(변경 전 자동 백업)
-- 창을 닫아도 메뉴 막대에서 상태 확인·새로고침·로그 열기와 창 다시 열기를 제공하는
-  window/tray 하이브리드 동작
-- 최대 200개 `note`와 `rel` 관계를 탐색하는 read-only 그래프 뷰
+- Install ByoriDB, apply online updates, start, stop, and restart it, and inspect its health and logs
+- Detect the Claude Code and Codex CLIs, then install or update them through their official installers
+- Connect or disconnect the `byoridb` MCP server for each agent
+- Install, update, or remove the `byoridb-memory` Skill, with an automatic backup before changes
+- Keep status, refresh, log access, and window reopening available from the menu bar after the
+  window closes, using a hybrid window/tray model
+- Explore up to 200 note/typed-wiki nodes and 500 rel/typed edges in a read-only graph view
 
-앱은 Claude/Codex 로그인 정보나 token을 읽지 않습니다. 그래프는 초기 목록에서 본문을
-제외하고 node를 선택할 때만 lazy-load합니다.
+The app does not read Claude or Codex login details or tokens. The graph excludes bodies from
+the initial list and lazy-loads a body only when you select a node.
 
-#### 지금은 소스에서 직접 빌드하세요
+#### For now, build it from source
 
 > [!NOTE]
-> 정식 서명·공증된 `.dmg`는 아직 릴리스에 없습니다. Apple Developer Program(연 US$99)이
-> 있어야 Developer ID 서명이 가능한데, 그 돈이 생기면 올리겠습니다. 그때까지는 아래처럼
-> 손수 빚어 쓰세요 — 어차피 로컬에서 도는 앱이라 서명 없이도 잘 돕니다.
+> There is no officially signed and notarized `.dmg` release yet. Developer ID signing requires
+> an Apple Developer Program membership; once signing is available, we will ship one.
+> Until then, roll your own with the commands below—the app runs locally and works just fine
+> without a signature.
 
-macOS + Xcode Command Line Tools만 있으면 됩니다.
+All you need is macOS and Xcode Command Line Tools.
 
 ```bash
 git clone https://github.com/byoridb/byori.git && cd byori
-VERSION=0.2.0-dev scripts/build-macos-dmg.sh    # dist/에 .app과 .dmg 생성 (ad-hoc 서명)
-open "dist/Byori Manager.app"                   # 바로 실행
+VERSION=0.2.0-dev scripts/build-macos-dmg.sh    # creates .app and .dmg in dist/ (ad-hoc signed)
+open "dist/Byori Manager.app"                   # launch immediately
 ```
 
-빌드 옵션(`--universal`로 Intel+Apple Silicon 통합, `--sign`으로 Developer ID 서명 등)과
-공증 절차는 [macOS Manager 문서](docs/manager-macos.md)를 참고합니다. 미서명 dev 빌드는
-본인 맥에서 여는 건 문제없지만, 남에게 넘기면 Gatekeeper가 눈을 흘깁니다. 정식 서명
-DMG가 릴리스에 올라오면 그냥 열어서 Applications로 드래그하면 됩니다.
+See the [macOS Manager documentation](docs/manager-macos.md) for build options such as
+`--universal` for a combined Intel + Apple Silicon build and `--sign` for Developer ID signing,
+as well as the notarization procedure. An unsigned development build opens without trouble on
+your own Mac, but Gatekeeper will give it the side-eye if you hand it to someone else. Once a
+properly signed DMG is available in Releases, just open it and drag the app into Applications.
 
 ### Claude Code
 
@@ -145,78 +156,111 @@ curl -s http://127.0.0.1:19669/health
 claude mcp list
 ```
 
-체크포인트 reminder hook도 설치하려면 `jq`를 준비한 뒤 다음처럼 실행합니다.
+To install the checkpoint reminder hook as well, make sure `jq` is available and run:
 
 ```bash
 curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh \
   | bash -s -- --with-hooks
 ```
 
-hook merge는 기존 `SessionStart`/`PreToolUse` 배열에 append하며(이미 있으면 건너뜀),
-변경 전 `~/.claude/settings.json.bak.<timestamp>` 백업을 남깁니다.
+The hook merge appends to the existing `SessionStart` and `PreToolUse` arrays, skipping entries
+that already exist, and writes a `~/.claude/settings.json.bak.<timestamp>` backup before making
+changes.
 
-설치 후 Claude Code를 재시작하세요. 서버·MCP·skill의 상세 위치, 옵션(`--engine-tag` 등),
-제거 방법은 [설치 문서](docs/install.md)를 참고합니다.
+Restart Claude Code after installation. See the [installation documentation](docs/install.md)
+for the exact server, MCP, and skill locations, options such as `--engine-tag`, and removal
+instructions.
 
 ### Codex
 
-설치기가 `codex` CLI를 감지하면 MCP 등록과 skill 설치(`~/.agents/skills/`)를 자동으로
-수행합니다(`--no-codex`로 건너뜀). Codex를 재시작한 뒤 `codex mcp list`로 확인하고 새
-세션에서 사용합니다. Claude용 hook은 Codex에 설치되지 않으며, 수동 연결 절차는
-[설치 문서](docs/install.md)를 참고합니다.
+When the installer detects the `codex` CLI, it automatically registers MCP and installs the
+skill under `~/.agents/skills/`; pass `--no-codex` to skip this. Restart Codex, verify the setup
+with `codex mcp list`, and use it in a new session. The Claude hook is not installed for Codex.
+See the [installation documentation](docs/install.md) for manual connection instructions.
+
+### NaraeClaw (reference adapter)
+
+The installer does not configure NaraeClaw automatically. Register a separate MCP process with
+`BYORIDB_MCP_PROFILE=safe` and a stable per-project `BYORIDB_MEMORY_SPACE`, then install the
+reference skill from `adapters/naraeclaw/` using NaraeClaw's normal skill mechanism. See the
+[adapter documentation](adapters/README.md) for the command and isolation rules.
 
 ## Memory surface
 
-| 도구 | 역할 |
+| Tool | Purpose |
 |---|---|
-| `memory_remember(name, kind, body, relates_to?)` | 안정적인 이름으로 note를 저장하거나 갱신 |
-| `memory_recall(text?, kind?, limit?)` | note 이름·본문에서 이전 기억을 조회 |
-| `memory_query(ngql)` | traversal, typed wiki, 집계, `AS OF`를 위한 raw nGQL |
+| `memory_remember(name, kind?, body, relates_to?)` | Store or update a note under a stable name |
+| `memory_recall(text?, kind?, limit?)` | Retrieve previous memories by note name and body |
+| `memory_wiki_upsert(type, name, body, state?, resolved?)` | Create or update a validated typed-wiki node; the server resolves its VID |
+| `memory_link(action?, relation, source, target)` | Create/update or delete a validated relationship between existing nodes |
+| `memory_read(type?, name?, text?, limit?, include_links?)` | Read normalized notes and typed-wiki nodes; VIDs are decimal strings |
+| `memory_delete(type, name, cascade?)` | Delete one exact node, requiring explicit cascade when links exist |
+| `memory_export(limit?, offset?, include_links?)` | Export a bounded best-effort inspection page; deep pagination is not a backup |
+| `memory_query_read(ngql)` | Run one validated read-only `MATCH`/`FETCH`/`GO`/`LOOKUP`/`SHOW`/`WHY` statement |
+| `memory_query(ngql)` | Legacy unrestricted raw nGQL escape hatch; hidden and blocked in the `safe` profile |
 
-MCP 서버는 시작 시 space를 현재 memory schema(v2)로 자동 migration합니다:
-독립적인 사실을 위한 `note`/`rel` layer와, `module`/`decision`/`bug`/`incident`/
-`concept`/`entity`/`task` + causal edge로 구성된 typed wiki layer가 함께
-bootstrap됩니다([memory ontology 설계와 PoC](docs/memory-ontology.md) 참조).
-적용된 schema version은 `byori:schema-version` note로 기록됩니다.
-VID는 name의 sha1 해시를 비음수 63bit로 마스킹해 결정합니다(v0.1.1에서 음수 VID
-INSERT 거부 버그 우회 — [엔진 계약](docs/engine-contract.md) 참조).
+The default `legacy` MCP profile keeps `memory_query` for backward compatibility. New integrations
+that do not need unrestricted raw mutation should run with `BYORIDB_MCP_PROFILE=safe`: it removes
+only the raw-query tool, while note writes and validated structured CRUD remain available.
+Use a stable `BYORIDB_MEMORY_SPACE` matching `^[A-Za-z_][A-Za-z0-9_]{0,63}$` to avoid accidental
+mixing between clients or projects. A space is a logical namespace, not an authorization boundary;
+separate trust domains require separate instances and credentials. See the
+[engine contract](docs/engine-contract.md) for input limits and the exact profile boundary.
 
-데이터 파일과 MCP process는 로컬에 머물지만, recall된 내용은 에이전트가 사용할 때
-Claude/Codex의 model context로 전달될 수 있습니다. 비밀번호, token, credential 같은 secret은
-memory에 저장하지 마세요.
+At startup, the MCP server automatically migrates the space to the current memory schema (v2).
+It bootstraps both the `note`/`rel` layer for standalone facts and the typed-wiki layer made up
+of `module`/`decision`/`bug`/`incident`/`concept`/`entity`/`task` plus causal edges. See the
+[memory ontology design and PoC](docs/memory-ontology.md). The applied schema version is recorded
+in the `byori:schema-version` note. New nodes derive a VID by masking the SHA-1 hash of the name to
+a non-negative 63-bit value. Existing canonical typed nodes created with the v0.2.0 60-bit recipe
+are found by name and keep their original VID, preventing duplicate nodes during upgrades. The
+non-negative rule was introduced in Byori v0.1.1 to work around the pinned engine's negative-VID
+INSERT rejection; see the [engine contract](docs/engine-contract.md).
 
-## 엔진: ByoriDB
+The data files and MCP process remain local, but recalled content may be sent to an agent's model
+context when it uses the tools. Do not store secrets such as passwords, tokens, or credentials
+in memory.
 
-Byori 아래에는 범용 semantic graph database인
-[ByoriDB](https://github.com/byoridb/byoridb)가 있습니다 — property graph와 nGQL,
-선택된 RDFS-Plus/OWL 2 RL 규칙의 write-time materialization, inference provenance(`WHY`),
-bitemporal history(`AS OF`), similarity recommendation을 제공합니다. 설치기는 이 저장소의
-버전과 함께 검증된 엔진 릴리스를 고정 태그로 내려받으며(`--engine-tag`로 override),
-엔진 기능 범위와 제약은 ByoriDB 저장소 문서를 참고합니다.
+## Engine: ByoriDB
 
-## 현재 한계
+Under Byori is [ByoriDB](https://github.com/byoridb/byoridb), a general-purpose semantic graph
+database. It provides property graphs and nGQL, write-time materialization for selected
+RDFS-Plus/OWL 2 RL rules, inference provenance through `WHY`, bitemporal history through
+`AS OF`, and similarity recommendations. The installer downloads an engine release validated
+with this repository's version and pins it by tag; use `--engine-tag` to override it. See the
+ByoriDB repository documentation for the engine's feature set and constraints.
 
-- 저장소, 문서, symbol, git diff를 자동으로 읽어 graph로 만드는 ingestion pipeline은 아직 없습니다.
-- capture는 매 턴 자동 추출이 아니라 체크포인트에서 에이전트가 수행합니다.
-- 기본 `memory_recall`은 note 이름·본문 substring 검색이며 엔진의 vector search를 사용하지 않습니다.
-- Codex용 체크포인트 hook은 없습니다(reminder hook은 Claude Code 전용).
-- 엔진 temporal v1의 공개 조회는 vertex `FETCH ... AS OF`에 한정되며 current/history dual-write는 비원자적입니다.
+## Current limitations
 
-## 로드맵
+- There is no ingestion pipeline yet that automatically turns repositories, documents, symbols, and git diffs into a graph.
+- Capture is performed by the agent at checkpoints rather than extracted automatically on every turn.
+- The default `memory_recall` searches substrings in note names and bodies; it does not use the engine's vector search.
+- There is no checkpoint hook for Codex or NaraeClaw; the bundled reminder hook is Claude Code-only.
+- Public queries in engine temporal v1 are limited to vertex `FETCH ... AS OF`, and current/history dual writes are non-atomic.
 
-`byori setup / doctor / connect / project add / backup / upgrade / rollback` 형태의 단일
-CLI로 수렴하는 것이 목표입니다. 엔진 호환성은 [계약 문서](docs/engine-contract.md)와
-CI 스모크로 게이트하며, memory schema versioning/migration, 프로젝트 registry와 자동
-ingestion 순서로 진행합니다 — [docs/ROADMAP.md](docs/ROADMAP.md).
+## Roadmap
 
-## 문서
+The goal is to converge on a single CLI shaped like
+`byori setup / doctor / connect / project add / backup / upgrade / rollback`. Engine compatibility
+is gated by the [contract](docs/engine-contract.md) and a CI smoke test. With the Manager and
+additive schema v2 migrations in place, the remaining sequence is the shared CLI and explicit
+destructive migrations, then a project registry, then automatic ingestion—see
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
-- [설치·관리](docs/install.md)
-- [Agent adapter 자산 (skill/hooks)](adapters/README.md)
-- [Memory ontology 설계와 PoC](docs/memory-ontology.md)
-- [로드맵](docs/ROADMAP.md)
-- [ByoriDB 엔진](https://github.com/byoridb/byoridb)
+## Documentation
 
-## 라이선스
+English is the canonical documentation language. Korean translations live under `docs/ko/`
+and are linked from every translated page. Executable adapter skills remain English-only; the
+quoted Korean phrases in the Claude/Codex skill are intentional multilingual trigger examples.
+
+- [Installation and management](docs/install.md)
+- [macOS Manager](docs/manager-macos.md)
+- [Agent adapter assets (skill/hooks)](adapters/README.md)
+- [Memory ontology design and PoC](docs/memory-ontology.md)
+- [ByoriDB engine compatibility contract](docs/engine-contract.md)
+- [Roadmap](docs/ROADMAP.md)
+- [ByoriDB engine](https://github.com/byoridb/byoridb)
+
+## License
 
 [Apache License 2.0](LICENSE)
