@@ -68,9 +68,13 @@ v0.2.0부터 MCP가 이 schema(경량 표현: `part_of`~`relates_to` edge에 `ts
 | `caused_by` | incident/bug → bug/decision/module | 원인 |
 | `fixed_by` | bug/incident → decision/task | 해소 수단 |
 | `supersedes` | decision → decision | 대체(폐기) |
-| `decided_in` | decision → task | 어떤 작업에서 결정 |
+| `decided_in`* | decision → task | 어떤 작업에서 결정 |
 | `about` | task/incident → module/entity/concept | 주제 |
 | `relates_to` | any → any | 약한 연관(도피용, 남발 금지) |
+
+\* `decided_in`은 목표 스키마일 뿐 아직 `byoridb_mcp.py`의 schema v2 migration에 없다
+(실제로 생성되는 typed edge는 8종). 3번 이상 필요해지기 전까지는 `decided_in` 대신
+`about`(task 방향)이나 `relates_to`로 임시 인코딩할 것 — engine-contract.md 참고.
 
 > 현재 `rel` 엣지에 이미 `kind` property가 있으므로, **단일 엣지 + kind 스트링**으로도
 > 위 타입을 인코딩 가능(경량). 정식 버전은 별도 edge tag로 승격해 `GO ... OVER affects` 를 직접 지원.

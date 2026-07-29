@@ -4,7 +4,9 @@
 Covers the surface promised in docs/engine-contract.md:
   remember (INSERT VERTEX/EDGE, non-negative VID) -> recall (MATCH/CONTAINS)
   -> graph projections (id/ORDER BY/LIMIT/OFFSET) -> typed wiki bootstrap
-  (schema v2 note + typed INSERT/MATCH roundtrip) -> query
+  (schema v2 note + typed INSERT/MATCH roundtrip) -> Manager typed graph
+  projection (tag-only node MATCH, untyped-endpoint edge MATCH with a
+  visible-ID WHERE filter, module summary lazy-load) -> query
   (FETCH ... AS OF temporal read).
 
 Prereq: `install.sh` has run and the server is healthy (CI does this first).
@@ -177,6 +179,61 @@ def main():
     }
     assert expected_typed in typed_rows, f"FAIL: typed traversal: {typed_rows}"
     print("ok typed wiki roundtrip (decision -[affects]-> module)")
+
+    # Manager typed node projection: tag-only MATCH (no note-style `kind`
+    # column), id(n) stays an exact Int64 for typed tags too.
+    typed_node_rows = query_rows(
+        "MATCH (n:decision) "
+        "RETURN id(n) AS vid, n.decision.name AS name, n.decision.ts AS ts "
+        "ORDER BY vid ASC LIMIT 201 OFFSET 0",
+        ["vid", "name", "ts"],
+    )
+    assert any(
+        row["vid"] == d_vid and row["name"] == "decision:smoke-typed" for row in typed_node_rows
+    ), f"FAIL: typed node projection missing decision: {typed_node_rows}"
+    print("ok typed node projection (tag-only MATCH)")
+
+    # Manager typed edge projection: untyped `(a)-[e:<edge>]->(b)` endpoints,
+    # filtered server-side to a visible-ID allowlist via OR-chained `==`
+    # (the engine does not support `WHERE <expr> IN [...]` at all -- measured:
+    # it returns zero rows even for a single-element list, silently, with no
+    # error). This is the exact shape of the fix/manager-graph-typed-wiki
+    # review's blocker fix: without this filter, a per-kind LIMIT cutoff can
+    # silently drop displayable edges without edgesTruncated ever detecting it.
+    visible_filter = f"(id(a) == {d_vid} OR id(a) == {m_vid})" \
+        f" AND (id(b) == {d_vid} OR id(b) == {m_vid})"
+    typed_edge_rows = query_rows(
+        "MATCH (a)-[e:affects]->(b) "
+        f"WHERE {visible_filter} "
+        "RETURN id(a) AS src, id(b) AS dst "
+        "ORDER BY src ASC, dst ASC LIMIT 501 OFFSET 0",
+        ["src", "dst"],
+    )
+    assert {"src": d_vid, "dst": m_vid} in typed_edge_rows, (
+        f"FAIL: typed edge projection missing affects edge: {typed_edge_rows}"
+    )
+    print("ok typed edge projection (untyped endpoints + visible-ID OR filter)")
+
+    # Regression guard for the review's actual root cause: `IN` must stay
+    # unsupported-and-silent (0 rows, not an error) so nobody "fixes" the
+    # OR-chain back to `IN` and reintroduces the blocker.
+    in_rows = query_rows(
+        f"MATCH (a)-[e:affects]->(b) WHERE id(a) IN [{d_vid}] "
+        "RETURN id(a) AS src, id(b) AS dst ORDER BY src ASC, dst ASC LIMIT 501 OFFSET 0",
+        ["src", "dst"],
+    )
+    assert in_rows == [], f"FAIL: engine now supports IN -- switch the OR-chain back to IN: {in_rows}"
+    print("ok confirmed engine still silently no-ops on WHERE ... IN [...]")
+
+    # Manager lazy body/summary load: module reads `summary`, not `body`.
+    module_body_rows = query_rows(
+        f"MATCH (n:module) WHERE id(n) == {m_vid} RETURN n.module.summary AS body LIMIT 1",
+        ["body"],
+    )
+    assert module_body_rows and module_body_rows[0]["body"] == "smoke module", (
+        f"FAIL: module summary lazy-load: {module_body_rows}"
+    )
+    print("ok typed body/summary lazy-load (module -> summary)")
 
     # recall: MATCH + CONTAINS finds both freshly written notes.
     text = tool("memory_recall", {"text": marker, "limit": 10})
