@@ -16,6 +16,9 @@ SPEC.loader.exec_module(MCP)
 
 
 class ConfigurationContractTests(unittest.TestCase):
+    def test_default_profile_is_safe(self):
+        self.assertEqual(MCP.PROFILE, "safe")
+
     def test_space_identifier_contract(self):
         for value in ("claude_memory", "_private", "A1", "a" + "0" * 63):
             self.assertEqual(MCP._validate_space_name(value), value)
