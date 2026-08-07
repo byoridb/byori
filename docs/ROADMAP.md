@@ -95,3 +95,19 @@ response to creating a task or session in the app.
 - Index repository modules, symbols, dependencies, documents, and Git changes with project
   awareness; use canonical names and merge candidates to prevent fragmentation
 - Add traversal-, temporal-, and semantic-ranking recall, with a readable wiki surface
+
+## P8 — Time to First Value
+
+Byori's value is currently deferred: the graph is empty at install time and only becomes useful
+after weeks of checkpoint capture. A new project therefore pays the cost before seeing any
+benefit. This phase targets the first session rather than the hundredth.
+
+- Seed a new registration from evidence that already exists — Git history, merge commits, issue
+  and PR references, existing design documents — so `project add` produces a non-empty graph
+  instead of an empty space
+- Provide a runnable demonstration on a real repository that shows recall answering a question
+  the code cannot answer, without requiring weeks of prior use
+- Report what capture actually happened after a session, so the user can see the graph growing
+  instead of trusting that it did
+- Measure and publish repeatable before/after numbers rather than the current single dogfood
+  run; the README benchmark is directional evidence, not a claim

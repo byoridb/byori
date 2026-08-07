@@ -6,7 +6,39 @@
   <img src="assets/byori-app-icon.png" width="160" alt="Byori app icon">
 </p>
 
-> **A project-first native multi-agent coding workspace with shared ByoriDB context.**
+> **The multi-agent coding workspace that remembers your project.**
+
+Run Claude Code and Codex side by side in one native workspace, over a shared graph memory that
+outlives every session.
+
+```text
+Session 1 — Claude Code
+  ✓ found the bug   ✓ fixed it   ✓ explained why it had to be that way
+
+A month later — new session, maybe a different agent
+  "I have no memory of this project."
+  → re-reads the repository, re-derives the rationale, and still misses
+    everything that was never written down
+
+The same moment, with Byori
+  "I remember. This bug came from decision #42, which superseded #17.
+   Option B was rejected after incident #18."
+```
+
+Byori preserves that chain rather than a pile of summaries:
+
+```text
+incident ──caused_by──> bug ──fixed_by──> decision ──affects──> module
+                                      └──supersedes──> previous decision
+```
+
+Vector search recalls a similar paragraph; this recalls the reason. In a dogfood run, a session
+connected to Byori answered five such questions in ≈40 s and ≈$0.43 against ≈125 s and ≈$1.15
+without it, and recovered 20/20 facts that were absent from the code, versus 0/20 unconnected.
+That is one run per condition on a synthetic repository — see the
+[preliminary benchmark](#preliminary-benchmark-dogfood) for what it does and does not show.
+
+## What Byori is
 
 Byori is a project-first native multi-agent coding workspace. Organize local Git work as
 **Project → Source Tree/Worktree → Task → Session**, then choose Claude Code or Codex for each
@@ -18,6 +50,10 @@ merge branches, or delete agent work.
 workspace. It keeps project decisions and rationale, module relationships, recurring bugs,
 incidents, resolutions, and task checkpoints available across agents and sessions. **Byori** is
 the product, **ByoriDB** is its graph engine, and **`byori`** is the command-line interface.
+
+Knowledge is captured by the agent at checkpoints, not extracted automatically from every turn,
+so the graph grows as you work rather than on first install. Automatic repository ingestion is
+still under development; see [current limitations](#current-limitations).
 
 > [!WARNING]
 > Byori is currently an early experiment. The native macOS workspace MVP, real interactive PTY,
@@ -207,14 +243,9 @@ MCP directly. The agent still decides what to record and whether to record it.
 | Accumulate duplicates through free-form extraction | Manage entities with a narrow ontology and canonical names |
 | May depend on external services | Keep redb-backed data and the MCP server local |
 
-For example, once the following relationships are recorded, future agents can explore the
-cause, the decision that resolved it, and the affected module as one chain instead of searching
-for the symptom alone.
-
-```text
-incident ──caused_by──> bug ──fixed_by──> decision ──affects──> module
-                                      └──supersedes──> previous decision
-```
+Once the causal chain shown at the top of this page is recorded, future agents can explore the
+cause, the decision that resolved it, and the affected module as one traversal instead of
+searching for the symptom alone.
 
 ### Preliminary benchmark (dogfood)
 

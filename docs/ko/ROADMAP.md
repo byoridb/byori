@@ -89,3 +89,18 @@ backup / upgrade --plan / rollback / uninstall`.
 - repository의 module, symbol, dependency, document, git change를 project-aware하게
   indexing → canonical name과 merge candidate로 파편화 방지
 - traversal + temporal + semantic ranking recall, 읽기 좋은 wiki surface 추가
+
+## P8 — 첫 가치까지의 시간
+
+현재 Byori의 가치는 지연되어 있습니다. 설치 시점의 그래프는 비어 있고, 몇 주간 체크포인트가
+쌓여야 쓸모가 생깁니다. 새 프로젝트는 이득을 보기 전에 비용부터 냅니다. 이 단계는 100번째
+세션이 아니라 첫 세션을 목표로 합니다.
+
+- 이미 존재하는 근거(Git 히스토리, merge commit, 이슈·PR 참조, 기존 설계 문서)에서 신규
+  등록을 seeding 하여 `project add` 직후의 그래프가 비어 있지 않게 한다
+- 실제 저장소에서 실행 가능한 데모를 제공해, 몇 주간의 사전 사용 없이도 recall이 코드만으로는
+  답할 수 없는 질문에 답하는 장면을 보여 준다
+- 세션 종료 후 실제로 무엇이 capture 되었는지 보고하여, 사용자가 그래프가 자란다는 사실을
+  믿는 대신 보게 한다
+- 현재의 dogfood 단일 실행 대신 재현 가능한 before/after 수치를 측정·공개한다. README의
+  벤치마크는 방향을 보여 주는 근거이지 주장(claim)이 아니다
