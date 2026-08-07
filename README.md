@@ -199,9 +199,10 @@ reference skill from `adapters/naraeclaw/` using NaraeClaw's normal skill mechan
 | `memory_query_read(ngql)` | Run one validated read-only `MATCH`/`FETCH`/`GO`/`LOOKUP`/`SHOW`/`WHY` statement |
 | `memory_query(ngql)` | Legacy unrestricted raw nGQL escape hatch; hidden and blocked in the `safe` profile |
 
-The default `legacy` MCP profile keeps `memory_query` for backward compatibility. New integrations
-that do not need unrestricted raw mutation should run with `BYORIDB_MCP_PROFILE=safe`: it removes
-only the raw-query tool, while note writes and validated structured CRUD remain available.
+The default `safe` MCP profile removes `memory_query` from discovery and dispatch. Existing users
+who explicitly require the unrestricted compatibility escape hatch can opt into
+`BYORIDB_MCP_PROFILE=legacy`; note writes and validated structured CRUD remain available in both
+profiles.
 Use a stable `BYORIDB_MEMORY_SPACE` matching `^[A-Za-z_][A-Za-z0-9_]{0,63}$` to avoid accidental
 mixing between clients or projects. A space is a logical namespace, not an authorization boundary;
 separate trust domains require separate instances and credentials. See the
