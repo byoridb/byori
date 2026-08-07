@@ -83,6 +83,17 @@ final class ManagerPathsTests: XCTestCase {
         XCTAssertGreaterThan(child.x, root.x)
     }
 
+    func testLocalServiceVerifierParsesOnlyAValidLaunchdPID() {
+        XCTAssertEqual(LocalServiceVerifier.pid(fromLaunchctlOutput: "state = running\n\tpid = 4321\n"), 4321)
+        XCTAssertNil(LocalServiceVerifier.pid(fromLaunchctlOutput: "pid = 0\n"))
+        XCTAssertNil(LocalServiceVerifier.pid(fromLaunchctlOutput: "other_pid = 4321\n"))
+    }
+
+    func testLocalServiceVerifierMatchesExactLsofPIDField() {
+        XCTAssertTrue(LocalServiceVerifier.contains(pid: 4321, inLsofOutput: "p4321\n"))
+        XCTAssertFalse(LocalServiceVerifier.contains(pid: 4321, inLsofOutput: "p14321\n"))
+    }
+
     private func makeKnowledgeGraph() -> KnowledgeGraphSnapshot {
         KnowledgeGraphSnapshot(
             nodes: [

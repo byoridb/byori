@@ -14,6 +14,7 @@ public actor ManagerService {
     private let files: ManagedFileInstaller
     private let graphProvider: any KnowledgeGraphProviding
     private let fileManager: FileManager
+    private let serviceVerifier: LocalServiceVerifier
 
     public init(
         paths: ManagerPaths = .applicationDefault(),
@@ -27,6 +28,7 @@ public actor ManagerService {
         self.files = files
         self.graphProvider = graphProvider
         self.fileManager = fileManager
+        serviceVerifier = LocalServiceVerifier(runner: runner)
     }
 
     public func snapshot() async -> ManagerSnapshot {
@@ -833,6 +835,7 @@ public actor ManagerService {
     }
 
     private func healthCheck() async -> Bool {
+        guard await serviceVerifier.verify(paths: paths) else { return false }
         guard let url = URL(string: "http://127.0.0.1:\(paths.httpPort)/health") else { return false }
         var request = URLRequest(url: url)
         request.timeoutInterval = 2
