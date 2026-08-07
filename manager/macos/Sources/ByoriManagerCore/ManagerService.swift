@@ -796,7 +796,10 @@ public actor ManagerService {
                     switch error {
                     case .missingConfiguration, .invalidConfiguration:
                         throw ManagerError.verificationFailed(error.localizedDescription)
-                    case .unavailable, .queryFailed, .invalidResponse, .authenticationFailed:
+                    case .unavailable, .queryFailed, .invalidResponse, .authenticationFailed,
+                         .untrustedService:
+                        // 서비스가 기동 중이면 launchd/listener 신원이 아직 안 잡힐 수 있어
+                        // 재시도로 흡수하고, 끝내 확인되지 않으면 루프 종료 후 실패한다.
                         break
                     }
                 } catch {
