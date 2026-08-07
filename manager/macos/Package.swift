@@ -11,11 +11,20 @@ let package = Package(
         .executable(name: "ByoriManager", targets: ["ByoriManager"]),
         .executable(name: "ByoriManagerSelfTest", targets: ["ByoriManagerSelfTest"]),
     ],
+    dependencies: [
+        .package(
+            url: "https://github.com/migueldeicaza/SwiftTerm.git",
+            exact: "1.15.0"
+        ),
+    ],
     targets: [
         .target(name: "ByoriManagerCore"),
         .executableTarget(
             name: "ByoriManager",
-            dependencies: ["ByoriManagerCore"]
+            dependencies: [
+                "ByoriManagerCore",
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
+            ]
         ),
         .executableTarget(
             name: "ByoriManagerSelfTest",

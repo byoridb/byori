@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Byori — local agent memory installer.
-# Sets up a local ByoriDB engine + MCP server + Claude Code skill so ByoriDB
-# becomes Claude Code's persistent memory. macOS / Linux x86_64. Windows unsupported.
+# Byori — local workspace runtime installer.
+# Sets up ByoriDB, MCP, the `byori` CLI, and Claude/Codex Skills that provide
+# shared project knowledge across coding-agent sessions. macOS / Linux x86_64.
+# Windows unsupported.
 #
 #   curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh | bash
 #
@@ -56,7 +57,7 @@ case "$OS" in Darwin) SERVICE=launchd ;; Linux) SERVICE=systemd ;; *) die "unsup
 
 # ---- uninstall -------------------------------------------------------------
 uninstall() {
-  log "uninstalling ByoriDB local memory substrate"
+  log "uninstalling the ByoriDB runtime and agent integrations"
   if [ "$SERVICE" = launchd ]; then
     plist="${HOME}/Library/LaunchAgents/${LABEL}.plist"
     [ -f "$plist" ] && { launchctl unload -w "$plist" 2>/dev/null || true; rm -f "$plist"; }
@@ -118,36 +119,69 @@ render() { # <src-template> <dest>
 TARGET="$(detect_target)"
 mkdir -p "$BYORIDB_HOME/bin" "$BYORIDB_HOME/data" "$BYORIDB_HOME/logs"
 chmod 700 "$BYORIDB_HOME" "$BYORIDB_HOME/data" "$BYORIDB_HOME/logs" 2>/dev/null || true
+# Resolve and validate every Byori-owned asset before replacing the live runtime.
+# This keeps a failed download/render/compile from leaving mixed MCP/CLI versions.
+[ -z "$TAG" ] && [ -z "$ASSETS" ] && { TAG="$(resolve_tag)"; [ -n "$TAG" ] || die "could not resolve latest byori release tag"; }
+get "mcp/byoridb_mcp.py" "$WORK/byoridb_mcp.py"
+get "cli/byori.py" "$WORK/byori.py"
+get "templates/run-server.sh" "$WORK/run-server.sh"
+get "templates/run-mcp.sh" "$WORK/run-mcp.sh"
+get "templates/run-byori.sh" "$WORK/run-byori.sh"
+get "adapters/claude/skills/byoridb-memory/SKILL.md" "$WORK/byoridb-memory.SKILL.md"
+if [ "$SERVICE" = launchd ]; then
+  get "templates/com.byoridb.local.plist" "$WORK/service.template"
+else
+  get "templates/byoridb-local.service" "$WORK/service.template"
+fi
+if [ "$WITH_HOOKS" = 1 ]; then
+  get "adapters/claude/hooks.snippet.json" "$WORK/hooks.json"
+  "$PYTHON" -m json.tool "$WORK/hooks.json" >/dev/null
+fi
+render "$WORK/run-server.sh" "$WORK/run-server.rendered.sh"
+render "$WORK/run-mcp.sh" "$WORK/run-mcp.rendered.sh"
+render "$WORK/run-byori.sh" "$WORK/run-byori.rendered.sh"
+"$PYTHON" -m py_compile "$WORK/byoridb_mcp.py" "$WORK/byori.py"
+bash -n "$WORK/run-server.rendered.sh" "$WORK/run-mcp.rendered.sh" \
+  "$WORK/run-byori.rendered.sh"
 
-# 1) engine binary (from ENGINE_REPO, pinned to the tested ENGINE_TAG)
+# 1) stage and install the engine binary (from ENGINE_REPO, pinned to the tested ENGINE_TAG)
+mkdir -p "$WORK/engine"
 if [ -n "$BINARY" ]; then
   log "using local binary: $BINARY"
-  cp "$BINARY" "$BYORIDB_HOME/bin/byoridb-server"
+  cp "$BINARY" "$WORK/engine/byoridb-server"
 else
   url="https://github.com/${ENGINE_REPO}/releases/download/${ENGINE_TAG}/byoridb-${ENGINE_TAG}-${TARGET}.tar.gz"
   log "downloading engine ${ENGINE_TAG}: $url"
   curl -fSL "$url" -o "$WORK/b.tar.gz" || die "download failed (does engine release $ENGINE_TAG have $TARGET?)"
-  tar -xzf "$WORK/b.tar.gz" -C "$BYORIDB_HOME/bin"
+  tar -xzf "$WORK/b.tar.gz" -C "$WORK/engine"
 fi
+[ -f "$WORK/engine/byoridb-server" ] || die "engine archive is missing byoridb-server"
+cp "$WORK/engine/byoridb-server" "$BYORIDB_HOME/bin/byoridb-server"
+[ -f "$WORK/engine/byoridb-cli" ] && cp "$WORK/engine/byoridb-cli" "$BYORIDB_HOME/bin/byoridb-cli"
 chmod +x "$BYORIDB_HOME/bin/byoridb-server" 2>/dev/null || true
 [ -f "$BYORIDB_HOME/bin/byoridb-cli" ] && chmod +x "$BYORIDB_HOME/bin/byoridb-cli"
-# TAG (byori asset version) only needed for raw fetches; empty with --assets — fine.
-[ -z "$TAG" ] && [ -z "$ASSETS" ] && { TAG="$(resolve_tag)"; [ -n "$TAG" ] || die "could not resolve latest byori release tag"; }
 
-# 2) MCP server + rendered wrappers
-log "installing MCP server + service wrappers"
-get "mcp/byoridb_mcp.py" "$BYORIDB_HOME/byoridb_mcp.py"
-get "templates/run-server.sh" "$WORK/run-server.sh"
-get "templates/run-mcp.sh"    "$WORK/run-mcp.sh"
-render "$WORK/run-server.sh" "$BYORIDB_HOME/bin/run-server.sh"
-render "$WORK/run-mcp.sh"    "$BYORIDB_HOME/bin/run-mcp.sh"
-chmod +x "$BYORIDB_HOME/bin/run-server.sh" "$BYORIDB_HOME/bin/run-mcp.sh"
+# 2) MCP server + multi-agent CLI + rendered wrappers
+log "installing MCP server + multi-agent CLI + service wrappers"
+cp "$WORK/byoridb_mcp.py" "$BYORIDB_HOME/byoridb_mcp.py"
+cp "$WORK/byori.py" "$BYORIDB_HOME/bin/byori.py"
+cp "$WORK/run-server.rendered.sh" "$BYORIDB_HOME/bin/run-server.sh"
+cp "$WORK/run-mcp.rendered.sh" "$BYORIDB_HOME/bin/run-mcp.sh"
+cp "$WORK/run-byori.rendered.sh" "$BYORIDB_HOME/bin/byori"
+chmod 644 "$BYORIDB_HOME/bin/byori.py"
+chmod +x "$BYORIDB_HOME/bin/run-server.sh" "$BYORIDB_HOME/bin/run-mcp.sh" \
+  "$BYORIDB_HOME/bin/byori"
 
-# 3) env: preserve ONLY the root secret across reinstalls (so existing data stays
-#    accessible); always rewrite derived endpoint/user, so an upgrade with changed
-#    ports keeps the server and the MCP client pointed at the SAME address.
+# 3) env: preserve the root secret across reinstalls (including the legacy
+#    BYORIDB_PASSWORD key) so an existing data directory remains accessible.
+#    Always rewrite derived endpoint/user so server and clients stay aligned.
 pw=""
-[ -f "$BYORIDB_HOME/env" ] && pw="$(sed -n 's/^BYORIDB_ROOT_PASSWORD=//p' "$BYORIDB_HOME/env")"
+credential_state="generated"
+if [ -f "$BYORIDB_HOME/env" ]; then
+  pw="$(sed -n 's/^BYORIDB_ROOT_PASSWORD=//p' "$BYORIDB_HOME/env" | sed -n '1p')"
+  [ -n "$pw" ] || pw="$(sed -n 's/^BYORIDB_PASSWORD=//p' "$BYORIDB_HOME/env" | sed -n '1p')"
+  [ -z "$pw" ] || credential_state="preserved"
+fi
 [ -n "$pw" ] || pw="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
 umask 177
 cat > "$BYORIDB_HOME/env" <<EOF
@@ -158,19 +192,19 @@ BYORIDB_MCP_PROFILE=safe
 EOF
 umask 022
 chmod 600 "$BYORIDB_HOME/env"
-log "wrote $BYORIDB_HOME/env (secret preserved; endpoint=http://${HTTP_ADDR})"
+log "wrote $BYORIDB_HOME/env (secret ${credential_state}; endpoint=http://${HTTP_ADDR})"
 
 # 4) service (always-on)
 start_service() {
   if [ "$SERVICE" = launchd ]; then
     plist="${HOME}/Library/LaunchAgents/${LABEL}.plist"
-    get "templates/com.byoridb.local.plist" "$WORK/svc.plist"
+    cp "$WORK/service.template" "$WORK/svc.plist"
     mkdir -p "${HOME}/Library/LaunchAgents"; render "$WORK/svc.plist" "$plist"
     launchctl unload "$plist" 2>/dev/null || true
     launchctl load -w "$plist"
   else
     unit="${HOME}/.config/systemd/user/${LABEL}.service"
-    get "templates/byoridb-local.service" "$WORK/svc.service"
+    cp "$WORK/service.template" "$WORK/svc.service"
     mkdir -p "${HOME}/.config/systemd/user"; render "$WORK/svc.service" "$unit"
     systemctl --user daemon-reload
     systemctl --user enable --now "${LABEL}.service"
@@ -194,6 +228,50 @@ done
 [ "$ok" = 1 ] || die "server did not become healthy on http://${HTTP_ADDR} — see $BYORIDB_HOME/logs/server.err (not registering MCP)"
 log "server healthy"
 
+# Health is intentionally unauthenticated and can be served by a stale process
+# that already owns the port. Prove that the configured credential reaches the
+# same server before reporting success or wiring MCP clients. Repeat with closed
+# connections to make a duplicate listener much less likely to pass by chance.
+auth_request="$WORK/session-request.json"
+auth_response="$WORK/session-response.json"
+printf '%s' "$pw" | "$PYTHON" -c \
+  'import json, sys; print(json.dumps({"username": "root", "password": sys.stdin.read()}))' \
+  > "$auth_request"
+for auth_attempt in 1 2 3; do
+  auth_status="$(curl -sS -o "$auth_response" -w '%{http_code}' \
+    -H 'Content-Type: application/json' -H 'Connection: close' \
+    --data-binary "@$auth_request" "http://${HTTP_ADDR}/api/v1/session" || true)"
+  case "$auth_status" in
+    2??) ;;
+    401|403)
+      die "server is healthy but rejected the installed credential — another ByoriDB process may own ${HTTP_ADDR}, or the data credential does not match"
+      ;;
+    *)
+      die "server health passed but authenticated session verification failed (HTTP ${auth_status:-unavailable})"
+      ;;
+  esac
+  if ! session_id="$("$PYTHON" - "$auth_response" <<'PY'
+import json
+import sys
+
+try:
+    value = json.load(open(sys.argv[1], encoding="utf-8"))["session_id"]
+except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+    raise SystemExit(1)
+value = str(value)
+if not value.isdigit():
+    raise SystemExit(1)
+print(value)
+PY
+  )"; then
+    die "server returned an invalid authenticated session response"
+  fi
+  curl -fsS -X DELETE -H 'Connection: close' \
+    "http://${HTTP_ADDR}/api/v1/session/${session_id}" >/dev/null 2>&1 || true
+done
+rm -f "$auth_request" "$auth_response"
+log "server credential verified"
+
 # 6) register MCP server with Claude Code
 if [ "$NO_CLAUDE" = 1 ]; then
   warn "skipping Claude Code wiring (--no-claude): MCP registration + skill install"
@@ -208,7 +286,7 @@ fi
 if [ "$NO_CLAUDE" != 1 ]; then
   log "installing skill -> $SKILL_DIR"
   mkdir -p "$SKILL_DIR"
-  get "adapters/claude/skills/byoridb-memory/SKILL.md" "$SKILL_DIR/SKILL.md"
+  cp "$WORK/byoridb-memory.SKILL.md" "$SKILL_DIR/SKILL.md"
 fi
 
 # 8) Codex wiring (MCP + skill; non-fatal — the base install works without it)
@@ -222,7 +300,7 @@ elif command -v codex >/dev/null 2>&1; then
     warn "codex mcp add failed — register manually: codex mcp add byoridb -- $BYORIDB_HOME/bin/run-mcp.sh"
   fi
   mkdir -p "$CODEX_SKILL_DIR"
-  get "adapters/claude/skills/byoridb-memory/SKILL.md" "$CODEX_SKILL_DIR/SKILL.md"
+  cp "$WORK/byoridb-memory.SKILL.md" "$CODEX_SKILL_DIR/SKILL.md"
   log "installing skill -> $CODEX_SKILL_DIR"
 else
   warn "codex CLI not found — skipped Codex wiring (connect later: codex mcp add byoridb -- $BYORIDB_HOME/bin/run-mcp.sh)"
@@ -235,7 +313,6 @@ if [ "$NO_CLAUDE" != 1 ] && [ "$WITH_HOOKS" = 1 ]; then
     [ -f "$settings" ] || echo '{}' > "$settings"
     backup="${settings}.bak.$(date +%Y%m%d%H%M%S)"
     cp "$settings" "$backup"
-    get "adapters/claude/hooks.snippet.json" "$WORK/hooks.json"
     # Append byori hooks to existing event arrays, skipping entries that are
     # already present — user hooks survive and re-runs stay idempotent.
     jq -s '
@@ -251,10 +328,15 @@ if [ "$NO_CLAUDE" != 1 ] && [ "$WITH_HOOKS" = 1 ]; then
   fi
 fi
 
-printf '\n%sByoriDB local memory substrate installed.%s\n' "$c_blue" "$c_off"
+printf '\n%sByoriDB runtime and agent integrations installed.%s\n' "$c_blue" "$c_off"
 printf '  home     : %s\n' "$BYORIDB_HOME"
 printf '  server   : http://%s  (health: curl -s http://%s/health)\n' "$HTTP_ADDR" "$HTTP_ADDR"
 printf '  mcp      : %s/bin/run-mcp.sh\n' "$BYORIDB_HOME"
+printf '  cli      : %s/bin/byori  (try: %s/bin/byori --help)\n' "$BYORIDB_HOME" "$BYORIDB_HOME"
+case ":${PATH}:" in
+  *":${BYORIDB_HOME}/bin:"*) ;;
+  *) printf '  path     : export PATH="%s/bin:$PATH"\n' "$BYORIDB_HOME" ;;
+esac
 if [ "$NO_CLAUDE" != 1 ]; then
   printf '  skill    : %s/SKILL.md   (claude mcp list -> byoridb)\n' "$SKILL_DIR"
 fi

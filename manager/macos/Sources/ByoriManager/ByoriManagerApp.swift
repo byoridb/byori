@@ -4,47 +4,83 @@ import SwiftUI
 
 @main
 struct ByoriManagerApp: App {
+    @NSApplicationDelegateAdaptor(ByoriApplicationDelegate.self) private var appDelegate
     @StateObject private var model: ManagerViewModel
-    @StateObject private var graphModel: KnowledgeGraphViewModel
+    @StateObject private var workspaceModel: WorkspaceViewModel
+    @StateObject private var terminalController: TerminalSessionController
+    private let workspaceWindowCoordinator: WorkspaceWindowCoordinator
+    private let settingsWindowCoordinator: SettingsWindowCoordinator
 
     init() {
         let service = ManagerService()
-        _model = StateObject(wrappedValue: ManagerViewModel(service: service))
-        _graphModel = StateObject(wrappedValue: KnowledgeGraphViewModel(service: service))
+        let managerModel = ManagerViewModel(service: service)
+        let terminalController = TerminalSessionController.shared
+        let dataSource = LiveWorkspaceDataSource(
+            managerService: service,
+            terminalController: terminalController,
+            workspaceHome: Self.workspaceHome
+        )
+        let workspaceModel = WorkspaceViewModel(dataSource: dataSource)
+        dataSource.workspaceChanged = { [weak workspaceModel] in
+            Task { @MainActor in
+                await workspaceModel?.load(force: true)
+            }
+        }
+
+        _model = StateObject(wrappedValue: managerModel)
+        _workspaceModel = StateObject(wrappedValue: workspaceModel)
+        _terminalController = StateObject(wrappedValue: terminalController)
+        let settingsCoordinator = SettingsWindowCoordinator(model: managerModel)
+        let windowCoordinator = WorkspaceWindowCoordinator(
+            managerModel: managerModel,
+            workspaceModel: workspaceModel,
+            terminalController: terminalController,
+            openSettingsWindow: settingsCoordinator.showWindow
+        )
+        workspaceWindowCoordinator = windowCoordinator
+        settingsWindowCoordinator = settingsCoordinator
+        appDelegate.openWorkspaceWindow = windowCoordinator.showWindow
+        appDelegate.openSettingsWindow = settingsCoordinator.showWindow
+        appDelegate.managerModel = managerModel
+        DispatchQueue.main.async {
+            windowCoordinator.showWindow()
+        }
     }
 
     var body: some Scene {
-        Window("Byori Manager", id: "manager") {
-            ContentView()
+        MenuBarExtra {
+            MenuBarView(
+                openWorkspaceWindow: workspaceWindowCoordinator.showWindow,
+                openSettingsWindow: settingsWindowCoordinator.showWindow
+            )
                 .environmentObject(model)
-                .environmentObject(graphModel)
-                .frame(minWidth: 900, minHeight: 620)
+                .environmentObject(workspaceModel)
+                .environmentObject(terminalController)
+        } label: {
+            Label("Byori", systemImage: menuBarIcon)
         }
-        .windowStyle(.titleBar)
-        .defaultSize(width: 1_120, height: 740)
+        .menuBarExtraStyle(.window)
         .commands {
-            CommandGroup(after: .appInfo) {
-                Button("상태 새로고침") {
-                    Task { await model.refresh() }
+            CommandGroup(replacing: .newItem) { }
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    settingsWindowCoordinator.showWindow()
                 }
-                .keyboardShortcut("r", modifiers: .command)
+                .keyboardShortcut(",", modifiers: .command)
+            }
+            CommandGroup(after: .appInfo) {
+                Button("Refresh Workspace") {
+                    Task { await workspaceModel.load(force: true) }
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
             }
             CommandGroup(replacing: .appTermination) {
-                Button("Byori Manager 종료") {
+                Button("Quit Byori") {
                     NSApplication.shared.terminate(nil)
                 }
                 .keyboardShortcut("q", modifiers: .command)
-                .disabled(model.isBusy)
             }
         }
-
-        MenuBarExtra {
-            MenuBarView()
-                .environmentObject(model)
-        } label: {
-            Label("Byori Manager", systemImage: menuBarIcon)
-        }
-        .menuBarExtraStyle(.window)
     }
 
     private var menuBarIcon: String {
@@ -52,5 +88,151 @@ struct ByoriManagerApp: App {
         return model.snapshot?.byori.isHealthy == true
             ? "externaldrive.connected.to.line.below.fill"
             : "externaldrive.badge.exclamationmark"
+    }
+
+    private static var workspaceHome: URL {
+        if let path = ProcessInfo.processInfo.environment["BYORI_WORKSPACE_HOME"],
+           !path.isEmpty {
+            return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".byori", isDirectory: true)
+    }
+}
+
+@MainActor
+private final class ByoriApplicationDelegate: NSObject, NSApplicationDelegate {
+    var openWorkspaceWindow: (@MainActor () -> Void)?
+    var openSettingsWindow: (@MainActor () -> Void)?
+    weak var managerModel: ManagerViewModel?
+    private var terminationTask: Task<Void, Never>?
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        openWorkspaceWindow?()
+        return true
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let terminalController = TerminalSessionController.shared
+        let needsManagerDrain = managerModel?.hasActiveOperation == true
+        guard needsManagerDrain || terminalController.needsTerminationDrain else {
+            return .terminateNow
+        }
+        guard terminationTask == nil else {
+            return .terminateLater
+        }
+
+        terminationTask = Task { @MainActor in
+            let managerSafe = await managerModel?.cancelActiveOperationAndWait() ?? true
+            guard managerSafe else {
+                managerModel?.selectedSection = .activity
+                openSettingsWindow?()
+                terminationTask = nil
+                sender.reply(toApplicationShouldTerminate: false)
+                return
+            }
+            await terminalController.stopAllAndWaitForApplicationTermination()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Best-effort fallback for lifecycle paths that do not first ask the
+        // delegate. Normal menu, keyboard, Dock and Apple-event quits are
+        // drained asynchronously by `applicationShouldTerminate` above.
+        TerminalSessionController.shared.stopAll()
+    }
+}
+
+@MainActor
+private final class WorkspaceWindowCoordinator {
+    private let managerModel: ManagerViewModel
+    private let workspaceModel: WorkspaceViewModel
+    private let terminalController: TerminalSessionController
+    private let openSettingsWindow: @MainActor () -> Void
+    private var retainedWindow: NSWindow?
+
+    init(
+        managerModel: ManagerViewModel,
+        workspaceModel: WorkspaceViewModel,
+        terminalController: TerminalSessionController,
+        openSettingsWindow: @escaping @MainActor () -> Void
+    ) {
+        self.managerModel = managerModel
+        self.workspaceModel = workspaceModel
+        self.terminalController = terminalController
+        self.openSettingsWindow = openSettingsWindow
+    }
+
+    func showWindow() {
+        _ = NSApplication.shared.setActivationPolicy(.regular)
+        if let window = retainedWindow ?? NSApplication.shared.windows.first(where: {
+            $0.title == "Byori" && $0.canBecomeMain
+        }) {
+            window.makeKeyAndOrderFront(nil)
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let root = ContentView(openSettings: openSettingsWindow)
+            .environmentObject(managerModel)
+            .environmentObject(workspaceModel)
+            .environmentObject(terminalController)
+            .frame(minWidth: 1_000, minHeight: 620)
+        let window = NSWindow(contentViewController: NSHostingController(rootView: root))
+        window.title = "Byori"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.minSize = NSSize(width: 1_000, height: 620)
+        window.setContentSize(NSSize(width: 1_480, height: 880))
+        window.isReleasedWhenClosed = false
+        window.isRestorable = false
+        window.center()
+        retainedWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+}
+
+/// Owns a concrete AppKit settings window instead of depending on the
+/// undocumented `showSettingsWindow:` responder selector. That selector is
+/// not reliably delivered for a MenuBarExtra app with a manually-owned main
+/// window, which previously made every visible Settings entry a no-op.
+@MainActor
+private final class SettingsWindowCoordinator {
+    private let model: ManagerViewModel
+    private var retainedWindow: NSWindow?
+
+    init(model: ManagerViewModel) {
+        self.model = model
+    }
+
+    func showWindow() {
+        _ = NSApplication.shared.setActivationPolicy(.regular)
+        if let window = retainedWindow {
+            Task { await model.refresh() }
+            window.makeKeyAndOrderFront(nil)
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let root = ManagerSettingsView()
+            .environmentObject(model)
+        let window = NSWindow(contentViewController: NSHostingController(rootView: root))
+        window.title = "Byori Settings"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.toolbarStyle = .preference
+        window.tabbingMode = .disallowed
+        window.minSize = NSSize(width: 760, height: 520)
+        window.setContentSize(NSSize(width: 920, height: 640))
+        window.isReleasedWhenClosed = false
+        window.isRestorable = false
+        window.center()
+        retainedWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 }

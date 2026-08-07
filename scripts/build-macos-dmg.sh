@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build, bundle, sign, and package Byori Manager for macOS.
+# Build, bundle, sign, and package Byori for macOS.
 set -Eeuo pipefail
 
 IFS=$'\n\t'
@@ -8,8 +8,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
 
 PRODUCT_NAME="ByoriManager"
-APP_NAME="Byori Manager.app"
-BUNDLE_IDENTIFIER="io.byoridb.manager"
+EXECUTABLE_NAME="Byori"
+APP_NAME="Byori.app"
+BUNDLE_IDENTIFIER="io.byoridb.byori"
 PACKAGE_DIR="${PACKAGE_DIR:-${REPO_ROOT}/manager/macos}"
 OUTPUT_DIR="${OUTPUT_DIR:-${REPO_ROOT}/dist}"
 VERSION="${VERSION:-}"
@@ -23,8 +24,9 @@ usage() {
   cat <<'EOF'
 Usage: scripts/build-macos-dmg.sh [options]
 
-Build the SwiftPM executable product ByoriManager, wrap it in a signed .app,
-and create a compressed DMG containing the app and an Applications symlink.
+Build the SwiftPM executable product ByoriManager, copy it into a signed
+Byori.app as the Byori executable, and create a compressed DMG containing the
+app and an Applications symlink.
 
 Options:
   --version VERSION       Release version (or set VERSION; default: git tag)
@@ -154,13 +156,26 @@ fi
 [ -f "$PACKAGE_DIR/Package.swift" ] || die "Package.swift not found in $PACKAGE_DIR"
 [ -f "$REPO_ROOT/install.sh" ] || die "missing installer: install.sh"
 [ -f "$REPO_ROOT/mcp/byoridb_mcp.py" ] || die "missing MCP bridge: mcp/byoridb_mcp.py"
-[ -d "$REPO_ROOT/templates" ] || die "missing templates directory"
+[ -f "$REPO_ROOT/cli/byori.py" ] || die "missing multi-agent CLI: cli/byori.py"
+[ -f "$REPO_ROOT/manager/macos/THIRD_PARTY_NOTICES.md" ] || \
+  die "missing third-party notices: manager/macos/THIRD_PARTY_NOTICES.md"
+[ -f "$REPO_ROOT/LICENSE" ] || die "missing project license: LICENSE"
+RUNTIME_TEMPLATES=(
+  "run-server.sh"
+  "run-mcp.sh"
+  "run-byori.sh"
+  "com.byoridb.local.plist"
+  "byoridb-local.service"
+)
+for template in "${RUNTIME_TEMPLATES[@]}"; do
+  [ -f "$REPO_ROOT/templates/$template" ] || die "missing runtime template: templates/$template"
+done
 [ -f "$REPO_ROOT/adapters/claude/skills/byoridb-memory/SKILL.md" ] || \
   die "missing Claude skill: adapters/claude/skills/byoridb-memory/SKILL.md"
 [ -f "$REPO_ROOT/adapters/claude/hooks.snippet.json" ] || \
   die "missing Claude hooks snippet"
 
-for tool in codesign ditto hdiutil install lipo plutil sed xattr xcrun; do
+for tool in codesign ditto hdiutil install lipo plutil sed strip xattr xcrun; do
   need "$tool"
 done
 SWIFT="$(xcrun --find swift)"
@@ -175,7 +190,7 @@ SDK_PATH="$(cd "$SDK_PATH" && pwd -P)"
 SWIFT_SDK_ARGS=(--sdk "$SDK_PATH")
 export SDKROOT="$SDK_PATH"
 
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/byori-manager-package.XXXXXX")"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/byori-package.XXXXXX")"
 cleanup() {
   if [ -n "${WORK_DIR:-}" ] && [ -d "$WORK_DIR" ]; then
     rm -rf "$WORK_DIR"
@@ -199,7 +214,7 @@ CONTENTS="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS/MacOS"
 RESOURCES_DIR="$CONTENTS/Resources"
 RUNTIME_DIR="$RESOURCES_DIR/runtime"
-mkdir -p "$MACOS_DIR" "$RUNTIME_DIR/mcp" \
+mkdir -p "$MACOS_DIR" "$RUNTIME_DIR/mcp" "$RUNTIME_DIR/cli" \
   "$RUNTIME_DIR/adapters/claude/skills/byoridb-memory"
 
 build_arch() {
@@ -233,6 +248,17 @@ build_arch() {
     --show-bin-path)"
   [ -x "$bin_dir/$PRODUCT_NAME" ] || die "SwiftPM did not produce $bin_dir/$PRODUCT_NAME"
   install -m 755 "$bin_dir/$PRODUCT_NAME" "$destination"
+  # Release sharing should not expose the builder's username or checkout path
+  # through Mach-O SO/OSO debug symbol records. Keep normal symbols needed by
+  # the runtime while dropping debug entries before the enclosing app is signed.
+  strip -S "$destination"
+  # Keep dependency resource bundles in the standard signed-app resource
+  # directory. SwiftTerm 1.15 probes Bundle.main.resourceURL for its Metal
+  # resources, and files placed beside Contents are rejected by codesign as
+  # unsealed contents in the bundle root.
+  local resource_bundle="$bin_dir/SwiftTerm_SwiftTerm.bundle"
+  [ -d "$resource_bundle" ] || die "missing required SwiftTerm resource bundle"
+  ditto "$resource_bundle" "$RESOURCES_DIR/SwiftTerm_SwiftTerm.bundle"
 }
 
 if [ "$ARCH" = "universal" ]; then
@@ -240,19 +266,25 @@ if [ "$ARCH" = "universal" ]; then
   INTEL_BINARY="$WORK_DIR/$PRODUCT_NAME-x86_64"
   build_arch arm64 "$ARM_BINARY"
   build_arch x86_64 "$INTEL_BINARY"
-  lipo -create "$ARM_BINARY" "$INTEL_BINARY" -output "$MACOS_DIR/$PRODUCT_NAME"
-  LIPO_ARCHS="$(lipo -archs "$MACOS_DIR/$PRODUCT_NAME")"
+  lipo -create "$ARM_BINARY" "$INTEL_BINARY" -output "$MACOS_DIR/$EXECUTABLE_NAME"
+  LIPO_ARCHS="$(lipo -archs "$MACOS_DIR/$EXECUTABLE_NAME")"
   [[ " $LIPO_ARCHS " = *" arm64 "* && " $LIPO_ARCHS " = *" x86_64 "* ]] || \
     die "universal binary validation failed (found: $LIPO_ARCHS)"
-  chmod 755 "$MACOS_DIR/$PRODUCT_NAME"
+  chmod 755 "$MACOS_DIR/$EXECUTABLE_NAME"
 else
-  build_arch "$ARCH" "$MACOS_DIR/$PRODUCT_NAME"
+  build_arch "$ARCH" "$MACOS_DIR/$EXECUTABLE_NAME"
 fi
 
-log "Copying installer, MCP, templates, and agent resources"
+log "Copying installer, MCP, multi-agent CLI, templates, and agent resources"
 install -m 755 "$REPO_ROOT/install.sh" "$RUNTIME_DIR/install.sh"
 install -m 644 "$REPO_ROOT/mcp/byoridb_mcp.py" "$RUNTIME_DIR/mcp/byoridb_mcp.py"
-ditto "$REPO_ROOT/templates" "$RUNTIME_DIR/templates"
+install -m 644 "$REPO_ROOT/cli/byori.py" "$RUNTIME_DIR/cli/byori.py"
+mkdir -p "$RUNTIME_DIR/templates"
+# Package only the runtime contract above. A recursive directory copy could
+# silently include an ignored local file such as templates/.env in a shared DMG.
+for template in "${RUNTIME_TEMPLATES[@]}"; do
+  install -m 644 "$REPO_ROOT/templates/$template" "$RUNTIME_DIR/templates/$template"
+done
 install -m 644 \
   "$REPO_ROOT/adapters/claude/skills/byoridb-memory/SKILL.md" \
   "$RUNTIME_DIR/adapters/claude/skills/byoridb-memory/SKILL.md"
@@ -260,6 +292,10 @@ install -m 644 \
   "$REPO_ROOT/adapters/claude/hooks.snippet.json" \
   "$RUNTIME_DIR/adapters/claude/hooks.snippet.json"
 printf '%s\n' "$VERSION" > "$RESOURCES_DIR/VERSION"
+install -m 644 \
+  "$REPO_ROOT/manager/macos/THIRD_PARTY_NOTICES.md" \
+  "$RESOURCES_DIR/THIRD_PARTY_NOTICES.md"
+install -m 644 "$REPO_ROOT/LICENSE" "$RESOURCES_DIR/LICENSE"
 
 INFO_TEMPLATE="$REPO_ROOT/manager/macos/packaging/Info.plist.in"
 [ -f "$INFO_TEMPLATE" ] || die "missing Info.plist template: $INFO_TEMPLATE"
@@ -272,12 +308,17 @@ printf 'APPL????' > "$CONTENTS/PkgInfo"
 plutil -lint "$CONTENTS/Info.plist" >/dev/null
 
 log "Generating native application icon"
-ICON_SOURCE="$REPO_ROOT/manager/macos/packaging/generate_icon.swift"
-[ -f "$ICON_SOURCE" ] || die "missing icon generator: $ICON_SOURCE"
-"$SWIFT" "$ICON_SOURCE" "$RESOURCES_DIR/ByoriManager.icns"
-[ -s "$RESOURCES_DIR/ByoriManager.icns" ] || die "icon generator did not create an ICNS file"
+ICON_GENERATOR="$REPO_ROOT/manager/macos/packaging/generate_icon.swift"
+ICON_SOURCE="$REPO_ROOT/assets/byori-app-icon.png"
+[ -f "$ICON_GENERATOR" ] || die "missing icon generator: $ICON_GENERATOR"
+[ -f "$ICON_SOURCE" ] || die "missing source icon: $ICON_SOURCE"
+"$SWIFT" "$ICON_GENERATOR" "$ICON_SOURCE" "$RESOURCES_DIR/Byori.icns"
+[ -s "$RESOURCES_DIR/Byori.icns" ] || die "icon generator did not create an ICNS file"
 
 log "Signing app with ${SIGN_IDENTITY:-- (ad hoc)}"
+# SwiftPM can emit read-only dependency resources. `xattr -cr` needs owner-write
+# permission to remove downloaded provenance before signing the enclosing app.
+chmod -R u+w "$APP_BUNDLE"
 xattr -cr "$APP_BUNDLE"
 if [ "$SIGN_IDENTITY" = "-" ]; then
   codesign --force --sign - "$APP_BUNDLE"
@@ -297,18 +338,19 @@ mkdir -p "$DMG_STAGE"
 ditto "$APP_BUNDLE" "$DMG_STAGE/$APP_NAME"
 ln -s /Applications "$DMG_STAGE/Applications"
 
-DMG_NAME="ByoriManager-${VERSION}-${ARCH}.dmg"
+DMG_NAME="Byori-${VERSION}-${ARCH}.dmg"
 TEMP_DMG="$WORK_DIR/$DMG_NAME"
 DEST_DMG="$OUTPUT_DIR/$DMG_NAME"
 log "Creating compressed DMG"
 hdiutil create \
-  -volname "Byori Manager" \
+  -volname "Byori" \
   -srcfolder "$DMG_STAGE" \
   -format UDZO \
   -ov \
   "$TEMP_DMG"
 [ -s "$TEMP_DMG" ] || die "hdiutil did not create a DMG"
 mv -f "$TEMP_DMG" "$DEST_DMG"
+hdiutil verify "$DEST_DMG" >/dev/null
 
 if [ "$SIGN_IDENTITY" != "-" ]; then
   log "Signing DMG with $SIGN_IDENTITY"

@@ -7,7 +7,7 @@ Covers the MCP/engine surface used by Byori:
   (schema v2 + structured upsert/read/link roundtrip) -> Manager typed graph
   projection (tag-only node MATCH, untyped-endpoint edge MATCH with a
   visible-ID WHERE filter, module summary lazy-load) -> read-only query
-  (FETCH ... AS OF temporal read + mutation denial) -> safe profile filtering.
+  (FETCH ... AS OF temporal read + mutation denial) -> safe and readonly profile filtering.
 
 Prereq: `install.sh` has run and the server is healthy (CI does this first).
 Usage:  BYORIDB_HOME=<home> python3 tests/smoke_mcp.py
@@ -439,6 +439,29 @@ def main():
     proc.kill()
     proc.wait(timeout=5)
     print("ok safe profile filtering")
+
+    # The readonly profile advertises and dispatches only the four read tools.
+    proc = start_mcp("readonly")
+    _id = 0
+    call("initialize", {
+        "protocolVersion": "2024-11-05", "capabilities": {},
+        "clientInfo": {"name": "smoke-readonly", "version": "0"},
+    })
+    readonly_tools = {
+        "memory_recall", "memory_query_read", "memory_read", "memory_export",
+    }
+    discovered = {t["name"] for t in call("tools/list")["tools"]}
+    assert discovered == readonly_tools, f"FAIL: readonly tools={discovered}"
+    for name in sorted(tools - readonly_tools):
+        direct = exchange("tools/call", {"name": name, "arguments": {}})
+        assert direct.get("error", {}).get("code") == -32602, (
+            f"FAIL: readonly dispatch {name}={direct}"
+        )
+    text = tool("memory_recall", {"text": marker, "limit": 10})
+    assert marker in text, f"FAIL: readonly recall dispatch={text}"
+    proc.kill()
+    proc.wait(timeout=5)
+    print("ok readonly profile filtering")
     print("SMOKE PASS")
 
 

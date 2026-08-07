@@ -21,7 +21,7 @@ Env:
   BYORIDB_USER           default root
   BYORIDB_PASSWORD / BYORIDB_ROOT_PASSWORD   root password
   BYORIDB_MEMORY_SPACE   default claude_memory; validated nGQL identifier
-  BYORIDB_MCP_PROFILE    safe (default) | legacy (enables unrestricted memory_query)
+  BYORIDB_MCP_PROFILE    safe (default) | legacy (enables unrestricted memory_query) | readonly
 """
 import hashlib
 import json
@@ -80,6 +80,9 @@ RELATION_RULES = {
     "about": ({"task", "incident"}, {"module", "entity", "concept"}),
 }
 READ_ONLY_STATEMENTS = {"MATCH", "FETCH", "GO", "LOOKUP", "SHOW", "WHY"}
+READONLY_TOOL_NAMES = frozenset(
+    {"memory_recall", "memory_query_read", "memory_read", "memory_export"}
+)
 MUTATING_STATEMENTS = {
     "ALTER",
     "CREATE",
@@ -140,8 +143,10 @@ def _validate_space_name(space):
 
 
 def _validate_profile(profile):
-    if profile not in {"legacy", "safe"}:
-        raise ValueError("BYORIDB_MCP_PROFILE must be 'legacy' or 'safe'")
+    if profile not in {"legacy", "safe", "readonly"}:
+        raise ValueError(
+            "BYORIDB_MCP_PROFILE must be 'legacy', 'safe', or 'readonly'"
+        )
     return profile
 
 
@@ -194,6 +199,29 @@ def _ensure_ready():
     """Bootstrap the memory space + schema (idempotent). Waits for the server."""
     _validate_space_name(SPACE)
     if _session["ready"]:
+        return
+    if PROFILE == "readonly":
+        # Orchestrated workers must never become parallel graph writers merely
+        # because their MCP process starts.  The coordinator prepares/migrates
+        # the project space before launching them; readonly only pins and checks.
+        try:
+            _login()
+            _raw_query(f"USE {SPACE}")
+            version = _schema_version()
+        except Exception as e:
+            _session["id"] = None
+            raise RuntimeError(
+                "readonly memory space is not ready; bootstrap it with a writer "
+                f"profile before reading: {e}"
+            )
+        if version != SCHEMA_VERSION:
+            _session["id"] = None
+            raise RuntimeError(
+                f"readonly memory space schema is v{version}, expected v{SCHEMA_VERSION}; "
+                "migrate it with a writer profile first"
+            )
+        _session["ready"] = True
+        log(f"readonly memory space '{SPACE}' ready (schema v{version})")
         return
     last = None
     for attempt in range(30):
@@ -975,7 +1003,7 @@ TOOLS = {
         "handler": tool_query,
         "description": (
             "Legacy unrestricted raw nGQL escape hatch. This tool is hidden when "
-            "BYORIDB_MCP_PROFILE=safe. "
+            "BYORIDB_MCP_PROFILE=safe or readonly. "
             "Supports temporal reads, e.g. `FETCH PROP ON note <vid> AS OF <epoch-ms>` "
             "for what a memory said at a past time, plus MATCH/GO/LOOKUP."
         ),
@@ -1156,6 +1184,10 @@ def _active_tools():
     profile = _validate_profile(PROFILE)
     if profile == "safe":
         return {name: tool for name, tool in TOOLS.items() if name != "memory_query"}
+    if profile == "readonly":
+        return {
+            name: tool for name, tool in TOOLS.items() if name in READONLY_TOOL_NAMES
+        }
     return TOOLS
 
 

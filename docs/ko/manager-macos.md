@@ -1,36 +1,118 @@
 [English](../manager-macos.md) | **한국어**
 
-# Byori Manager for macOS
+# macOS용 Byori
 
-Byori Manager는 ByoriDB와 Claude Code/Codex 연결을 Finder에서 관리하는 SwiftUI 앱이다.
-앱을 종료해도 ByoriDB는 기존 launchd user service로 계속 실행된다. 지원 기준은 macOS
-13 이상이며 Apple Silicon과 Intel 빌드를 만들 수 있다.
+Byori macOS 앱은 로컬 Git checkout에서 Claude Code 또는 Codex를 실행하는 네이티브
+SwiftUI 멀티 에이전트 코딩 워크스페이스다. 메인 화면은 워크스페이스이며 Settings는
+설치, 연동, 진단을 보조한다. ByoriDB는 그 아래에서 프로젝트 범위의 공유 지식 그래프를
+제공한다. 앱을 종료해도 ByoriDB는 기존 launchd user service로 계속 실행되지만 대화형
+코딩 세션은 그렇지 않다. 지원 기준은 macOS 13 이상이며 Apple Silicon과 Intel 빌드를
+만들 수 있다.
 
-## 제공 기능
+## 워크스페이스 모델
+
+메인 계층은 다음과 같다.
+
+```text
+Project
+└── Source Tree 또는 Worktree
+    └── Task
+        └── Session (사용자가 고른 코딩 agent 하나 + model 선택 하나)
+```
+
+- Project는 사용자가 명시적으로 등록하고 신뢰한 로컬 Git repository다.
+- Source Tree나 Worktree는 코딩 CLI가 실행될 checkout을 나타낸다. 이 릴리스의
+  앱은 등록된 worktree를 표시할 수는 있지만 새로 생성하지는 않는다.
+- Task는 해당 checkout에서 연관된 session을 묶는다.
+- Session은 사용자가 고른 코딩 agent(Claude Code 또는 Codex) 정확히 하나와 model 선택
+  하나를 기록한다. Model은 해당 agent CLI 기본값 또는 정확한 custom model identifier다.
+  Byori는 이 launch 선택을 변경하지 않지만, 대화형 CLI 내부의 provider-side model 변경은
+  관찰하거나 막지 않는다. Byori에서 다른 agent를 시작하려면 새 session을 만든다.
+- Prompt와 후속 입력은 대화형 terminal에 직접 입력한다. Byori는 prompt나
+  terminal transcript를 저장하지 않는다.
+
+Byori는 같은 prompt를 여러 agent에게 자동으로 보내거나, 결과를 비교해 winner를
+고르거나, branch를 merge하거나, worktree를 정리하지 않는다. [멀티 CLI
+오케스트레이션](../orchestration.md)의 foreground `byori run` fan-out 명령은 별도
+prototype/호환 경로로 남아 있다.
+
+## 메인 창
+
+- 왼쪽 sidebar는 **Project → Source Tree/Worktree → Task → Session** 계층을
+  보여 주고 현재 checkout을 명확히 한다. Source Tree의 `+`는 새 Task용 session sheet를,
+  Task의 `+`는 정확히 그 Task용 sheet를 연다. Session 이름은 두 단어로 자동 제안되고
+  수정할 수 있으며, 이름이 없는 기존 session은 provider/model 이름으로 표시한다.
+  종료된 session은 **Close**로 숨기고 해당 Task 행의
+  **More Actions → Closed Sessions** 메뉴에서 복원할 수 있다.
+- 가운데는 선택한 session의 실제 대화형 PTY를 SwiftTerm으로 표시한다. Claude
+  Code나 Codex는 해당 checkout에서 실행되며 인증은 각 CLI가 처리한다. Session은
+  256-color와 truecolor 지원을 알리고 상위 process의 `NO_COLOR` 같은 색상 억제
+  환경변수를 제거하므로 provider가 출력한 ANSI 색상을 그대로 표시한다.
+- 오른쪽 inspector는 제한된 **Files** metadata, read-only **Git** status, project
+  범위 ByoriDB **Context**를 제공한다. 한 프로젝트의 모든 Source Tree/Worktree, Task,
+  Session, agent 선택은 같은 프로젝트 공유 지식 그래프를 사용한다.
+  Focused/Related/Broad는 task·source-tree match와 0/1/2-hop graph 이웃을 최근 project
+  record보다 우선한다. Context는 별도로 load하므로 ByoriDB가 느리거나 unavailable이어도
+  Files와 Git을 막지 않는다.
+- 하단의 compact status bar는 인증까지 확인한 ByoriDB readiness, 선택 project와 branch, clean/dirty 상태,
+  활성 session 수, Context availability, 선택 session 경과 시간을 실제 로컬 상태로
+  표시한다. 지원되는 provider API가 없는 quota·billing 퍼센트는 만들지 않는다.
+- Settings는 메인 workspace나 별도 global graph browser가 아니라 관리 보조 화면이다.
+  ByoriDB와 agent 관리는 **Settings → 설정 개요, 에이전트 · Skill, ByoriDB, 진단**에
+  배치했다. Workspace의 톱니바퀴, 메뉴 막대, **Command-,**는 모두 하나의 보존된
+  Settings 창을 다시 연다. **Settings → ByoriDB**는 service 설치와 유지관리용이며
+  프로젝트 공유 지식은 Context inspector에서 본다.
+
+## 세션 수명
+
+워크스페이스 창을 닫으면 terminal view만 분리되고 활성 session은 종료되지
+않는다. 메뉴 막대 항목이 앱 process를 계속 실행하며 같은 workspace와 terminal을
+다시 열 수 있다. 이 유지 범위는 현재 Byori 앱 process의 수명까지다.
+
+- **Quit Byori**는 활성 terminal process를 중지한 뒤 앱을 종료한다.
+- 앱을 다시 실행해도 이전 process의 session에 reattach하거나 자동 resume하지
+  않는다.
+- 종료된 session에는 같은 Task로 여는 **New Session**을 제공한다. 활성 session은
+  **Close**할 수 없으며 먼저 중지해야 한다.
+- **Close**는 task/session history를 삭제하지 않고 종료된 session을 sidebar에서
+  영구적으로 숨긴다. 부모 Task 행의 **More Actions → Closed Sessions** 메뉴에서
+  복원할 수 있다.
+- ByoriDB 자체는 별도 launchd user service로 계속 실행된다.
+
+## 설정과 관리
 
 - 번들 MCP·Skill 자산과 다운로드한 호환 ByoriDB 엔진 설치·복구, 최신 릴리스 업데이트,
-  health 및 launchd 상태 확인
+  인증된 readiness 및 launchd 상태 확인
 - ByoriDB 시작·중지·재시작, 서버 로그 열기
 - Claude Code/Codex CLI 탐지와 공식 설치 스크립트를 통한 설치·업데이트
 - 각 CLI의 공식 `mcp add/remove` 명령을 통한 `byoridb` stdio MCP 설정
 - Claude의 `~/.claude/skills`, Codex의 `~/.agents/skills`에 Memory Skill 동기화
+- Settings에서 각 agent의 사용자 범위 MCP·Skill 목록을 제한된 크기로 조회하고,
+  원본 설정/`SKILL.md` 편집 또는 백업 후 안전한 제거 지원
+- MCP command 인자, header, 환경변수 값, token은 목록이나 작업 기록에 표시하지 않고,
+  Claude.ai가 관리하는 connector는 읽기 전용으로 표시
+- ByoriDB 설치와 agent 연결 분리: database 설치·업데이트는 Claude/Codex의 MCP나
+  Skill 설정을 암묵적으로 변경하지 않음
 - MCP 설정과 Skill 변경 전 `~/.byori-manager/backups`에 자동 백업
 - 설치·업데이트 전 runtime snapshot, 실패 시 파일과 이전 launchd 상태 자동 복원
-- window와 메뉴 막대를 함께 제공해 창을 닫은 뒤에도 상태 확인, 새로고침, 로그 열기,
-  Manager 창 다시 열기 지원
-- `note` + typed wiki node와 `rel` + typed edge를 탐색하는 read-only 지식 그래프
+- 메뉴 막대에서 ByoriDB와 활성 session 상태 확인, 새로고침, 로그 열기,
+  workspace 다시 열기, 새 session 시작
+- 오래 걸리는 설치·유지관리 작업을 Settings와 workspace 하단에 계속 표시하고,
+  Cancel 시 실행 중인 process group을 종료
+- Settings 창을 닫아도 작업은 계속하고, 앱 종료 시 snapshot으로 복구 가능한 runtime
+  작업만 취소하며 나머지는 정확히 그 작업이 끝날 때까지 기다린 뒤 종료
 
 벤더 CLI 설치 버튼은 실행 전 확인을 받고 Anthropic/OpenAI의 공식 설치 스크립트만
 실행한다. 인증과 로그인은 각 CLI가 처리하며 Byori는 token을 읽거나 저장하지 않는다.
 
-지식 그래프는 초기 조회에서 최대 200개 node와 500개 edge를 표시하며 DB를 수정하지 않는다. 본문은
-초기 projection에 포함하지 않고 node를 선택할 때만 불러온다. 메뉴 막대의
-**Byori Manager 종료**는 Manager 앱만 종료하며, 별도 launchd service인 ByoriDB는
-계속 실행된다.
-
 ## 개발 및 검증
 
 Xcode Command Line Tools 또는 Xcode가 필요하다.
+`manager/macos` source 경로, SwiftPM target `ByoriManager`와
+`ByoriManagerCore`는 내부 호환 식별자로 유지한다. Packaging 단계에서 executable
+target을 `Byori.app` 안의 공개 executable `Byori`로 매핑한다. Canonical icon
+source는 `assets/byori-app-icon.png`이며 packaging script가 이를 앱의
+`Contents/Resources/Byori.icns`로 변환한다.
 
 ```bash
 swift build --package-path manager/macos --product ByoriManager
@@ -60,8 +142,9 @@ Apple Silicon과 Intel을 모두 포함하려면:
 VERSION=0.2.0 scripts/build-macos-dmg.sh --universal
 ```
 
-산출물은 `dist/Byori Manager.app`과
-`dist/ByoriManager-<version>-<arch>.dmg`이다. DMG에는 Applications 바로가기가 함께
+공개 산출물은 `dist/Byori.app`과
+`dist/Byori-<version>-<arch>.dmg`이다. 앱 번들의 executable은 `Byori`다.
+DMG에는 Applications 바로가기가 함께
 들어 있어 앱을 드래그해서 설치할 수 있다.
 
 기본 빌드는 로컬 검증용 ad-hoc 서명을 사용한다. 배포 빌드는 Developer ID Application
@@ -86,8 +169,8 @@ scripts/build-macos-dmg.sh \
   --notary-profile byori-notary
 ```
 
-GitHub의 **Release macOS Manager** workflow는 기존 `v<version>` 릴리스에 서명·공증된
-universal DMG를 첨부한다. 다음 repository secrets가 필요하다:
+GitHub의 macOS release workflow는 기존 `v<version>` 릴리스에 서명·공증된 universal
+DMG를 첨부한다. 다음 repository secrets가 필요하다:
 
 - `MACOS_CERTIFICATE_P12_BASE64`, `MACOS_CERTIFICATE_PASSWORD`
 - `MACOS_SIGN_IDENTITY`
@@ -98,15 +181,35 @@ universal DMG를 첨부한다. 다음 repository secrets가 필요하다:
 ## 번들 구조
 
 ```text
-Byori Manager.app/Contents/
-├── MacOS/ByoriManager
-├── Resources/ByoriManager.icns
-└── Resources/runtime/
-    ├── install.sh
-    ├── mcp/byoridb_mcp.py
-    ├── templates/
-    └── adapters/claude/skills/byoridb-memory/SKILL.md
+Byori.app/
+└── Contents/
+    ├── Info.plist
+    ├── PkgInfo
+    ├── MacOS/
+    │   └── Byori
+    └── Resources/
+        ├── Byori.icns
+        ├── SwiftTerm_SwiftTerm.bundle/
+        ├── LICENSE
+        ├── VERSION
+        ├── THIRD_PARTY_NOTICES.md
+        └── runtime/
+            ├── install.sh
+            ├── cli/byori.py
+            ├── mcp/byoridb_mcp.py
+            ├── templates/
+            └── adapters/claude/
+                ├── hooks.snippet.json
+                └── skills/byoridb-memory/SKILL.md
 ```
+
+패키징 script는 canonical `assets/byori-app-icon.png` source로
+`Contents/Resources/Byori.icns`를 생성하고 SwiftPM resource bundle을 서명된 앱의
+표준 `Contents/Resources` 경로에 복사한다. SwiftTerm 1.15는 Metal resource를 그곳에서
+찾는다. Byori macOS 앱은 현재 MIT 라이선스인 SwiftTerm 1.15.0을
+고정해 사용하며 라이선스 전문은
+`Contents/Resources/THIRD_PARTY_NOTICES.md`에 포함한다. Byori의 Apache-2.0 라이선스는
+`Contents/Resources/LICENSE`에 포함한다.
 
 앱은 번들 리소스를 `~/.byoridb`의 안정적인 경로로 복사한 뒤 MCP를 그 경로에 연결한다.
 따라서 앱 업데이트나 이동이 실행 중인 MCP command 경로를 깨뜨리지 않는다.
@@ -119,7 +222,8 @@ Finder에서 실행해 shell 환경변수를 상속받지 못해도 기존 launc
   진단한다.
 - 설정 변경과 설치는 user scope에서 수행하며 관리자 권한과 vendor token을 요구하지 않는다.
 - 온라인 업데이트는 GitHub 최신 릴리스 설치기를 사용하고 기존 데이터와 root password를
-  보존한다. 실패하면 runtime 파일을 되돌리고 이전 서비스가 정상 상태였던 경우 health까지
-  다시 확인한다.
-- 실패 상세는 앱의 **작업 기록**에 표시된다. 데이터베이스 내용이나 인증정보는 기록하지
-  않는다.
+  보존한다. health와 실제 session 인증이 모두 성공해야 완료되므로 같은 port의 다른 process를
+  정상으로 오판하지 않는다. 실패하면 runtime 파일을 되돌리고 이전 연결이 정상이었던 경우
+  인증까지 다시 확인한다.
+- 실패 상세는 **Settings → Diagnostics**의 **작업 기록**에 표시된다.
+  데이터베이스 내용이나 인증정보는 기록하지 않는다.

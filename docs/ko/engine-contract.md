@@ -19,6 +19,12 @@ Byori 호환성과 무관하게 바뀌어도 된다. 반대로 이 문서의 표
     upsert/read/link/export/delete, v0.2.0 VID 재사용, 명시적 edge 삭제, 보호된/cascade
     vertex 삭제, temporal read, profile filtering을 검사한다.
 
+제품 모델 경계: Byori macOS 앱은 **Project → Source Tree/Worktree → Task → Session**
+구조를 제공하며 사용자는 Session마다 코딩 agent 하나와 model을 고른다. 이 운영 트리는
+앱 상태이며 엔진 schema 계약이 아니다. Settings는 설치, 연동, 진단을 보조한다. 이 엔진
+계약은 Context inspector가 사용하는 프로젝트 범위 ByoriDB 지식 그래프를 다룬다. 한
+Project의 모든 Source Tree/Worktree, Task, Session, agent 선택은 그 graph space를 공유한다.
+
 ## 엔진 버전 올리기 체크리스트
 
 1. `install.sh`의 `ENGINE_TAG_DEFAULT` 갱신
@@ -85,8 +91,8 @@ IEEE-754 `Double`을 거치지 말고 `Int64`로 decode해야 한다.
 
 ## 2. nGQL 부분집합
 
-MCP와 Manager 그래프 뷰가 발행하는 문장 전부. 이 문법이 파싱·실행되면 Byori는
-동작한다.
+MCP와 Byori macOS 앱의 Context inspector가 발행하는 문장 전부. 이 문법이
+파싱·실행되면 Byori는 동작한다.
 
 ```ngql
 CREATE SPACE IF NOT EXISTS <space>(vid_type=INT64)
@@ -135,17 +141,18 @@ MATCH (n:<tag>) WHERE id(n) == <vid> RETURN n.<tag>.<body|summary> AS body LIMIT
                                                 -- property는 module만 summary, 나머지는 body
 ```
 
-위 문장들은 structured MCP write/read 표면과 Manager의 read-only graph projection 표면을
-모두 포함한다. Structured upsert는 현재 hash 방식으로 VID를 가정하지 않고 typed node의
-canonical `name` property로 기존 node를 먼저 찾는다. `memory_link(action="delete")`는
+위 문장들은 structured MCP write/read 표면과 Byori macOS 앱의 read-only Context
+projection 표면을 모두 포함한다. Structured upsert는 현재 hash 방식으로 VID를 가정하지
+않고 typed node의 canonical `name` property로 기존 node를 먼저 찾는다.
+`memory_link(action="delete")`는
 `DELETE EDGE`를 발행하고, `memory_delete`는 link guard가 통과한 뒤에만 `DELETE VERTEX`를
 발행한다. engine v0.3.3의 `DELETE VERTEX`는 incident edge를 자동 제거하지 **않는다**.
 `cascade=true`면 MCP가 incoming/outgoing edge를 모두 열거하고 각각에 `DELETE EDGE`를
 발행한 뒤 vertex를 삭제한다.
 
-Manager projection에서 `id(n)`/`id(a)`/`id(b)`는 vertex INT64 VID를 반환하고, `ORDER BY`는
+앱의 Context projection에서 `id(n)`/`id(a)`/`id(b)`는 vertex INT64 VID를 반환하고, `ORDER BY`는
 projection alias(`vid`, `src`, `dst`)를 사용할 수 있어야 한다. `LIMIT`과 `OFFSET`은 0 이상의
-정수이며 정렬 후 offset만큼 건너뛴 뒤 limit을 적용한다. Manager는 note 태그와 7종 typed
+정수이며 정렬 후 offset만큼 건너뛴 뒤 limit을 적용한다. 앱은 note 태그와 7종 typed
 wiki 태그, `rel`과 typed wiki edge 8종을 각각 별도 쿼리로 병렬 조회해 클라이언트에서
 병합한다 — **엔진의 `UNION`은 여러 MATCH branch를
 합치지 않고 첫 branch 결과만 반환하는 것을 실측으로 확인했으므로 이에 의존하지 않는다.**
@@ -165,8 +172,8 @@ typed wiki edge 쿼리는 양끝 vertex 태그를 지정하지 않는 `(a)`/`(b)
 `byoridb_mcp.py`의 schema v2 migration에는 아직 `CREATE EDGE`가 없다. 엔진 v0.3.3은
 현재 미정의 edge tag
 조회에 빈 결과를 반환하지만, 이를 호환성 계약으로 삼으면 데이터를 조용히 숨기게 되므로
-Manager가 의존해서는 안 된다. 실제로 필요해지면(memory ontology의 "3번 이상 억지로
-뭉개진 뒤" 승격 기준) 별도 schema migration을 추가한 뒤 Manager edge kind에 포함한다.
+앱이 의존해서는 안 된다. 실제로 필요해지면(memory ontology의 "3번 이상 억지로
+뭉개진 뒤" 승격 기준) 별도 schema migration을 추가한 뒤 앱 edge kind에 포함한다.
 
 typed wiki 문장들은 MCP의 schema v2 bootstrap(`byoridb_mcp.py._migrate`)과 스모크의
 typed roundtrip이 발행한다. schema version은 예약 이름 `byori:schema-version`의
@@ -197,20 +204,27 @@ MCP는 single-quote 리터럴에 `\\`, `\'`, `\n` 세 가지 escape만 생성한
 
 MCP는 기본 `legacy` profile에서 9개 tool을 제공한다. `safe` profile은 8개를 제공하며
 `memory_query` 하나만 숨기고 dispatch도 거부한다. Structured mutation tool 전부와 legacy
-note writer인 `memory_remember`는 그대로 노출하므로 **safe는 read-only mode, authorization
-경계, sandbox가 아니다**.
+note writer인 `memory_remember`는 그대로 노출하므로 **safe는 read-only mode가 아니다**.
+`readonly` profile은 `memory_recall`, `memory_query_read`, `memory_read`, `memory_export`만
+노출하고 dispatch한다. 모든 mutation tool과 제한 없는 `memory_query` 호출은 unknown
+tool로 거부한다.
 
-| Tool | `legacy` | `safe` | 계약 |
-|---|:---:|:---:|---|
-| `memory_remember` | yes | yes | legacy `note` upsert, 선택적으로 `relates_to` edge 생성 |
-| `memory_recall` | yes | yes | substring/kind로 legacy note를 최신순 조회 |
-| `memory_query` | yes | no | 제한 없는 raw nGQL 호환 escape hatch |
-| `memory_query_read` | yes | yes | 아래 read-query gate가 허용하는 문장 하나 실행 |
-| `memory_wiki_upsert` | yes | yes | canonical typed-wiki node 하나를 검증하고 upsert |
-| `memory_link` | yes | yes | 존재하는 endpoint 사이의 검증된 관계를 upsert 또는 삭제 |
-| `memory_read` | yes | yes | legacy/typed node를 정규화해 반환하고 선택적으로 incident link 포함 |
-| `memory_delete` | yes | yes | 정확한 node 하나 삭제. 연결된 node는 `cascade=true` 필요 |
-| `memory_export` | yes | yes | 정규화된 node와 선택적 outgoing link의 제한된 page 반환 |
+| Tool | `legacy` | `safe` | `readonly` | 계약 |
+|---|:---:|:---:|:---:|---|
+| `memory_remember` | yes | yes | no | legacy `note` upsert, 선택적으로 `relates_to` edge 생성 |
+| `memory_recall` | yes | yes | yes | substring/kind로 legacy note를 최신순 조회 |
+| `memory_query` | yes | no | no | 제한 없는 raw nGQL 호환 escape hatch |
+| `memory_query_read` | yes | yes | yes | 아래 read-query gate가 허용하는 문장 하나 실행 |
+| `memory_wiki_upsert` | yes | yes | no | canonical typed-wiki node 하나를 검증하고 upsert |
+| `memory_link` | yes | yes | no | 존재하는 endpoint 사이의 검증된 관계를 upsert 또는 삭제 |
+| `memory_read` | yes | yes | yes | legacy/typed node를 정규화해 반환하고 선택적으로 incident link 포함 |
+| `memory_delete` | yes | yes | no | 정확한 node 하나 삭제. 연결된 node는 `cascade=true` 필요 |
+| `memory_export` | yes | yes | yes | 정규화된 node와 선택적 outgoing link의 제한된 page 반환 |
+
+Profile은 MCP tool 표면을 제한할 뿐 authorization 경계나 sandbox가 아니다. `readonly`
+process는 startup에서 login, `USE <space>`, schema version read만 수행하며, writer가 현재
+schema version으로 space를 미리 bootstrap하지 않았으면 실패한다. Process는 설정된 engine
+credential을 그대로 사용하므로 신뢰 경계가 다르면 engine instance와 credential을 분리한다.
 
 9개 input schema는 모두 선언하지 않은 field를 거부한다. 공통 hard limit은 다음과 같다.
 
@@ -292,7 +306,7 @@ write가 있으면 추가로 이동한다. 예약 schema-version note는 제외�
 | `BYORIDB__SERVER__HTTP_ADDR` / `BYORIDB__SERVER__GRAPH_ADDR` | 서버 | 바인드 주소 |
 | `BYORIDB_HTTP` / `BYORIDB_USER` / `BYORIDB_PASSWORD` | MCP | 엔진 접속 (ROOT_PASSWORD가 PASSWORD보다 우선) |
 | `BYORIDB_MEMORY_SPACE` | MCP | 논리 memory space 이름(기본 `claude_memory`), `^[A-Za-z_][A-Za-z0-9_]{0,63}$` 필수 |
-| `BYORIDB_MCP_PROFILE` | MCP | 대소문자를 구분하는 `legacy`(기본, 9 tool) 또는 `safe`(8 tool, `memory_query`만 숨김) |
+| `BYORIDB_MCP_PROFILE` | MCP | 대소문자를 구분하는 `legacy`(기본, 9 tool), `safe`(8 tool, `memory_query`만 숨김), 또는 `readonly`(read tool 4개) |
 
 주의: 단일 `_`(시크릿)와 이중 `__`(config tree) 패턴이 혼재한다 — 엔진 쪽 관례.
 
