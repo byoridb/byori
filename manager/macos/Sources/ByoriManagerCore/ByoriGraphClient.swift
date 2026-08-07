@@ -8,6 +8,7 @@ public protocol KnowledgeGraphProviding: Sendable {
 public enum KnowledgeGraphClientError: LocalizedError, Sendable {
     case missingConfiguration
     case invalidConfiguration
+    case untrustedService
     case unavailable
     case authenticationFailed
     case queryFailed
@@ -19,6 +20,8 @@ public enum KnowledgeGraphClientError: LocalizedError, Sendable {
             return "ByoriDB 연결 정보가 없습니다. ByoriDB를 먼저 설치해 주세요."
         case .invalidConfiguration:
             return "ByoriDB 연결 설정을 읽을 수 없습니다. 설치 복구를 실행해 주세요."
+        case .untrustedService:
+            return "로컬 ByoriDB 서비스의 신원을 확인할 수 없습니다. 서비스를 다시 시작해 주세요."
         case .unavailable:
             return "로컬 ByoriDB에 연결할 수 없습니다. 서비스 상태를 확인해 주세요."
         case .authenticationFailed:
@@ -200,10 +203,11 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
     }
 
     private let session: URLSession
+    private let serviceVerifier: LocalServiceVerifier
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
 
-    public init() {
+    public init(serviceVerifier: LocalServiceVerifier = LocalServiceVerifier()) {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
@@ -211,6 +215,7 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
         configuration.timeoutIntervalForRequest = 12
         configuration.timeoutIntervalForResource = 20
         session = URLSession(configuration: configuration)
+        self.serviceVerifier = serviceVerifier
     }
 
     public func loadGraph(
@@ -219,6 +224,9 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
     ) async throws -> KnowledgeGraphSnapshot {
         let limit = min(max(nodeLimit, 1), 200)
         let edgeLimit = min(limit * 3, 500)
+        guard await serviceVerifier.verify(paths: paths) else {
+            throw KnowledgeGraphClientError.untrustedService
+        }
         let credentials = try credentials(at: paths.byoriHome.appendingPathComponent("env"))
         let baseURL = try localBaseURL(port: paths.httpPort)
         let sessionID = try await createSession(baseURL: baseURL, password: credentials.password)
@@ -371,6 +379,9 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
     }
 
     public func loadBody(paths: ManagerPaths, nodeID: Int64, tag: String) async throws -> String {
+        guard await serviceVerifier.verify(paths: paths) else {
+            throw KnowledgeGraphClientError.untrustedService
+        }
         let credentials = try credentials(at: paths.byoriHome.appendingPathComponent("env"))
         let baseURL = try localBaseURL(port: paths.httpPort)
         let sessionID = try await createSession(baseURL: baseURL, password: credentials.password)
