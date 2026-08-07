@@ -21,7 +21,7 @@ Env:
   BYORIDB_USER           default root
   BYORIDB_PASSWORD / BYORIDB_ROOT_PASSWORD   root password
   BYORIDB_MEMORY_SPACE   default claude_memory; validated nGQL identifier
-  BYORIDB_MCP_PROFILE    legacy (default) | safe | readonly
+  BYORIDB_MCP_PROFILE    safe (default) | legacy (enables unrestricted memory_query) | readonly
 """
 import hashlib
 import json
@@ -38,7 +38,7 @@ USER = os.environ.get("BYORIDB_USER", "root")
 # stray inherited BYORIDB_PASSWORD cannot shadow it with a stale/wrong value.
 PASSWORD = os.environ.get("BYORIDB_ROOT_PASSWORD") or os.environ.get("BYORIDB_PASSWORD", "")
 SPACE = os.environ.get("BYORIDB_MEMORY_SPACE", "claude_memory")
-PROFILE = os.environ.get("BYORIDB_MCP_PROFILE", "legacy")
+PROFILE = os.environ.get("BYORIDB_MCP_PROFILE", "safe")
 
 SPACE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 CANONICAL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*:[A-Za-z0-9][A-Za-z0-9._-]*$")

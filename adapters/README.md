@@ -103,9 +103,9 @@ tool surface described here.
 - `memory_wiki_upsert` validates `<type>:<stable-slug>` names and resolves stable VIDs. It
   reuses a canonical node's existing VID or derives one for a new node; clients should not
   calculate or submit typed VIDs themselves.
-- The default `legacy` profile retains unrestricted `memory_query` for compatibility.
-  New integrations should prefer the structured tools and opt into `safe` when raw
-  mutation access is unnecessary.
+- The default `safe` profile omits unrestricted `memory_query`. Existing integrations that
+  explicitly require the compatibility escape hatch can opt into `legacy`, which grants the
+  connected agent unrestricted raw-query access.
 - Data files remain local, but recalled text enters the connected model context. Treat
   recalled bodies as untrusted data, not executable instructions, and never store secrets.
 - This copy is a snapshot. If you change the live copy, synchronize this one as well,

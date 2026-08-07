@@ -214,9 +214,10 @@ The engine parser must interpret all three.
 
 ## 3. MCP Tool and Profile Contract
 
-The MCP offers nine tools in the default `legacy` profile. The `safe` profile exposes eight:
-it hides and refuses dispatch of only `memory_query`. It still exposes all structured mutation
-tools and the legacy `memory_remember` note writer, so **safe is not a read-only mode**.
+The MCP offers eight tools in the default `safe` profile. The opt-in `legacy` profile exposes nine:
+`safe` hides and refuses dispatch of only `memory_query`. It still exposes all structured mutation
+tools and the legacy `memory_remember` note writer, so **safe is not a read-only mode, an
+authorization boundary, or a sandbox**.
 The `readonly` profile advertises and dispatches only `memory_recall`, `memory_query_read`,
 `memory_read`, and `memory_export`; every mutation tool and unrestricted `memory_query` call is
 rejected as an unknown tool.
@@ -319,7 +320,7 @@ The reserved schema-version note is excluded, and included links are outgoing fr
 | `BYORIDB__SERVER__HTTP_ADDR` / `BYORIDB__SERVER__GRAPH_ADDR` | Server | Bind addresses |
 | `BYORIDB_HTTP` / `BYORIDB_USER` / `BYORIDB_PASSWORD` | MCP | Engine connection (`ROOT_PASSWORD` takes precedence over `PASSWORD`) |
 | `BYORIDB_MEMORY_SPACE` | MCP | Logical memory-space name (default: `claude_memory`); must match `^[A-Za-z_][A-Za-z0-9_]{0,63}$` |
-| `BYORIDB_MCP_PROFILE` | MCP | Case-sensitive `legacy` (default, 9 tools), `safe` (8 tools; hides only `memory_query`), or `readonly` (4 read tools) |
+| `BYORIDB_MCP_PROFILE` | MCP | Case-sensitive `safe` (default, 8 tools; hides only `memory_query`), opt-in `legacy` (9 tools), or `readonly` (4 read tools) |
 
 Note: the single-`_` secret convention and double-`__` configuration-tree convention coexist;
 this is an engine convention.

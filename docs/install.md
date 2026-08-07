@@ -39,7 +39,7 @@ project's ByoriDB knowledge graph through the Context inspector.
 |---|---|---|
 | `byoridb-server` (+`byoridb-cli`) | `~/.byoridb/bin/` | Local ByoriDB (gRPC 9669 / HTTP 19669, bound to `127.0.0.1`) |
 | `byori` + `byori.py` | `~/.byoridb/bin/` | Dependency-free coordinator for provider discovery, trusted project registration, parallel Claude/Codex runs, and local run inspection. The installer does not add this directory to `PATH` |
-| `byoridb_mcp.py` | `~/.byoridb/` | Exposes compatibility note tools plus validated typed-wiki CRUD, export, and read-only query tools over stdio. The default `legacy` profile also exposes unrestricted `memory_query`. Writer profiles bootstrap and migrate the configured space to schema v2 (`note`/`rel` + typed wiki); `readonly` only validates that version |
+| `byoridb_mcp.py` | `~/.byoridb/` | Exposes compatibility note tools plus validated typed-wiki CRUD, export, and read-only query tools over stdio. The default `safe` profile omits unrestricted `memory_query`. Writer profiles bootstrap and migrate the configured space to schema v2 (`note`/`rel` + typed wiki); `readonly` only validates that version |
 | Persistent service | launchd `com.byoridb.local` (macOS) / systemd --user (Linux) | launchd uses `RunAtLoad` + `KeepAlive`; the systemd user unit is attached to `default.target` and uses `Restart=always` |
 | `env` | `~/.byoridb/env` (chmod 600) | Randomly generated root password |
 | Skill | `~/.claude/skills/byoridb-memory/SKILL.md` | Policy for what to remember, when to remember it, and when to recall it |
@@ -117,10 +117,11 @@ run inspection, data locations, and security model.
 
 ## MCP profiles and memory spaces
 
-The automatically registered Claude and Codex integrations do not set a profile, so they use
-`BYORIDB_MCP_PROFILE=legacy`. This exposes all nine tools, including the unrestricted raw-nGQL
-`memory_query`, for backward compatibility. `BYORIDB_MCP_PROFILE=safe` removes that one tool from
-both discovery and dispatch; it is a reduced raw-query surface, **not a read-only server**.
+The installer writes `BYORIDB_MCP_PROFILE=safe` for automatically registered Claude and Codex
+integrations. This removes the unrestricted raw-nGQL `memory_query` tool from both discovery and
+dispatch. An existing user can explicitly opt into `BYORIDB_MCP_PROFILE=legacy` for compatibility,
+but that grants the connected agent unrestricted queries. The safe profile is a reduced raw-query
+surface, **not a read-only server**.
 `memory_remember`, `memory_wiki_upsert`, `memory_link`, and `memory_delete` can still write.
 `BYORIDB_MCP_PROFILE=readonly` exposes only `memory_recall`, `memory_query_read`, `memory_read`,
 and `memory_export`; the orchestrator gives this profile to workers and keeps writes in the
@@ -136,9 +137,9 @@ match `^[A-Za-z_][A-Za-z0-9_]{0,63}$`. It prevents accidental project mixing, bu
 the same engine credential, so it is not an authorization or tenant boundary. Use separate
 instances and credentials across trust domains.
 
-Pass both variables in each MCP client's process configuration. Do not persist them by editing
-`~/.byoridb/env`: on reinstall or upgrade the installer rewrites that file and preserves only
-`BYORIDB_ROOT_PASSWORD`.
+Pass both variables in each separately configured MCP client's process configuration. The default
+installer persists the safe profile in `~/.byoridb/env`; on reinstall or upgrade it rewrites that
+file, preserves only `BYORIDB_ROOT_PASSWORD`, and restores the safe default.
 
 ## Management
 

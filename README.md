@@ -259,9 +259,10 @@ code even after recall provides an answer.
 | `memory_query_read(ngql)` | Run one validated read-only `MATCH`/`FETCH`/`GO`/`LOOKUP`/`SHOW`/`WHY` statement |
 | `memory_query(ngql)` | Legacy unrestricted raw nGQL escape hatch; hidden and blocked in the `safe` and `readonly` profiles |
 
-The default `legacy` MCP profile keeps `memory_query` for backward compatibility. New integrations
-that do not need unrestricted raw mutation should run with `BYORIDB_MCP_PROFILE=safe`: it removes
-only the raw-query tool, while note writes and validated structured CRUD remain available.
+The default `safe` MCP profile removes `memory_query` from discovery and dispatch. Existing users
+who explicitly require the unrestricted compatibility escape hatch can opt into
+`BYORIDB_MCP_PROFILE=legacy`; note writes and validated structured CRUD remain available in both
+profiles.
 The `readonly` profile used by orchestrated workers exposes only the four read tools. It is a tool
 filter rather than an authorization sandbox: it keeps the configured engine credential, performs
 only login/`USE`/schema-version reads at startup, and fails if a writer has not prepared the current
