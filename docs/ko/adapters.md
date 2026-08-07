@@ -4,8 +4,8 @@
 
 [memory ontology 설계](memory-ontology.md)를 구동하는 **에이전트 측 자산의 참조 사본**이다.
 설치기는 Claude/Codex 공용 skill을 `~/.claude/`에 자동 설치하고, `codex` CLI가 있으면
-`~/.agents/skills/`에도 설치한다. NaraeClaw 자산은 수동 참조 어댑터이며 설치기, Manager,
-DMG가 설정하거나 설치하지 않는다.
+`~/.agents/skills/`에도 설치한다. NaraeClaw 자산은 수동 참조 어댑터이며 설치기와
+Byori macOS 앱은 이를 자동 설정하거나 설치하지 않는다.
 
 > v0.2.0부터 fresh install은 `note`/`rel`과 typed wiki(`module`/`decision`/`bug` 등)를
 > schema v2로 함께 자동 bootstrap하고, 기존 설치도 MCP 시작 시 자동 migration된다.
@@ -75,8 +75,8 @@ upgrade 때 해당 파일을 다시 쓰며 root password만 보존한다.
 `safe`는 unrestricted `memory_query`만 숨기고 차단하며 note write와 검증된 structured
 CRUD는 계속 허용한다. `BYORIDB_MEMORY_SPACE`도 프로젝트가 우연히 섞이는 것을 막을 뿐,
 같은 엔진 credential을 공유하므로 tenant/authorization 경계가 아니다. 신뢰 영역이 다르면
-별도 ByoriDB instance와 credential을 사용한다. process별 space는 현재 Manager가 알지 못해
-Manager 자체 환경에 설정된 space만 표시한다. NaraeClaw 전용 hook은 제공하지 않는다.
+별도 ByoriDB instance와 credential을 사용한다. process별 space는 현재 Byori 앱이 알지 못해
+앱 자체 환경에 설정된 space만 표시한다. NaraeClaw 전용 hook은 제공하지 않는다.
 
 미출시 checkout을 테스트할 때는 host 등록 전에 `./install.sh --assets .`로 MCP와 자산을
 설치한다. 최신 공개 release에는 여기서 설명한 source-tree tool surface가 아직 없을 수 있다.

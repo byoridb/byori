@@ -1,4 +1,4 @@
-name: Release macOS Manager
+name: Release Byori
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
 
 jobs:
   package:
-    name: Sign, notarize, and attach DMG
+    name: Sign, notarize, and attach Byori DMG
     runs-on: macos-latest
     permissions:
       contents: write
@@ -51,21 +51,21 @@ jobs:
             -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH"
 
-      - name: Test Swift core
+      - name: Test Byori Swift core
         run: |
           swift test --package-path manager/macos
           swift run --package-path manager/macos ByoriManagerSelfTest
 
-      - name: Build signed universal DMG
+      - name: Build signed universal Byori DMG
         run: |
           scripts/build-macos-dmg.sh \
             --version "${{ inputs.version }}" \
             --universal \
             --sign "$SIGN_IDENTITY"
 
-      - name: Notarize and staple
+      - name: Notarize and staple Byori DMG
         run: |
-          DMG="dist/ByoriManager-${{ inputs.version }}-universal.dmg"
+          DMG="dist/Byori-${{ inputs.version }}-universal.dmg"
           xcrun notarytool submit "$DMG" \
             --apple-id "$APPLE_ID" \
             --team-id "$APPLE_TEAM_ID" \
@@ -75,11 +75,11 @@ jobs:
           xcrun stapler validate "$DMG"
           hdiutil verify "$DMG"
 
-      - name: Attach DMG to release
+      - name: Attach Byori DMG to release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ inputs.version }}
-          files: dist/ByoriManager-${{ inputs.version }}-universal.dmg
+          files: dist/Byori-${{ inputs.version }}-universal.dmg
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

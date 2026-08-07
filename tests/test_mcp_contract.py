@@ -27,20 +27,81 @@ class ConfigurationContractTests(unittest.TestCase):
     def test_profile_contract(self):
         self.assertEqual(MCP._validate_profile("legacy"), "legacy")
         self.assertEqual(MCP._validate_profile("safe"), "safe")
-        for value in ("", "SAFE", "unsafe"):
+        self.assertEqual(MCP._validate_profile("readonly"), "readonly")
+        for value in ("", "SAFE", "READONLY", "unsafe"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 MCP._validate_profile(value)
 
     def test_safe_profile_hides_and_blocks_unrestricted_query(self):
         with mock.patch.object(MCP, "PROFILE", "safe"):
             tools = MCP._active_tools()
-        self.assertNotIn("memory_query", tools)
-        self.assertIn("memory_query_read", tools)
-        self.assertIn("memory_remember", tools)
-        self.assertIn("memory_recall", tools)
+        self.assertEqual(set(tools), set(MCP.TOOLS) - {"memory_query"})
 
         with mock.patch.object(MCP, "PROFILE", "legacy"):
-            self.assertIn("memory_query", MCP._active_tools())
+            self.assertEqual(MCP._active_tools(), MCP.TOOLS)
+
+    def test_readonly_profile_discovers_only_reads_and_blocks_all_other_dispatch(self):
+        expected = {
+            "memory_recall",
+            "memory_query_read",
+            "memory_read",
+            "memory_export",
+        }
+        with mock.patch.object(MCP, "PROFILE", "readonly"):
+            self.assertEqual(set(MCP._active_tools()), expected)
+            blocked = set(MCP.TOOLS) - expected
+            with mock.patch.object(MCP, "_send") as send:
+                for request_id, name in enumerate(sorted(blocked), start=1):
+                    with self.subTest(name=name):
+                        MCP.handle(
+                            {
+                                "jsonrpc": "2.0",
+                                "id": request_id,
+                                "method": "tools/call",
+                                "params": {"name": name, "arguments": {}},
+                            }
+                        )
+                        send.assert_called_once_with(
+                            {
+                                "jsonrpc": "2.0",
+                                "id": request_id,
+                                "error": {
+                                    "code": -32602,
+                                    "message": f"unknown tool: {name}",
+                                },
+                            }
+                        )
+                        send.reset_mock()
+
+    def test_readonly_profile_checks_schema_without_bootstrap_or_migration(self):
+        with (
+            mock.patch.object(MCP, "PROFILE", "readonly"),
+            mock.patch.object(MCP, "_login") as login,
+            mock.patch.object(MCP, "_raw_query") as raw_query,
+            mock.patch.object(MCP, "_schema_version", return_value=MCP.SCHEMA_VERSION),
+            mock.patch.object(MCP, "_migrate") as migrate,
+            mock.patch.object(MCP, "log"),
+            mock.patch.dict(MCP._session, {"id": None, "ready": False}, clear=True),
+        ):
+            MCP._ensure_ready()
+
+        login.assert_called_once_with()
+        raw_query.assert_called_once_with(f"USE {MCP.SPACE}")
+        migrate.assert_not_called()
+
+    def test_readonly_profile_requires_coordinator_migration(self):
+        with (
+            mock.patch.object(MCP, "PROFILE", "readonly"),
+            mock.patch.object(MCP, "_login"),
+            mock.patch.object(MCP, "_raw_query"),
+            mock.patch.object(MCP, "_schema_version", return_value=1),
+            mock.patch.object(MCP, "_migrate") as migrate,
+            mock.patch.dict(MCP._session, {"id": None, "ready": False}, clear=True),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "migrate it with a writer profile"):
+                MCP._ensure_ready()
+
+        migrate.assert_not_called()
 
 
 class ReadOnlyQueryContractTests(unittest.TestCase):

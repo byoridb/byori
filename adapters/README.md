@@ -6,7 +6,14 @@ This directory contains the **reference copies of agent-side assets** that imple
 the design in [the memory ontology](../docs/memory-ontology.md). The installer copies
 the Claude/Codex skill automatically to `~/.claude/` and, when the `codex` CLI is
 available, to `~/.agents/skills/`. The NaraeClaw asset is a manual reference adapter;
-the installer, Manager, and DMG do not configure or install it.
+the installer, Byori macOS app, and DMG do not configure or install it.
+
+In the Byori macOS app, the workspace hierarchy is
+**Project → Source Tree/Worktree → Task → Session**, and the user chooses one coding
+agent and model per Session. Settings supports integration administration rather than
+replacing that workspace. These adapters connect agents to the project-scoped ByoriDB
+knowledge graph shared by every Source Tree/Worktree, Task, Session, and agent choice
+within that Project.
 
 > Starting with v0.2.0, a fresh installation automatically bootstraps both
 > `note`/`rel` and the typed wiki (`module`/`decision`/`bug`, and others) as
@@ -78,9 +85,9 @@ installer rewrites that file on upgrade and preserves only the root password.
 `safe` hides and blocks only the unrestricted `memory_query`; it still permits note writes and
 validated structured CRUD. Likewise, `BYORIDB_MEMORY_SPACE` prevents accidental project mixing
 but is not a tenant or authorization boundary because processes share the same engine credential.
-Use a separate ByoriDB instance and credentials across trust domains. A per-process space is not
-visible to the current Manager, which continues to display the space configured in its own
-environment. No NaraeClaw-specific hook is bundled.
+Use a separate ByoriDB instance and credentials across trust domains. A space configured only
+in another host is not automatically discovered by the Byori macOS app; its Context inspector
+uses the selected registered Project's ByoriDB space. No NaraeClaw-specific hook is bundled.
 
 When testing an unreleased checkout, install its MCP and assets with `./install.sh --assets .`
 before registering the host; the latest published release may not yet contain the source-tree

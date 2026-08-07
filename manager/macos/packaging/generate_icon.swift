@@ -21,12 +21,18 @@ let variants = [
     IconVariant(type: "ic10", pixels: 1_024),
 ]
 
-guard CommandLine.arguments.count == 2 else {
-    fputs("usage: generate_icon.swift OUTPUT.icns\n", stderr)
+guard CommandLine.arguments.count == 3 else {
+    fputs("usage: generate_icon.swift SOURCE.png OUTPUT.icns\n", stderr)
     exit(64)
 }
 
-let outputFile = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: false)
+let sourceFile = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: false)
+let outputFile = URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: false)
+
+guard let sourceImage = NSImage(contentsOf: sourceFile), sourceImage.isValid else {
+    fputs("error: could not read source icon at \(sourceFile.path)\n", stderr)
+    exit(1)
+}
 
 do {
     try FileManager.default.createDirectory(
@@ -64,77 +70,24 @@ func drawIcon(pixels: Int) -> Data? {
     NSColor.clear.setFill()
     canvas.fill()
 
-    let inset = size * 0.055
-    let backgroundRect = canvas.insetBy(dx: inset, dy: inset)
-    let background = NSBezierPath(
-        roundedRect: backgroundRect,
+    // Preserve the supplied artwork while adapting it to the standard macOS
+    // icon silhouette. The transparent outer gutter keeps the icon from
+    // touching its Finder/Dock bounding box on pre-Tahoe systems.
+    let artworkRect = canvas.insetBy(dx: size * 0.055, dy: size * 0.055)
+    let artworkMask = NSBezierPath(
+        roundedRect: artworkRect,
         xRadius: size * 0.225,
         yRadius: size * 0.225
     )
-    let gradient = NSGradient(
-        starting: NSColor(red: 0.12, green: 0.35, blue: 0.98, alpha: 1),
-        ending: NSColor(red: 0.29, green: 0.08, blue: 0.68, alpha: 1)
+    artworkMask.addClip()
+    sourceImage.draw(
+        in: artworkRect,
+        from: NSRect(origin: .zero, size: sourceImage.size),
+        operation: .copy,
+        fraction: 1,
+        respectFlipped: true,
+        hints: [.interpolation: NSImageInterpolation.high]
     )
-    gradient?.draw(in: background, angle: -55)
-
-    let highlight = NSBezierPath(
-        ovalIn: NSRect(
-            x: size * 0.10,
-            y: size * 0.50,
-            width: size * 0.82,
-            height: size * 0.52
-        )
-    )
-    NSColor.white.withAlphaComponent(0.10).setFill()
-    highlight.fill()
-
-    let glyphRect = NSRect(
-        x: size * 0.245,
-        y: size * 0.255,
-        width: size * 0.51,
-        height: size * 0.49
-    )
-    let topHeight = size * 0.15
-    let top = NSBezierPath(
-        ovalIn: NSRect(
-            x: glyphRect.minX,
-            y: glyphRect.maxY - topHeight,
-            width: glyphRect.width,
-            height: topHeight
-        )
-    )
-
-    let strokeWidth = max(1.2, size * 0.048)
-    NSColor.white.withAlphaComponent(0.96).setStroke()
-    top.lineWidth = strokeWidth
-    top.stroke()
-
-    let body = NSBezierPath()
-    body.move(to: NSPoint(x: glyphRect.minX, y: glyphRect.maxY - topHeight / 2))
-    body.line(to: NSPoint(x: glyphRect.minX, y: glyphRect.minY + topHeight / 2))
-    body.curve(
-        to: NSPoint(x: glyphRect.maxX, y: glyphRect.minY + topHeight / 2),
-        controlPoint1: NSPoint(x: glyphRect.minX, y: glyphRect.minY - topHeight / 2),
-        controlPoint2: NSPoint(x: glyphRect.maxX, y: glyphRect.minY - topHeight / 2)
-    )
-    body.line(to: NSPoint(x: glyphRect.maxX, y: glyphRect.maxY - topHeight / 2))
-    body.lineWidth = strokeWidth
-    body.lineCapStyle = .round
-    body.stroke()
-
-    for fraction in [0.38, 0.62] as [CGFloat] {
-        let y = glyphRect.minY + glyphRect.height * fraction
-        let layer = NSBezierPath()
-        layer.move(to: NSPoint(x: glyphRect.minX, y: y + topHeight * 0.16))
-        layer.curve(
-            to: NSPoint(x: glyphRect.maxX, y: y + topHeight * 0.16),
-            controlPoint1: NSPoint(x: glyphRect.minX + glyphRect.width * 0.22, y: y - topHeight * 0.30),
-            controlPoint2: NSPoint(x: glyphRect.maxX - glyphRect.width * 0.22, y: y - topHeight * 0.30)
-        )
-        layer.lineWidth = strokeWidth * 0.72
-        layer.lineCapStyle = .round
-        layer.stroke()
-    }
 
     NSGraphicsContext.restoreGraphicsState()
     return bitmap.representation(using: .png, properties: [:])

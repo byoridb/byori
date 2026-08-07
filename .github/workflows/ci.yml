@@ -1,4 +1,4 @@
-name: CI
+name: Byori CI
 
 on:
   push:
@@ -6,6 +6,24 @@ on:
   pull_request:
 
 jobs:
+  cli-python:
+    name: Multi-agent CLI (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.x"]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Test Python contracts
+        run: |
+          python -m py_compile cli/byori.py mcp/byoridb_mcp.py
+          python -m unittest tests/test_cli.py tests/test_mcp_contract.py
+
   smoke:
     name: Engine contract smoke
     runs-on: ubuntu-latest
@@ -13,7 +31,10 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Lint installer
-        run: bash -n install.sh
+        run: bash -n install.sh templates/run-byori.sh
+
+      - name: Test multi-agent CLI
+        run: python3 -m unittest tests/test_cli.py
 
       - name: Test MCP contract
         run: python3 -m unittest tests/test_mcp_contract.py
@@ -24,18 +45,19 @@ jobs:
         run: |
           export BYORIDB_HOME="$RUNNER_TEMP/byoridb-home"
           ./install.sh --assets . --no-claude --no-codex --no-service
+          "$BYORIDB_HOME/bin/byori" --help
           echo "BYORIDB_HOME=$BYORIDB_HOME" >> "$GITHUB_ENV"
 
       - name: MCP roundtrip smoke
         run: python3 tests/smoke_mcp.py
 
   manager-macos:
-    name: macOS Manager
+    name: Byori (macOS)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
 
-      - name: Test Swift core
+      - name: Test Byori Swift core
         run: |
           swift test --package-path manager/macos
           swift run --package-path manager/macos ByoriManagerSelfTest
@@ -45,8 +67,20 @@ jobs:
           swift build --package-path manager/macos --product ByoriManager
           -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
 
-      - name: Build app and development DMG
+      - name: Build Byori app and development DMG
         run: VERSION=0.0.0 scripts/build-macos-dmg.sh
 
-      - name: Verify disk image
-        run: hdiutil verify dist/ByoriManager-0.0.0-$(uname -m).dmg
+      - name: Verify Byori app bundle
+        run: |
+          INFO_PLIST="dist/Byori.app/Contents/Info.plist"
+          test -x "dist/Byori.app/Contents/MacOS/Byori"
+          test -f "dist/Byori.app/Contents/Resources/Byori.icns"
+          test -f "dist/Byori.app/Contents/Resources/runtime/cli/byori.py"
+          test "$(plutil -extract CFBundleExecutable raw "$INFO_PLIST")" = "Byori"
+          test "$(plutil -extract CFBundleDisplayName raw "$INFO_PLIST")" = "Byori"
+          test "$(plutil -extract CFBundleName raw "$INFO_PLIST")" = "Byori"
+          test "$(plutil -extract CFBundleIdentifier raw "$INFO_PLIST")" = "io.byoridb.byori"
+          codesign --verify --deep --strict --verbose=2 "dist/Byori.app"
+
+      - name: Verify Byori disk image
+        run: hdiutil verify dist/Byori-0.0.0-$(uname -m).dmg

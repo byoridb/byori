@@ -2,8 +2,10 @@
 
 # Byori — Installation and Management
 
-Install a local ByoriDB instance as **persistent memory** for Claude Code and MCP clients.
-The installer sets up the database server, MCP server, and skill together. If the
+Install the local runtime that gives Byori projects a **shared durable knowledge graph** across
+Claude Code, Codex, and other MCP-capable sessions. The installer sets up the database server,
+MCP server, compatibility multi-CLI coordinator, and Skill together.
+If the
 `claude` or `codex` CLI is available, it also registers the MCP server and installs
 the skill automatically (use `--no-claude` or `--no-codex` to skip either integration).
 
@@ -17,12 +19,27 @@ curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh 
 > Requirements: `curl`, `tar`, and `python3` (to run the MCP server). If the Claude
 > Code CLI is installed, the installer registers the MCP server automatically.
 
+## Byori macOS app
+
+The shell installer installs ByoriDB, MCP assets, and the compatibility CLI; it does
+not copy an app into `/Applications`. The Byori macOS app is distributed in
+`Byori-<version>-<arch>.dmg`. A repository build writes the public artifacts to
+`dist/Byori.app` and `dist/Byori-<version>-<arch>.dmg`; the app bundle executable is
+`Byori`.
+
+The app's main workspace follows **Project → Source Tree/Worktree → Task → Session**.
+The user chooses one coding agent and model for each session. Settings supports agent,
+Skill, MCP, ByoriDB, and diagnostic administration; it is not the primary workspace.
+All source trees/worktrees, tasks, sessions, and agent choices in one project share that
+project's ByoriDB knowledge graph through the Context inspector.
+
 ## What gets installed
 
 | Component | Location | Purpose |
 |---|---|---|
 | `byoridb-server` (+`byoridb-cli`) | `~/.byoridb/bin/` | Local ByoriDB (gRPC 9669 / HTTP 19669, bound to `127.0.0.1`) |
-| `byoridb_mcp.py` | `~/.byoridb/` | Exposes compatibility note tools plus validated typed-wiki CRUD, export, and read-only query tools over stdio. The default `legacy` profile also exposes unrestricted `memory_query`. On startup, it bootstraps and migrates the configured space to schema v2 (`note`/`rel` + typed wiki) |
+| `byori` + `byori.py` | `~/.byoridb/bin/` | Dependency-free coordinator for provider discovery, trusted project registration, parallel Claude/Codex runs, and local run inspection. The installer does not add this directory to `PATH` |
+| `byoridb_mcp.py` | `~/.byoridb/` | Exposes compatibility note tools plus validated typed-wiki CRUD, export, and read-only query tools over stdio. The default `legacy` profile also exposes unrestricted `memory_query`. Writer profiles bootstrap and migrate the configured space to schema v2 (`note`/`rel` + typed wiki); `readonly` only validates that version |
 | Persistent service | launchd `com.byoridb.local` (macOS) / systemd --user (Linux) | launchd uses `RunAtLoad` + `KeepAlive`; the systemd user unit is attached to `default.target` and uses `Restart=always` |
 | `env` | `~/.byoridb/env` (chmod 600) | Randomly generated root password |
 | Skill | `~/.claude/skills/byoridb-memory/SKILL.md` | Policy for what to remember, when to remember it, and when to recall it |
@@ -45,8 +62,10 @@ install.sh [--with-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z] [--uninstall]
   engine version verified with this Byori release.
 - `--uninstall` — stops and unregisters the service, unregisters the Claude/Codex
   MCP integration, and removes the skill. **You are prompted to keep or delete the data.**
+  Orchestration records and worktrees under `~/.byori` are preserved because they may contain
+  unmerged user changes.
 - `--binary PATH` — uses a local `byoridb-server` binary instead of downloading one.
-- `--assets DIR` — reads mcp.py, templates, and the skill from a local repository
+- `--assets DIR` — reads the CLI, mcp.py, templates, and the skill from a local repository
   checkout (`DIR`) instead of downloading them.
 - `--no-service` — runs a background process for the current session without
   registering a launchd/systemd service.
@@ -57,8 +76,44 @@ Installer environment variables: `BYORIDB_HOME` (default: `~/.byoridb`),
 `BYORIDB_HTTP_PORT` (default: 19669), `BYORIDB_GRAPH_PORT` (default: 9669),
 `BYORIDB_LABEL` (default: `com.byoridb.local`), and `BYORI_ENGINE_TAG` (default: the
 pinned compatible engine tag).
+Reinstallation preserves either the current `BYORIDB_ROOT_PASSWORD` or the legacy
+`BYORIDB_PASSWORD` value. Completion requires authenticated session creation with that
+credential; an unauthenticated `/health` response alone is not accepted because a stale
+ByoriDB process may already own the port.
 For an isolated test:
 `BYORIDB_HOME=/tmp/bt BYORIDB_HTTP_PORT=29669 BYORIDB_GRAPH_PORT=29670 ./install.sh --binary … --assets …`
+
+## Foreground multi-CLI compatibility path
+
+The installer deliberately does not create a global symlink. Add its bin directory to the current
+shell or invoke the full path:
+
+```sh
+export PATH="$HOME/.byoridb/bin:$PATH"
+byori provider list
+
+cd /path/to/a/git/repository
+byori project add .
+byori run --agent claude --agent codex "implement the requested change"
+byori runs list
+```
+
+This early `byori run` coordinator is a separate prototype and compatibility path; it can fan
+one prompt out to multiple workers and does not define the macOS app's session model. Git is
+additionally required for orchestration. The MVP supports Claude Code and Codex and uses
+every installed supported provider when `--agent` is omitted. `byori project add . [--space SPACE]`
+is the explicit trust boundary for noninteractive workers. The default run mode rejects a dirty
+repository, creates a branch and managed worktree for each worker, and leaves every result in place
+without merging or deleting it. A single worker may opt into the current working tree, including
+existing changes, with `--in-place`.
+
+Operational JSON, the raw prompt, provider logs, advisory locks, and worktrees live under
+`BYORI_HOME` (default `~/.byori`). Only bounded recall context and coordinator-owned project/task
+checkpoints cross the ByoriDB boundary. Use `--no-memory` to skip coordinator recall injection and
+checkpoints; workers still receive the project space and `readonly` profile so a globally
+registered MCP cannot fall back to `legacy`. See
+[multi-CLI orchestration](orchestration.md) for the command surface, `--allow-shell`, timeouts,
+run inspection, data locations, and security model.
 
 ## MCP profiles and memory spaces
 
@@ -67,6 +122,14 @@ The automatically registered Claude and Codex integrations do not set a profile,
 `memory_query`, for backward compatibility. `BYORIDB_MCP_PROFILE=safe` removes that one tool from
 both discovery and dispatch; it is a reduced raw-query surface, **not a read-only server**.
 `memory_remember`, `memory_wiki_upsert`, `memory_link`, and `memory_delete` can still write.
+`BYORIDB_MCP_PROFILE=readonly` exposes only `memory_recall`, `memory_query_read`, `memory_read`,
+and `memory_export`; the orchestrator gives this profile to workers and keeps writes in the
+coordinator.
+
+Profiles filter MCP tools; they are not authorization boundaries or process sandboxes. A
+`readonly` process performs only login, `USE <space>`, and a schema-version read during startup,
+and fails if a writer has not already prepared the space at the current version. It still has the
+configured engine credential. Use separate instances and credentials across trust domains.
 
 `BYORIDB_MEMORY_SPACE` selects the logical memory namespace (default: `claude_memory`) and must
 match `^[A-Za-z_][A-Za-z0-9_]{0,63}$`. It prevents accidental project mixing, but all spaces use
@@ -117,7 +180,7 @@ rm -rf "$HOME/.agents/skills/byoridb-memory"
 
 ## Connecting NaraeClaw or another manual MCP host
 
-The installer and Manager currently configure only Claude Code and Codex. They do not know a
+The installer and Byori macOS app currently configure only Claude Code and Codex. They do not know a
 NaraeClaw-specific configuration format or skill directory. In a compatible host's MCP process
 configuration, use the installed runner as follows, then install the reference policy at
 `adapters/naraeclaw/skills/byoridb-memory/SKILL.md` through that host's documented mechanism:
@@ -128,9 +191,10 @@ env BYORIDB_MCP_PROFILE=safe \
   "$HOME/.byoridb/bin/run-mcp.sh"
 ```
 
-No NaraeClaw hook is bundled. A process-specific space is also invisible to the current Manager,
-which displays only the space from its own environment. When testing the source tree before a
-release contains these tools, first install it with `./install.sh --assets .`.
+No NaraeClaw hook is bundled. A space configured only in another host is not automatically
+discovered by the Byori macOS app; its Context inspector uses the selected registered project's
+ByoriDB space. When testing the source tree before a release contains these tools, first install
+it with `./install.sh --assets .`.
 
 ## Limitations
 
@@ -138,6 +202,8 @@ release contains these tools, first install it with `./install.sh --assets .`.
   defines **whether and what to remember**.
 - `safe` blocks only unrestricted raw nGQL. Treat structured delete/link operations as writes and
   require the same user-intent checks you would use in `legacy`.
+- `readonly` blocks mutation tools but is not an authentication sandbox. Its startup schema check
+  is read-only and fails fast instead of bootstrapping or migrating a stale space.
 - Schema bootstrap (v2: `note`/`rel` + typed wiki) is an additive migration. Check the
   applied version in the `byori:schema-version` note.
 - `memory_export` is a bounded inspection API, not a transactional backup snapshot; deep pages

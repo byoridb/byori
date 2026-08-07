@@ -2,9 +2,11 @@
 
 # Byori — 설치와 관리
 
-Claude Code와 MCP 클라이언트의 **영속 기억**으로 쓸 로컬 ByoriDB를 설치한다.
-서버·MCP 서버·skill을 한 번에 세팅한다. `claude`/`codex` CLI가 있으면 각각 자동으로
-MCP를 등록하고 skill을 설치한다(`--no-claude`/`--no-codex`로 건너뜀).
+Claude Code, Codex와 다른 MCP 호환 세션이 Byori 프로젝트의 **지속 가능한 지식 그래프**를
+공유하도록 로컬 runtime을 설치한다. 서버·MCP 서버·호환 멀티 CLI coordinator·Skill을
+한 번에 세팅한다. `claude`/`codex` CLI가
+있으면 각각 자동으로
+MCP를 등록하고 Skill을 설치한다(`--no-claude`/`--no-codex`로 건너뜀).
 
 ## 한 줄 설치
 
@@ -15,12 +17,26 @@ curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh 
 > macOS(Apple Silicon/Intel) · Linux x86_64 지원. Windows 미지원.
 > 요구: `curl`, `tar`, `python3`(MCP 서버 실행용). Claude Code CLI가 있으면 MCP 서버를 자동 등록한다.
 
+## Byori macOS 앱
+
+아래 shell 설치기는 ByoriDB, MCP 자산, 호환 CLI를 설치하며 `/Applications`에 앱을
+복사하지는 않는다. Byori macOS 앱은 `Byori-<version>-<arch>.dmg`로 배포한다.
+저장소에서 빌드하면 공개 산출물 `dist/Byori.app`과
+`dist/Byori-<version>-<arch>.dmg`를 만들며 앱 번들의 executable은 `Byori`다.
+
+앱의 메인 workspace는 **Project → Source Tree/Worktree → Task → Session** 순서다.
+사용자는 Session마다 코딩 agent 하나와 model을 고른다. Settings는 agent, Skill, MCP,
+ByoriDB, 진단 관리를 보조하며 메인 workspace가 아니다. 한 프로젝트의 모든 Source
+Tree/Worktree, Task, Session, agent 선택은 Context inspector를 통해 같은 프로젝트
+ByoriDB 지식 그래프를 공유한다.
+
 ## 무엇을 설치하나
 
 | 구성 | 위치 | 역할 |
 |---|---|---|
 | `byoridb-server` (+`byoridb-cli`) | `~/.byoridb/bin/` | 로컬 ByoriDB (gRPC 9669 / HTTP 19669, `127.0.0.1` 바인딩) |
-| `byoridb_mcp.py` | `~/.byoridb/` | 호환 note tool + 검증된 typed-wiki CRUD/export/read-only query tool을 stdio로 노출. 기본 `legacy` profile은 unrestricted `memory_query`도 제공. 시작 시 설정된 space를 schema v2(`note`/`rel` + typed wiki)로 자동 bootstrap·migration |
+| `byori` + `byori.py` | `~/.byoridb/bin/` | provider 탐색, 신뢰 프로젝트 등록, Claude/Codex 병렬 실행, 로컬 run 조회용 dependency-free coordinator. 설치기는 이 경로를 `PATH`에 추가하지 않음 |
+| `byoridb_mcp.py` | `~/.byoridb/` | 호환 note tool + 검증된 typed-wiki CRUD/export/read-only query tool을 stdio로 노출. 기본 `legacy` profile은 unrestricted `memory_query`도 제공. Writer profile은 설정 space를 schema v2(`note`/`rel` + typed wiki)로 bootstrap·migration하고 `readonly`는 그 version만 검증 |
 | 상시 실행 서비스 | launchd `com.byoridb.local`(macOS) / systemd --user(Linux) | launchd는 `RunAtLoad` + `KeepAlive`; systemd user unit은 `default.target` 연결 + `Restart=always` |
 | `env` | `~/.byoridb/env` (chmod 600) | 랜덤 생성된 root 비밀번호 |
 | 스킬 | `~/.claude/skills/byoridb-memory/SKILL.md` | 언제/무엇을 기억·회수할지의 정책 |
@@ -39,9 +55,10 @@ install.sh [--with-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z] [--uninstall]
 - `--tag` — byori 자산(MCP/스킬/템플릿) 버전 고정(기본: 최신 byori 릴리스).
 - `--engine-tag` — ByoriDB 엔진 릴리스 override(기본: 이 byori 버전과 함께 검증된 고정 태그).
 - `--uninstall` — 서비스 중지·해제, Claude/Codex MCP 등록 해제, skill 제거.
-  **데이터는 확인 후 보존/삭제 선택.**
+  **데이터는 확인 후 보존/삭제 선택.** merge되지 않은 사용자 변경이 있을 수 있어
+  `~/.byori`의 오케스트레이션 record와 worktree는 보존한다.
 - `--binary PATH` — 다운로드 대신 로컬 `byoridb-server` 바이너리 사용.
-- `--assets DIR` — 다운로드 대신 로컬 repo 체크아웃(`DIR`)에서 mcp.py/템플릿/스킬을 가져옴.
+- `--assets DIR` — 다운로드 대신 로컬 repo 체크아웃(`DIR`)에서 CLI/mcp.py/템플릿/스킬을 가져옴.
 - `--no-service` — launchd/systemd 등록 없이 현재 세션의 background process로 실행.
 - `--no-claude` — Claude MCP 등록, skill, hook 설치를 건너뜀.
 - `--no-codex` — Codex MCP 등록과 skill 설치를 건너뜀.
@@ -49,7 +66,41 @@ install.sh [--with-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z] [--uninstall]
 설치기 환경변수: `BYORIDB_HOME`(기본 `~/.byoridb`), `BYORIDB_HTTP_PORT`(기본 19669),
 `BYORIDB_GRAPH_PORT`(기본 9669), `BYORIDB_LABEL`(기본 `com.byoridb.local`),
 `BYORI_ENGINE_TAG`(기본: 고정 호환 엔진 태그).
+재설치할 때 현재 `BYORIDB_ROOT_PASSWORD` 또는 legacy `BYORIDB_PASSWORD` 값을 보존한다.
+설치 완료는 해당 credential로 실제 session 생성까지 성공해야 한다. 오래된 ByoriDB
+process가 이미 port를 점유할 수 있으므로 인증 없는 `/health` 응답만으로 성공 처리하지 않는다.
 격리 테스트: `BYORIDB_HOME=/tmp/bt BYORIDB_HTTP_PORT=29669 BYORIDB_GRAPH_PORT=29670 ./install.sh --binary … --assets …`
+
+## Foreground 멀티 CLI 호환 경로
+
+설치기는 전역 symlink를 의도적으로 만들지 않는다. 현재 shell의 bin 경로에 추가하거나
+전체 경로로 실행한다.
+
+```sh
+export PATH="$HOME/.byoridb/bin:$PATH"
+byori provider list
+
+cd /path/to/a/git/repository
+byori project add .
+byori run --agent claude --agent codex "요청한 변경을 구현해"
+byori runs list
+```
+
+초기 `byori run` coordinator는 별도 prototype/호환 경로다. Prompt 하나를 여러 worker로
+fan-out할 수 있지만 macOS 앱의 Session model을 정의하지 않는다. 오케스트레이션에는
+Git도 필요하다. MVP는 Claude Code와 Codex를 지원하며 `--agent`를
+생략하면 설치된 지원 provider를 모두 사용한다. `byori project add . [--space SPACE]`는
+비대화식 worker에 대한 명시적 신뢰 경계다. 기본 run 모드는 dirty 저장소를 거부하고
+worker마다 branch와 관리형 worktree를 만든 뒤 결과를 merge하거나 삭제하지 않고 남긴다.
+worker 하나는 `--in-place`로 기존 변경을 포함한 현재 working tree를 명시적으로 사용할 수 있다.
+
+운영 JSON, raw prompt, provider log, advisory lock, worktree는 `BYORI_HOME`(기본
+`~/.byori`)에 저장한다. 제한된 recall context와 coordinator가 소유한 project/task
+checkpoint만 ByoriDB 경계를 넘는다. Coordinator recall 주입과 checkpoint를 생략하려면
+`--no-memory`를 사용한다. 전역 등록 MCP가 `legacy`로 fallback하지 않도록 worker에는 계속
+project space와 `readonly` profile을 전달한다. 전체 명령,
+`--allow-shell`, timeout, run 조회, 데이터 위치, 보안 model은
+[멀티 CLI 오케스트레이션](orchestration.md)을 참고한다.
 
 ## MCP profile과 memory space
 
@@ -59,6 +110,14 @@ install.sh [--with-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z] [--uninstall]
 하나만 discovery와 dispatch에서 제거한다. reduced raw-query surface이지 **read-only
 server가 아니다**. `memory_remember`, `memory_wiki_upsert`, `memory_link`,
 `memory_delete`는 계속 write할 수 있다.
+`BYORIDB_MCP_PROFILE=readonly`는 `memory_recall`, `memory_query_read`, `memory_read`,
+`memory_export`만 노출한다. 오케스트레이터는 worker에 이 profile을 주고 coordinator가
+write를 전담한다.
+
+Profile은 MCP tool을 제한할 뿐 authorization 경계나 process sandbox가 아니다. `readonly`
+process는 startup에서 login, `USE <space>`, schema-version read만 수행하며 writer가 현재
+version으로 space를 미리 준비하지 않았으면 실패한다. 설정된 engine credential은 계속
+가지므로 신뢰 영역이 다르면 instance와 credential을 분리한다.
 
 `BYORIDB_MEMORY_SPACE`는 논리 memory namespace를 선택하며(기본 `claude_memory`),
 `^[A-Za-z_][A-Za-z0-9_]{0,63}$`을 만족해야 한다. 프로젝트가 우연히 섞이지 않게 할 뿐
@@ -107,7 +166,7 @@ rm -rf "$HOME/.agents/skills/byoridb-memory"
 
 ## NaraeClaw 또는 기타 수동 MCP host 연결
 
-설치기와 Manager는 현재 Claude Code/Codex만 설정한다. NaraeClaw 전용 설정 형식이나
+설치기와 Byori macOS 앱은 현재 Claude Code/Codex만 설정한다. NaraeClaw 전용 설정 형식이나
 skill 경로는 가정하지 않는다. 호환 host의 MCP process 설정에 아래 runner를 사용하고,
 `adapters/naraeclaw/skills/byoridb-memory/SKILL.md` 참조 정책은 해당 host가 문서화한
 방식으로 설치한다.
@@ -118,15 +177,18 @@ env BYORIDB_MCP_PROFILE=safe \
   "$HOME/.byoridb/bin/run-mcp.sh"
 ```
 
-NaraeClaw 전용 hook은 제공하지 않는다. process별 space도 현재 Manager가 알지 못해
-Manager 자체 환경의 space만 표시한다. release 전에 source tree를 테스트할 때는 먼저
-`./install.sh --assets .`로 설치한다.
+NaraeClaw 전용 hook은 제공하지 않는다. 다른 host에만 설정된 space는 Byori macOS 앱이
+자동으로 발견하지 않는다. Context inspector는 선택한 등록 Project의 ByoriDB space를
+사용한다. release 전에 source tree를 테스트할 때는 먼저 `./install.sh --assets .`로
+설치한다.
 
 ## 한계
 
 - MCP 서버는 리마인더가 아니라 실제 데이터 도구다. **기억할지 말지의 정책은 스킬**(`byoridb-memory`)에 있다.
 - `safe`는 unrestricted raw nGQL만 차단한다. structured delete/link도 write이므로
   `legacy`와 같은 사용자 의도 확인이 필요하다.
+- `readonly`는 mutation tool을 차단하지만 authentication sandbox는 아니다. Startup schema
+  check는 read-only이고 stale space를 bootstrap/migration하는 대신 즉시 실패한다.
 - schema 부트스트랩(v2: `note`/`rel` + typed wiki)은 additive migration이다. 적용 버전은
   `byori:schema-version` note로 확인한다.
 - `memory_export`는 제한된 inspection API이지 transactional backup snapshot이 아니다.

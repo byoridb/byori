@@ -82,16 +82,114 @@ enum ManagerAction: String, Identifiable {
             return false
         }
     }
+
+    var progressTitle: String {
+        switch self {
+        case .installClaude: return "Claude Code 설치·업데이트 중…"
+        case .installCodex: return "Codex 설치·업데이트 중…"
+        case .installByori: return "ByoriDB 설치·복구 중…"
+        case .updateByori: return "ByoriDB 업데이트 중…"
+        case .startByori: return "ByoriDB 시작 중…"
+        case .stopByori: return "ByoriDB 중지 중…"
+        case .restartByori: return "ByoriDB 재시작 중…"
+        case .connectClaude: return "Claude Code MCP 연결 중…"
+        case .connectCodex: return "Codex MCP 연결 중…"
+        case .disconnectClaude: return "Claude Code MCP 연결 해제 중…"
+        case .disconnectCodex: return "Codex MCP 연결 해제 중…"
+        case .syncClaudeSkill: return "Claude Code Memory Skill 동기화 중…"
+        case .syncCodexSkill: return "Codex Memory Skill 동기화 중…"
+        case .removeClaudeSkill: return "Claude Code Memory Skill 제거 중…"
+        case .removeCodexSkill: return "Codex Memory Skill 제거 중…"
+        }
+    }
+
+    /// Only runtime installs have a complete snapshot/rollback boundary.
+    /// Other actions remain responsive, but must run to completion so a quit
+    /// or late Cancel cannot leave an unverified partial configuration behind.
+    var supportsSafeCancellation: Bool {
+        switch self {
+        case .installByori, .updateByori:
+            return true
+        default:
+            return false
+        }
+    }
+
+    var cancellationDetail: String {
+        switch self {
+        case .installByori, .updateByori:
+            return "설치 프로세스를 종료하고 변경 전 ByoriDB 상태를 복구했습니다."
+        default:
+            return "취소 요청 후 최종 상태를 다시 확인했습니다."
+        }
+    }
 }
 
 struct ActivityEntry: Identifiable {
     enum Level { case info, success, failure }
 
-    let id = UUID()
+    let id: UUID
     let date: Date
     let title: String
     let detail: String
     let level: Level
+
+    init(
+        id: UUID = UUID(),
+        date: Date,
+        title: String,
+        detail: String,
+        level: Level
+    ) {
+        self.id = id
+        self.date = date
+        self.title = SafeDisplayText.strippingTerminalControls(title)
+            .replacingOccurrences(of: "\n", with: " ")
+        let safeDetail = SafeDisplayText.strippingTerminalControls(detail)
+        self.detail = safeDetail.count > 12_000
+            ? "…\n" + String(safeDetail.suffix(12_000))
+            : safeDetail
+        self.level = level
+    }
+}
+
+struct IntegrationRemovalRequest: Identifiable {
+    enum Target {
+        case mcp(MCPServerSummary)
+        case skill(UserSkillSummary)
+    }
+
+    let target: Target
+
+    var id: String {
+        switch target {
+        case let .mcp(server): return "mcp:\(server.id)"
+        case let .skill(skill): return "skill:\(skill.id)"
+        }
+    }
+
+    var confirmationTitle: String {
+        switch target {
+        case let .mcp(server): return "\(server.name) MCP를 제거할까요?"
+        case let .skill(skill): return "\(skill.name) Skill을 제거할까요?"
+        }
+    }
+
+    var confirmationDetail: String {
+        switch target {
+        case let .mcp(server):
+            return "\(server.agent.displayName)의 공식 CLI로 등록을 제거합니다. 변경 전 설정 파일은 백업합니다."
+        case let .skill(skill):
+            return "대상: \(skill.directoryPath)\n사용자 Skill 폴더 전체를 백업한 뒤 제거합니다. 심볼릭 링크와 허용 경로 밖의 폴더는 변경하지 않습니다."
+        }
+    }
+
+    var progressTitle: String {
+        switch target {
+        case let .mcp(server): return "\(server.name) MCP 제거 중…"
+        case let .skill(skill): return "\(skill.name) Skill 제거 중…"
+        }
+    }
 }
 
 @MainActor
@@ -99,11 +197,20 @@ final class ManagerViewModel: ObservableObject {
     @Published var selectedSection: ManagerSection? = .overview
     @Published private(set) var snapshot: ManagerSnapshot?
     @Published private(set) var isBusy = false
+    @Published private(set) var canCancelCurrentOperation = false
     @Published private(set) var currentOperation = ""
     @Published var pendingAction: ManagerAction?
+    @Published var pendingIntegrationRemoval: IntegrationRemovalRequest?
     @Published private(set) var activities: [ActivityEntry] = []
+    @Published private(set) var integrationInventories: [AgentIntegrationInventory] = []
+    @Published private(set) var isRefreshingIntegrations = false
 
     let service: ManagerService
+    private var operationTask: Task<Void, Never>?
+    private var activeActivityID: UUID?
+    private var lastOperationHadRollbackFailure = false
+
+    var hasActiveOperation: Bool { operationTask != nil }
 
     init(service: ManagerService = ManagerService()) {
         self.service = service
@@ -121,6 +228,20 @@ final class ManagerViewModel: ObservableObject {
         currentOperation = ""
     }
 
+    func refreshIntegrations() async {
+        guard operationTask == nil, !isRefreshingIntegrations else { return }
+        isRefreshingIntegrations = true
+        let inventories = await service.integrationInventories()
+        if !Task.isCancelled {
+            integrationInventories = inventories
+        }
+        isRefreshingIntegrations = false
+    }
+
+    func integrationInventory(_ kind: AgentKind) -> AgentIntegrationInventory? {
+        integrationInventories.first { $0.kind == kind }
+    }
+
     func request(_ action: ManagerAction, confirmation: Bool = false) {
         if confirmation {
             pendingAction = action
@@ -132,9 +253,71 @@ final class ManagerViewModel: ObservableObject {
     func execute(_ action: ManagerAction) {
         pendingAction = nil
         guard !isBusy else { return }
-        Task {
-            await perform(action)
+        isBusy = true
+        canCancelCurrentOperation = action.supportsSafeCancellation
+        lastOperationHadRollbackFailure = false
+        currentOperation = action.progressTitle
+        let activityID = UUID()
+        activeActivityID = activityID
+        activities.insert(ActivityEntry(
+            id: activityID,
+            date: Date(),
+            title: currentOperation,
+            detail: "",
+            level: .info
+        ), at: 0)
+        operationTask = Task { [weak self] in
+            await self?.perform(action, activityID: activityID)
         }
+    }
+
+    func requestRemoval(_ target: IntegrationRemovalRequest.Target) {
+        pendingIntegrationRemoval = IntegrationRemovalRequest(target: target)
+    }
+
+    func executeRemoval(_ request: IntegrationRemovalRequest) {
+        pendingIntegrationRemoval = nil
+        guard !isBusy, !isRefreshingIntegrations else { return }
+        isBusy = true
+        canCancelCurrentOperation = false
+        lastOperationHadRollbackFailure = false
+        currentOperation = request.progressTitle
+        let activityID = UUID()
+        activeActivityID = activityID
+        activities.insert(ActivityEntry(
+            id: activityID,
+            date: Date(),
+            title: currentOperation,
+            detail: "",
+            level: .info
+        ), at: 0)
+        operationTask = Task { [weak self] in
+            await self?.performRemoval(request, activityID: activityID)
+        }
+    }
+
+    func cancelCurrentOperation() {
+        guard canCancelCurrentOperation, let operationTask else { return }
+        canCancelCurrentOperation = false
+        currentOperation = "작업 취소 중…"
+        if let activeActivityID {
+            replaceActivity(
+                id: activeActivityID,
+                title: currentOperation,
+                detail: "안전하게 중단하고 변경 전 상태를 복구하는 중입니다.",
+                level: .info
+            )
+        }
+        operationTask.cancel()
+    }
+
+    func cancelActiveOperationAndWait() async -> Bool {
+        guard let operationTask else { return true }
+        if canCancelCurrentOperation {
+            cancelCurrentOperation()
+        }
+        await operationTask.value
+        return !lastOperationHadRollbackFailure
     }
 
     func openLogs() {
@@ -149,12 +332,44 @@ final class ManagerViewModel: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
-    private func perform(_ action: ManagerAction) async {
-        isBusy = true
-        currentOperation = action.confirmationTitle.replacingOccurrences(of: "할까요?", with: "중")
-        activities.insert(ActivityEntry(
-            date: Date(), title: currentOperation, detail: "", level: .info
-        ), at: 0)
+    func openAgentConfig(_ kind: AgentKind) {
+        let url = kind == .claude ? service.paths.claudeConfig : service.paths.codexConfig
+        if FileManager.default.fileExists(atPath: url.path) {
+            NSWorkspace.shared.open(url)
+        } else {
+            let directory = url.deletingLastPathComponent()
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            NSWorkspace.shared.activateFileViewerSelecting([directory])
+        }
+    }
+
+    func openSkill(_ skill: UserSkillSummary) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let url = try await service.validatedUserSkillFile(skill)
+                NSWorkspace.shared.open(url)
+            } catch {
+                activities.insert(ActivityEntry(
+                    date: Date(),
+                    title: "Skill 열기 실패",
+                    detail: error.localizedDescription,
+                    level: .failure
+                ), at: 0)
+            }
+        }
+    }
+
+    private func perform(_ action: ManagerAction, activityID: UUID) async {
+        let shouldRefreshIntegrations = selectedSection == .integrations
+            || !integrationInventories.isEmpty
+        defer {
+            isBusy = false
+            canCancelCurrentOperation = false
+            currentOperation = ""
+            operationTask = nil
+            activeActivityID = nil
+        }
 
         do {
             let result: OperationResult
@@ -190,24 +405,123 @@ final class ManagerViewModel: ObservableObject {
             case .removeCodexSkill:
                 result = try await service.removeSkill(.codex)
             }
-            activities.insert(ActivityEntry(
-                date: Date(),
+            // A returned OperationResult is the service's commit boundary.
+            // Do not reinterpret a late Cancel as though the mutation failed.
+            canCancelCurrentOperation = false
+            replaceActivity(
+                id: activityID,
                 title: result.summary,
-                detail: String(result.detail.prefix(12_000)),
+                detail: result.detail,
                 level: .success
-            ), at: 0)
+            )
         } catch {
-            activities.insert(ActivityEntry(
-                date: Date(),
+            let rollbackFailed = isRollbackFailure(error)
+            if rollbackFailed {
+                lastOperationHadRollbackFailure = true
+            }
+            if Task.isCancelled, !rollbackFailed {
+                replaceActivity(
+                    id: activityID,
+                    title: "작업 취소됨",
+                    detail: action.cancellationDetail,
+                    level: .info
+                )
+            } else {
+                replaceActivity(
+                    id: activityID,
+                    title: "작업 실패",
+                    detail: error.localizedDescription,
+                    level: .failure
+                )
+                selectedSection = .activity
+            }
+        }
+
+        canCancelCurrentOperation = false
+        currentOperation = "상태 다시 확인 중…"
+        await refreshAfterOperation(includeIntegrations: shouldRefreshIntegrations)
+    }
+
+    private func performRemoval(_ request: IntegrationRemovalRequest, activityID: UUID) async {
+        defer {
+            isBusy = false
+            canCancelCurrentOperation = false
+            currentOperation = ""
+            operationTask = nil
+            activeActivityID = nil
+        }
+
+        do {
+            let result: OperationResult
+            switch request.target {
+            case let .mcp(server):
+                result = try await service.removeMCPRegistration(server)
+            case let .skill(skill):
+                result = try await service.removeUserSkill(skill)
+            }
+            replaceActivity(
+                id: activityID,
+                title: result.summary,
+                detail: result.detail,
+                level: .success
+            )
+        } catch {
+            if isRollbackFailure(error) {
+                lastOperationHadRollbackFailure = true
+            }
+            replaceActivity(
+                id: activityID,
                 title: "작업 실패",
-                detail: String(error.localizedDescription.suffix(12_000)),
+                detail: error.localizedDescription,
                 level: .failure
-            ), at: 0)
+            )
             selectedSection = .activity
         }
 
-        snapshot = await service.snapshot()
-        isBusy = false
-        currentOperation = ""
+        currentOperation = "MCP·Skill 목록 다시 확인 중…"
+        await refreshAfterOperation(includeIntegrations: true)
+    }
+
+    private func refreshAfterOperation(includeIntegrations: Bool) async {
+        let refresh = Task.detached(priority: .userInitiated) { [service] in
+            let snapshot = await service.snapshot()
+            let inventories = includeIntegrations
+                ? await service.integrationInventories()
+                : nil
+            return (snapshot, inventories)
+        }
+        let refreshed = await refresh.value
+        snapshot = refreshed.0
+        if let inventories = refreshed.1 {
+            integrationInventories = inventories
+        }
+    }
+
+    private func isRollbackFailure(_ error: Error) -> Bool {
+        guard let managerError = error as? ManagerError else { return false }
+        if case .rollbackFailed = managerError { return true }
+        return false
+    }
+
+    private func replaceActivity(
+        id: UUID,
+        title: String,
+        detail: String,
+        level: ActivityEntry.Level
+    ) {
+        let replacement = ActivityEntry(
+            id: id,
+            date: Date(),
+            title: title,
+            detail: detail,
+            level: level
+        )
+        if let index = activities.firstIndex(where: { $0.id == id }) {
+            activities[index] = replacement
+        } else {
+            // Defensive fallback: the final result must remain visible even if
+            // an external UI reset removed its provisional row.
+            activities.insert(replacement, at: 0)
+        }
     }
 }

@@ -21,6 +21,14 @@ if a surface documented here changes, Byori must be updated before the engine ta
     bootstrap and structured upsert/read/link/export/delete, v0.2.0 VID reuse, explicit edge
     deletion, guarded and cascading vertex deletion, temporal reads, and profile filtering.
 
+Product-model boundary: the Byori macOS app presents
+**Project → Source Tree/Worktree → Task → Session**, and the user chooses one coding agent
+and model per Session. That operational tree is app state, not an engine schema contract.
+Settings is a supporting surface for installation, integration, and diagnostics. This
+engine contract covers the project-scoped ByoriDB knowledge graph consumed by the Context
+inspector; all Source Trees/Worktrees, Tasks, Sessions, and agent choices in one Project
+share that graph space.
+
 ## Engine Upgrade Checklist
 
 1. Update `ENGINE_TAG_DEFAULT` in `install.sh`
@@ -90,8 +98,8 @@ fresh **login** request must fail immediately without another login retry (see
 
 ## 2. nGQL Subset
 
-These are all statements emitted by the MCP and the Manager graph view. Byori works as long as
-this syntax parses and executes.
+These are all statements emitted by the MCP and the Byori macOS app's Context inspector.
+Byori works as long as this syntax parses and executes.
 
 ```ngql
 CREATE SPACE IF NOT EXISTS <space>(vid_type=INT64)
@@ -140,21 +148,21 @@ MATCH (n:<tag>) WHERE id(n) == <vid> RETURN n.<tag>.<body|summary> AS body LIMIT
                                                 -- only module uses summary; all other tags use body
 ```
 
-The statements above include both the structured MCP write/read surface and the Manager's
-read-only graph projection surface. Structured upserts first look up an existing typed node by
-its canonical `name` property; they do not assume that the stored VID matches the current hash
-recipe. `memory_link(action="delete")` emits `DELETE EDGE`, while `memory_delete` emits
+The statements above include both the structured MCP write/read surface and the Byori macOS
+app's read-only Context projection surface. Structured upserts first look up an existing typed
+node by its canonical `name` property; they do not assume that the stored VID matches the
+current hash recipe. `memory_link(action="delete")` emits `DELETE EDGE`, while `memory_delete` emits
 `DELETE VERTEX` only after its link guard has passed. Engine v0.3.3 does **not** remove incident
 edges with `DELETE VERTEX`. For `cascade=true`, the MCP first enumerates every incoming and
 outgoing edge, emits one `DELETE EDGE` for each, and only then deletes the vertex.
 
-For the Manager projection, `id(n)`/`id(a)`/`id(b)` must return the vertex INT64 VID, and
+For the app's Context projection, `id(n)`/`id(a)`/`id(b)` must return the vertex INT64 VID, and
 `ORDER BY` must accept projection aliases (`vid`, `src`, `dst`). `LIMIT` and `OFFSET` are
 non-negative integers: after sorting, the engine skips `offset` rows and then applies `limit`.
-Manager queries the `note` tag, each of the seven typed wiki tags, `rel`, and each of the eight
+The app queries the `note` tag, each of the seven typed wiki tags, `rel`, and each of the eight
 typed wiki edge kinds separately and in parallel, then merges the results in the client.
 **Measurements show that the engine's `UNION`
-returns only the first MATCH branch instead of combining multiple MATCH branches, so Manager
+returns only the first MATCH branch instead of combining multiple MATCH branches, so the app
 does not depend on it.** Typed wiki edge queries use `(a)`/`(b)` without endpoint vertex tags,
 because the same edge kind may connect several endpoint-tag combinations. The engine must support
 matching vertex patterns without specified tags.
@@ -164,7 +172,7 @@ projection, chaining them as `id(a) == <vid> OR ...`. **Measurements show that t
 support `WHERE <expr> IN [...]` and returns zero rows even for a single-element list**, so the
 query must use an OR chain of `==` comparisons. Without this filter, the per-kind LIMIT 501 cutoff
 can be consumed by edges whose endpoints would not be displayed. A displayable edge pushed past
-row 501 would then be lost without `edgesTruncated` detecting the truncation. Manager displays at
+row 501 would then be lost without `edgesTruncated` detecting the truncation. The app displays at
 most 200 nodes and 500 edges, requesting one extra row for each to detect truncation. The initial
 node projection excludes `body`/`summary`; only the selected node is lazy-loaded by the final
 query.
@@ -172,10 +180,10 @@ query.
 \* `decided_in` (decision → task) exists in the memory ontology's target schema, but the
 schema v2 migration in `byoridb_mcp.py` does not yet contain its `CREATE EDGE`. Engine v0.3.3
 currently returns an empty
-result for an undefined edge tag, but Manager must not treat that behavior as a compatibility
+result for an undefined edge tag, but the app must not treat that behavior as a compatibility
 contract because it would silently hide data. If `decided_in` becomes necessary—under the memory
 ontology's promotion criterion of “having been forced into another type at least three times”—add
-a separate schema migration before adding it to Manager's edge kinds.
+a separate schema migration before adding it to the app's edge kinds.
 
 The typed wiki statements are emitted by the MCP's schema v2 bootstrap
 (`byoridb_mcp.py._migrate`) and by the smoke test's typed round trip. The schema version is stored
@@ -208,20 +216,28 @@ The engine parser must interpret all three.
 
 The MCP offers nine tools in the default `legacy` profile. The `safe` profile exposes eight:
 it hides and refuses dispatch of only `memory_query`. It still exposes all structured mutation
-tools and the legacy `memory_remember` note writer, so **safe is not a read-only mode, an
-authorization boundary, or a sandbox**.
+tools and the legacy `memory_remember` note writer, so **safe is not a read-only mode**.
+The `readonly` profile advertises and dispatches only `memory_recall`, `memory_query_read`,
+`memory_read`, and `memory_export`; every mutation tool and unrestricted `memory_query` call is
+rejected as an unknown tool.
 
-| Tool | `legacy` | `safe` | Contract |
-|---|:---:|:---:|---|
-| `memory_remember` | yes | yes | Upsert a legacy `note`; optionally create `relates_to` edges |
-| `memory_recall` | yes | yes | Read legacy notes by substring and/or kind, newest first |
-| `memory_query` | yes | no | Unrestricted raw nGQL compatibility escape hatch |
-| `memory_query_read` | yes | yes | Run one statement admitted by the read-query gate below |
-| `memory_wiki_upsert` | yes | yes | Validate and upsert one canonical typed-wiki node |
-| `memory_link` | yes | yes | Upsert or delete one validated relationship between existing endpoints |
-| `memory_read` | yes | yes | Return normalized legacy or typed nodes, optionally with incident links |
-| `memory_delete` | yes | yes | Delete one exact node; linked nodes require `cascade=true` |
-| `memory_export` | yes | yes | Return a bounded page of normalized nodes and optional outgoing links |
+| Tool | `legacy` | `safe` | `readonly` | Contract |
+|---|:---:|:---:|:---:|---|
+| `memory_remember` | yes | yes | no | Upsert a legacy `note`; optionally create `relates_to` edges |
+| `memory_recall` | yes | yes | yes | Read legacy notes by substring and/or kind, newest first |
+| `memory_query` | yes | no | no | Unrestricted raw nGQL compatibility escape hatch |
+| `memory_query_read` | yes | yes | yes | Run one statement admitted by the read-query gate below |
+| `memory_wiki_upsert` | yes | yes | no | Validate and upsert one canonical typed-wiki node |
+| `memory_link` | yes | yes | no | Upsert or delete one validated relationship between existing endpoints |
+| `memory_read` | yes | yes | yes | Return normalized legacy or typed nodes, optionally with incident links |
+| `memory_delete` | yes | yes | no | Delete one exact node; linked nodes require `cascade=true` |
+| `memory_export` | yes | yes | yes | Return a bounded page of normalized nodes and optional outgoing links |
+
+Profiles filter the MCP tool surface; they are not authorization boundaries or sandboxes. A
+`readonly` process performs only login, `USE <space>`, and a schema-version read during startup;
+it fails if a writer has not already bootstrapped the space at the current schema version. The
+process still retains its configured engine credential, so use separate engine instances and
+credentials across trust boundaries.
 
 All nine input schemas reject undeclared fields. Their shared hard limits are:
 
@@ -303,7 +319,7 @@ The reserved schema-version note is excluded, and included links are outgoing fr
 | `BYORIDB__SERVER__HTTP_ADDR` / `BYORIDB__SERVER__GRAPH_ADDR` | Server | Bind addresses |
 | `BYORIDB_HTTP` / `BYORIDB_USER` / `BYORIDB_PASSWORD` | MCP | Engine connection (`ROOT_PASSWORD` takes precedence over `PASSWORD`) |
 | `BYORIDB_MEMORY_SPACE` | MCP | Logical memory-space name (default: `claude_memory`); must match `^[A-Za-z_][A-Za-z0-9_]{0,63}$` |
-| `BYORIDB_MCP_PROFILE` | MCP | Case-sensitive `legacy` (default, 9 tools) or `safe` (8 tools; hides only `memory_query`) |
+| `BYORIDB_MCP_PROFILE` | MCP | Case-sensitive `legacy` (default, 9 tools), `safe` (8 tools; hides only `memory_query`), or `readonly` (4 read tools) |
 
 Note: the single-`_` secret convention and double-`__` configuration-tree convention coexist;
 this is an engine convention.

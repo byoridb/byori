@@ -141,6 +141,7 @@ public enum ManagerError: LocalizedError, Equatable {
     case prerequisite(String)
     case commandFailed(String, Int32, String)
     case verificationFailed(String)
+    case rollbackFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -155,6 +156,8 @@ public enum ManagerError: LocalizedError, Equatable {
             return "\(label) 실패 (종료 코드 \(code))\n\(detail)"
         case let .verificationFailed(message):
             return "설정 검증 실패: \(message)"
+        case let .rollbackFailed(message):
+            return "자동 롤백 실패: \(message)"
         }
     }
 }

@@ -1,8 +1,35 @@
 import Foundation
 
 public protocol KnowledgeGraphProviding: Sendable {
-    func loadGraph(paths: ManagerPaths, nodeLimit: Int) async throws -> KnowledgeGraphSnapshot
-    func loadBody(paths: ManagerPaths, nodeID: Int64, tag: String) async throws -> String
+    /// Verifies that the configured local endpoint accepts the configured
+    /// credential. A health response alone is insufficient because another
+    /// ByoriDB process can own the same port while using a different data set.
+    func verifyConnection(paths: ManagerPaths) async throws
+    func loadGraph(
+        paths: ManagerPaths,
+        nodeLimit: Int,
+        space: String?
+    ) async throws -> KnowledgeGraphSnapshot
+    func loadBody(
+        paths: ManagerPaths,
+        nodeID: Int64,
+        tag: String,
+        space: String?
+    ) async throws -> String
+}
+
+public extension KnowledgeGraphProviding {
+    func verifyConnection(paths: ManagerPaths) async throws {
+        _ = try await loadGraph(paths: paths, nodeLimit: 1, space: nil)
+    }
+
+    func loadGraph(paths: ManagerPaths, nodeLimit: Int) async throws -> KnowledgeGraphSnapshot {
+        try await loadGraph(paths: paths, nodeLimit: nodeLimit, space: nil)
+    }
+
+    func loadBody(paths: ManagerPaths, nodeID: Int64, tag: String) async throws -> String {
+        try await loadBody(paths: paths, nodeID: nodeID, tag: tag, space: nil)
+    }
 }
 
 public enum KnowledgeGraphClientError: LocalizedError, Sendable {
@@ -22,7 +49,7 @@ public enum KnowledgeGraphClientError: LocalizedError, Sendable {
         case .unavailable:
             return "로컬 ByoriDB에 연결할 수 없습니다. 서비스 상태를 확인해 주세요."
         case .authenticationFailed:
-            return "ByoriDB 인증에 실패했습니다. 설치 복구로 연결 정보를 확인해 주세요."
+            return "ByoriDB 인증에 실패했습니다. 다른 ByoriDB 프로세스가 포트를 사용 중이거나 저장 데이터와 연결 비밀번호가 다를 수 있습니다."
         case .queryFailed:
             return "지식 그래프를 조회하지 못했습니다. ByoriDB 버전과 로그를 확인해 주세요."
         case .invalidResponse:
@@ -213,13 +240,22 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
         session = URLSession(configuration: configuration)
     }
 
+    public func verifyConnection(paths: ManagerPaths) async throws {
+        let credentials = try credentials(at: paths.byoriHome.appendingPathComponent("env"))
+        let baseURL = try localBaseURL(port: paths.httpPort)
+        let sessionID = try await createSession(baseURL: baseURL, password: credentials.password)
+        await deleteSession(baseURL: baseURL, sessionID: sessionID)
+    }
+
     public func loadGraph(
         paths: ManagerPaths,
-        nodeLimit: Int = 200
+        nodeLimit: Int = 200,
+        space: String? = nil
     ) async throws -> KnowledgeGraphSnapshot {
         let limit = min(max(nodeLimit, 1), 200)
         let edgeLimit = min(limit * 3, 500)
         let credentials = try credentials(at: paths.byoriHome.appendingPathComponent("env"))
+        let selectedSpace = try validatedSpace(space ?? credentials.space)
         let baseURL = try localBaseURL(port: paths.httpPort)
         let sessionID = try await createSession(baseURL: baseURL, password: credentials.password)
         defer { Task { await deleteSession(baseURL: baseURL, sessionID: sessionID) } }
@@ -227,7 +263,7 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
         _ = try await query(
             baseURL: baseURL,
             sessionID: sessionID,
-            statement: "USE \(credentials.space)"
+            statement: "USE \(selectedSpace)"
         )
 
         // nGQL은 UNION으로 여러 태그를 한 결과로 합쳐주지 않으므로(첫 branch만 반환),
@@ -259,7 +295,10 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
             ))
         }
         let nodesTruncated = allNodes.count > limit
-        allNodes.sort { $0.id < $1.id }
+        allNodes.sort { lhs, rhs in
+            if lhs.timestamp != rhs.timestamp { return lhs.timestamp > rhs.timestamp }
+            return lhs.id < rhs.id
+        }
         let nodes = Array(allNodes.prefix(limit))
 
         guard !nodes.isEmpty else {
@@ -337,13 +376,13 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
             return """
             MATCH (n:note)
             RETURN id(n) AS vid, n.note.name AS name, n.note.kind AS kind, n.note.ts AS ts
-            ORDER BY vid ASC LIMIT \(limit + 1) OFFSET 0
+            ORDER BY ts DESC, vid ASC LIMIT \(limit + 1) OFFSET 0
             """
         }
         return """
         MATCH (n:\(tag))
         RETURN id(n) AS vid, n.\(tag).name AS name, n.\(tag).ts AS ts
-        ORDER BY vid ASC LIMIT \(limit + 1) OFFSET 0
+        ORDER BY ts DESC, vid ASC LIMIT \(limit + 1) OFFSET 0
         """
     }
 
@@ -370,15 +409,21 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
         "(" + ids.map { "\(field) == \($0)" }.joined(separator: " OR ") + ")"
     }
 
-    public func loadBody(paths: ManagerPaths, nodeID: Int64, tag: String) async throws -> String {
+    public func loadBody(
+        paths: ManagerPaths,
+        nodeID: Int64,
+        tag: String,
+        space: String? = nil
+    ) async throws -> String {
         let credentials = try credentials(at: paths.byoriHome.appendingPathComponent("env"))
+        let selectedSpace = try validatedSpace(space ?? credentials.space)
         let baseURL = try localBaseURL(port: paths.httpPort)
         let sessionID = try await createSession(baseURL: baseURL, password: credentials.password)
         defer { Task { await deleteSession(baseURL: baseURL, sessionID: sessionID) } }
         _ = try await query(
             baseURL: baseURL,
             sessionID: sessionID,
-            statement: "USE \(credentials.space)"
+            statement: "USE \(selectedSpace)"
         )
         // module 태그만 body 대신 summary 프로퍼티를 쓴다(memory-ontology.md §4.1).
         let resolvedTag = Self.nodeTags.contains(tag) ? tag : Self.noteTag
@@ -389,6 +434,24 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
             statement: "MATCH (n:\(resolvedTag)) WHERE id(n) == \(nodeID) RETURN n.\(resolvedTag).\(property) AS body LIMIT 1"
         )
         return response.rows.first?["body"]?.stringValue ?? ""
+    }
+
+    private func validatedSpace(_ space: String) throws -> String {
+        func isASCIIAlpha(_ scalar: Unicode.Scalar) -> Bool {
+            (65...90).contains(scalar.value) || (97...122).contains(scalar.value)
+        }
+        func isASCIIDigit(_ scalar: Unicode.Scalar) -> Bool {
+            (48...57).contains(scalar.value)
+        }
+        guard !space.isEmpty, space.count <= 64,
+              let first = space.unicodeScalars.first,
+              isASCIIAlpha(first) || first.value == 95,
+              space.unicodeScalars.allSatisfy({
+                  isASCIIAlpha($0) || isASCIIDigit($0) || $0.value == 95
+              }) else {
+            throw KnowledgeGraphClientError.invalidConfiguration
+        }
+        return space
     }
 
     private func credentials(at envURL: URL) throws -> Credentials {

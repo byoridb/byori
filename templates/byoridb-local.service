@@ -1,5 +1,5 @@
 [Unit]
-Description=ByoriDB local memory substrate
+Description=ByoriDB local project knowledge graph
 After=network.target
 
 [Service]

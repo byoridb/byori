@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-07T04:05:25Z",
+  "title": "Design System: Byori",
+  "extensions": {
+    "colorMeta": {
+      "terminal-canvas": {
+        "role": "neutral",
+        "displayName": "Terminal Canvas",
+        "canonical": "#0E1011",
+        "tonalRamp": ["#080909", "#0E1011", "#202426", "#394044", "#596267", "#818B90", "#B5BDC1", "#F1F3F4"]
+      },
+      "terminal-pty-canvas": {
+        "role": "neutral",
+        "displayName": "PTY Canvas",
+        "canonical": "#0E1113",
+        "tonalRamp": ["#07090A", "#0E1113", "#20262A", "#394248", "#59656C", "#818E95", "#B5BEC3", "#F1F3F4"]
+      },
+      "terminal-text": {
+        "role": "neutral",
+        "displayName": "Terminal Text",
+        "canonical": "#E0E8EB",
+        "tonalRamp": ["#202426", "#3C4346", "#5F696D", "#849095", "#AAB5B9", "#C9D3D6", "#E0E8EB", "#F6F9FA"]
+      }
+    },
+    "typographyMeta": {
+      "ui": {
+        "displayName": "Native UI",
+        "purpose": "SwiftUI semantic text styles for hierarchy, controls, status, and prose."
+      },
+      "terminal": {
+        "displayName": "Terminal Mono",
+        "purpose": "Interactive PTY text and literal developer data only."
+      }
+    },
+    "shadows": [],
+    "motion": [],
+    "breakpoints": []
+  },
+  "components": [
+    {
+      "name": "Project Outline Row",
+      "kind": "nav",
+      "description": "Panel reference for a compact native hierarchy row; SwiftUI List and DisclosureGroup remain production authority.",
+      "html": "<div class=\"ds-outline-row\"><span class=\"ds-outline-label\">workspace-ui</span><span class=\"ds-status-dot\" aria-label=\"modified\"></span></div>",
+      "css": ".ds-outline-row { min-height: 28px; display: flex; align-items: center; gap: 8px; padding: 4px 8px; color: CanvasText; background: Canvas; border-radius: 6px; font: 13px -apple-system, BlinkMacSystemFont, sans-serif; } .ds-outline-row:hover { background: color-mix(in srgb, CanvasText 7%, Canvas); } .ds-outline-row:focus-within { outline: 2px solid Highlight; outline-offset: 1px; } .ds-outline-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .ds-status-dot { width: 7px; height: 7px; margin-left: auto; border-radius: 50%; background: orange; }"
+    },
+    {
+      "name": "New Session Button",
+      "kind": "button",
+      "description": "Panel reference for the native New Session action; SwiftUI Button styling and keyboard focus remain production authority.",
+      "html": "<button class=\"ds-session-button\" type=\"button\">New Session</button>",
+      "css": ".ds-session-button { min-height: 28px; padding: 5px 12px; border: 1px solid color-mix(in srgb, CanvasText 20%, transparent); border-radius: 7px; color: CanvasText; background: ButtonFace; font: 13px -apple-system, BlinkMacSystemFont, sans-serif; } .ds-session-button:hover { filter: brightness(0.97); } .ds-session-button:active { filter: brightness(0.92); } .ds-session-button:focus-visible { outline: 2px solid Highlight; outline-offset: 2px; } .ds-session-button:disabled { opacity: 0.45; }"
+    },
+    {
+      "name": "Terminal Session Header",
+      "kind": "custom",
+      "refersTo": "terminal-surface",
+      "description": "Panel reference for recorded launch identity and live state above the PTY; SwiftUI and SwiftTerm remain production authority.",
+      "html": "<div class=\"ds-terminal-header\"><span class=\"ds-running-dot\"></span><strong>Codex · CLI default</strong><span class=\"ds-launch-note\">Byori launch selection</span><button type=\"button\">Stop</button></div>",
+      "css": ".ds-terminal-header { display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 0 16px; color: CanvasText; background: Canvas; border-bottom: 1px solid color-mix(in srgb, CanvasText 16%, transparent); font: 13px -apple-system, BlinkMacSystemFont, sans-serif; } .ds-running-dot { width: 7px; height: 7px; border-radius: 50%; background: AccentColor; } .ds-launch-note { color: GrayText; font-size: 11px; } .ds-terminal-header button { margin-left: auto; padding: 4px 9px; border: 0; border-radius: 6px; color: CanvasText; background: ButtonFace; } .ds-terminal-header button:hover { filter: brightness(0.96); } .ds-terminal-header button:active { filter: brightness(0.9); } .ds-terminal-header button:focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }"
+    },
+    {
+      "name": "Inspector Segments",
+      "kind": "nav",
+      "description": "Panel reference for Files, Git, and Context; SwiftUI segmented Picker remains production authority.",
+      "html": "<nav class=\"ds-inspector-tabs\" aria-label=\"Inspector\"><button class=\"ds-selected\" type=\"button\">Files</button><button type=\"button\">Git</button><button type=\"button\">Context</button></nav>",
+      "css": ".ds-inspector-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; padding: 2px; border-radius: 7px; background: color-mix(in srgb, CanvasText 10%, Canvas); font: 12px -apple-system, BlinkMacSystemFont, sans-serif; } .ds-inspector-tabs button { padding: 4px 8px; border: 0; border-radius: 5px; color: CanvasText; background: transparent; } .ds-inspector-tabs button:hover { background: color-mix(in srgb, CanvasText 6%, Canvas); } .ds-inspector-tabs button:active, .ds-inspector-tabs .ds-selected { background: Canvas; } .ds-inspector-tabs button:focus-visible { outline: 2px solid Highlight; outline-offset: 1px; }"
+    },
+    {
+      "name": "ByoriDB Context Record",
+      "kind": "card",
+      "refersTo": "context-record",
+      "description": "Panel reference for one provenance-bearing graph record; SwiftUI semantic colors and the 12pt tonal group remain production authority.",
+      "html": "<article class=\"ds-context-record\"><div class=\"ds-context-meta\"><strong>Decision</strong><time>Aug 6</time></div><h3>Agent per session</h3><p>Byori records one launch selection while project knowledge remains shared.</p><small>ByoriDB · project space · match</small></article>",
+      "css": ".ds-context-record { padding: 12px; border: 0; border-radius: 12px; color: CanvasText; background: color-mix(in srgb, CanvasText 8%, Canvas); font: 13px/1.35 -apple-system, BlinkMacSystemFont, sans-serif; } .ds-context-record:hover { background: color-mix(in srgb, CanvasText 11%, Canvas); } .ds-context-record:focus-within { outline: 2px solid Highlight; outline-offset: 2px; } .ds-context-meta { display: flex; justify-content: space-between; gap: 8px; color: GrayText; font-size: 11px; } .ds-context-record h3 { margin: 8px 0 5px; font-size: 14px; } .ds-context-record p { margin: 0 0 8px; } .ds-context-record small { color: GrayText; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Project Workbench",
+    "overview": "Byori should feel like a calm native workbench wrapped around real developer processes. The project is the stable frame; source trees or worktrees, tasks, and sessions reveal increasing detail without displacing that frame. The user chooses Claude Code or Codex for each session. One real terminal owns attention while Files, Git, and ByoriDB knowledge remain immediately reachable.\n\nThe world is precise, durable, and operational. Native macOS controls carry familiarity, crisp dividers carry structure, and restrained semantic color carries state. Byori does not decorate work with dashboards, fake activity, or simulated terminal content.\n\nThe public product and app name is Byori. ByoriDB names only the integrated knowledge engine and its Context. `byori` names the supporting CLI. Settings is an administration surface within Byori, not a second product or the center of the experience.",
+    "keyCharacteristics": [
+      "Project-first hierarchy with one dominant working surface.",
+      "Native dynamic chrome surrounding a fixed near-black terminal canvas.",
+      "Compact spacing, semantic state, and honest loading, empty, error, and unavailable states.",
+      "Project-scoped knowledge presented as supporting context, never as a competing administration dashboard.",
+      "The canonical connected-node app icon represents user-selected agents linked through shared ByoriDB project knowledge."
+    ],
+    "rules": [
+      {"name": "The State Earns Color Rule", "body": "Teal, blue, green, orange, and red appear only for real running, preparing, success, dirty, failure, timeout, or unavailable states.", "section": "colors"},
+      {"name": "The Terminal Stays Fixed Rule", "body": "The terminal remains near-black in every system appearance so the coding surface retains visual authority.", "section": "colors"},
+      {"name": "The PTY Owns ANSI Color Rule", "body": "Preserve provider-emitted 16-color, 256-color, and truecolor output by advertising a color-capable PTY and removing inherited color-suppression variables without fabricating output.", "section": "colors"},
+      {"name": "The Status Bar Tells Only What Byori Knows", "body": "Show verified local database, checkout, session, context, and elapsed-time state; never imitate provider quota or billing percentages without a supported API.", "section": "layout"},
+      {"name": "The Tree Creates in Context Rule", "body": "Put a compact plus action on eligible source-tree and task rows, preserve the exact clicked target, and propose an editable two-word session name before launch.", "section": "layout"},
+      {"name": "The Inventory Drops Secrets Rule", "body": "Agent inventory may show bounded MCP and Skill identity and coarse state, but never raw command arguments, headers, environment values, tokens, or other credential-bearing details.", "section": "components"},
+      {"name": "The Literal Mono Rule", "body": "Use monospaced type only when alignment or literal identity matters: terminal text, branch status, revisions, paths, and counts.", "section": "typography"},
+      {"name": "The Divider Carries Structure Rule", "body": "Use one native divider or one tonal surface change at a boundary. Do not stack border and shadow to restate the same depth.", "section": "elevation"}
+    ],
+    "dos": [
+      "Do keep the project and source-tree lineage visible while a session is selected.",
+      "Do use real runtime state and explicit recovery actions for loading, empty, missing, unavailable, dirty, stopping, and failed conditions.",
+      "Do let native controls, system typography, SF Symbols, and semantic colors provide familiarity and accessibility.",
+      "Do keep ByoriDB knowledge project-scoped, bounded, provenance-bearing, and one inspector tab away.",
+      "Do preserve one uninterrupted terminal as the visual and interaction focus.",
+      "Do keep one user-selected coding agent per session; another agent starts in another explicitly created session."
+    ],
+    "donts": [
+      "Don't add automatic prompt fan-out, winner ranking, multi-terminal comparison, or merge controls to the Byori macOS app.",
+      "Don't move service administration or a global graph dashboard into the workspace hierarchy.",
+      "Don't fabricate terminal output, agent activity, metrics, or claims to fill an empty state.",
+      "Don't repeat equivalent branch metadata, overuse badges, or use monospaced type as decoration.",
+      "Don't add gradients, glass decoration, ornamental shadows, or rounded card grids to native panes."
+    ]
+  }
+}

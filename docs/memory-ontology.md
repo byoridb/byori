@@ -1,21 +1,23 @@
 **English** | [한국어](ko/memory-ontology.md)
 
-# ByoriDB Memory-Wiki — Dogfood Prototype
+# ByoriDB Project Knowledge Graph — Memory Ontology and Dogfood
 
-> Status: **design and dogfood PoC validation complete**. This document confirms the technical
-> feasibility of a system that “accumulates a knowledge graph as work proceeds and reads like an
-> LLM wiki.” Since v0.2.0, the typed wiki schema in §4 is automatically bootstrapped or migrated
-> as schema v2 when the MCP starts. Automatic repository ingestion is not implemented. Origin:
+> Status: **design and dogfood PoC validation complete**. This document defines the durable
+> knowledge layer beneath the Byori multi-agent workspace: selected project facts accumulate at
+> explicit checkpoints and can be read as a connected wiki. Since v0.2.0, the typed wiki schema
+> in §4 is automatically bootstrapped or migrated as schema v2 when the MCP starts. Automatic
+> repository or transcript ingestion is not implemented. Origin:
 > conversation on 2026-07-11 (file memory vs. graph memory → typed knowledge-graph vision).
 
 ---
 
 ## 1. Vision
 
-As users work, preserve their activity—code changes, decisions, incidents, and benchmarks—and
-project structure in a **typed knowledge graph that accumulates automatically**. When read by
-following edges between nodes, the graph should tell a wiki-like story of why the system became
-what it is.
+As users move between projects, source trees, tasks, and coding-agent sessions in Byori, promote
+durable decisions, incidents, resolutions, benchmarks, and non-obvious project structure into a
+**typed knowledge graph**. Capture happens at explicit checkpoints rather than on every terminal
+turn. When read by following edges between nodes, the graph should tell a wiki-like story of why
+the system became what it is.
 
 - Limitation of file memory (`MEMORY.md`): always-on token cost, flat lists, and no relationships
   or temporal context.

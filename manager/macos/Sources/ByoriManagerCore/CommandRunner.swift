@@ -5,20 +5,20 @@ public protocol CommandRunning: Sendable {
     func run(_ command: CommandSpec) async -> CommandResult
 }
 
-private final class LockedFlag: @unchecked Sendable {
+private final class CancellationIntent: @unchecked Sendable {
     private let lock = NSLock()
-    private var value = false
+    private var requested = false
 
-    func set() {
+    func request() {
         lock.lock()
-        value = true
+        requested = true
         lock.unlock()
     }
 
-    func get() -> Bool {
+    func isRequested() -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return value
+        return requested
     }
 }
 
@@ -52,20 +52,44 @@ public struct ProcessCommandRunner: CommandRunning {
     public init() {}
 
     public func run(_ command: CommandSpec) async -> CommandResult {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                continuation.resume(returning: Self.runSynchronously(command))
+        let cancellation = CancellationIntent()
+
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    continuation.resume(
+                        returning: Self.runSynchronously(
+                            command,
+                            cancellation: cancellation
+                        )
+                    )
+                }
             }
+        } onCancel: {
+            // Only record intent here. The synchronous worker owns spawn,
+            // waitpid, and every signal, so cancellation can never race with
+            // reaping or target a subsequently reused PID/process group.
+            cancellation.request()
         }
     }
 
-    private static func runSynchronously(_ command: CommandSpec) -> CommandResult {
+    private static func runSynchronously(
+        _ command: CommandSpec,
+        cancellation: CancellationIntent
+    ) -> CommandResult {
         var pipeFDs = [Int32](repeating: -1, count: 2)
         guard pipe(&pipeFDs) == 0 else {
             return systemErrorResult(prefix: "pipe")
         }
         let readFD = pipeFDs[0]
         let writeFD = pipeFDs[1]
+        let readFlags = fcntl(readFD, F_GETFL)
+        guard readFlags >= 0,
+              fcntl(readFD, F_SETFL, readFlags | O_NONBLOCK) == 0 else {
+            close(readFD)
+            close(writeFD)
+            return systemErrorResult(prefix: "fcntl output pipe")
+        }
         let nullFD = open("/dev/null", O_RDONLY)
         guard nullFD >= 0 else {
             close(readFD)
@@ -165,71 +189,135 @@ public struct ProcessCommandRunner: CommandRunning {
             return errorResult(code: spawnStatus, prefix: "Unable to run \(command.executable)")
         }
         let spawnedPID = pid
+        defer { close(readFD) }
 
         let output = BoundedOutput()
-        let reader = DispatchGroup()
-        reader.enter()
-        DispatchQueue.global(qos: .utility).async {
-            defer {
-                close(readFD)
-                reader.leave()
-            }
-            var buffer = [UInt8](repeating: 0, count: 16 * 1_024)
-            while true {
-                let count = buffer.withUnsafeMutableBytes { bytes in
-                    Darwin.read(readFD, bytes.baseAddress, bytes.count)
-                }
-                if count > 0 {
-                    buffer.withUnsafeBytes { bytes in
-                        output.append(UnsafeRawBufferPointer(rebasing: bytes[..<count]))
-                    }
-                } else if count == 0 {
-                    return
-                } else if errno != EINTR {
-                    return
-                }
-            }
-        }
-
-        let didTimeOut = LockedFlag()
-        let finished = LockedFlag()
-        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
-        timer.schedule(deadline: .now() + max(0, command.timeout))
-        timer.setEventHandler {
-            guard !finished.get() else { return }
-            didTimeOut.set()
-            _ = kill(-spawnedPID, SIGTERM)
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
-                guard !finished.get() else { return }
-                _ = kill(-spawnedPID, SIGKILL)
-            }
-        }
-        timer.resume()
-
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let timeoutAt = startedAt + max(0, command.timeout)
+        var terminationStartedAt: TimeInterval?
+        var forceKillSentAt: TimeInterval?
+        var didTimeOut = false
         var waitStatus: Int32 = 0
-        while waitpid(spawnedPID, &waitStatus, 0) == -1, errno == EINTR {}
+        var waitError: Int32?
+        var outputIsClosed = false
+        var leaderExitObserved = false
 
-        finished.set()
-        if didTimeOut.get() {
-            // The group can still contain a child after the leader exits.
-            _ = kill(-spawnedPID, SIGKILL)
+        while true {
+            if !outputIsClosed {
+                outputIsClosed = drainOutput(from: readFD, into: output)
+            }
+
+            if !leaderExitObserved {
+                var exitInfo = siginfo_t()
+                let observation = waitid(
+                    P_PID,
+                    id_t(spawnedPID),
+                    &exitInfo,
+                    WEXITED | WNOHANG | WNOWAIT
+                )
+                if observation == 0, exitInfo.si_pid == spawnedPID {
+                    // WNOWAIT deliberately keeps the leader as a zombie. Its
+                    // PID/PGID therefore cannot be reused while cancellation
+                    // finishes terminating descendants in the same group.
+                    leaderExitObserved = true
+                } else if observation == -1 {
+                    if errno == EINTR { continue }
+                    waitError = errno
+                    break
+                }
+            }
+
+            let now = ProcessInfo.processInfo.systemUptime
+            if let terminationStartedAt {
+                if forceKillSentAt == nil, now - terminationStartedAt >= 2 {
+                    _ = kill(-spawnedPID, SIGKILL)
+                    forceKillSentAt = now
+                }
+            } else if cancellation.isRequested() {
+                _ = kill(-spawnedPID, SIGTERM)
+                terminationStartedAt = now
+            } else if leaderExitObserved {
+                // Natural completion has no reason to terminate a deliberately
+                // backgrounded descendant. Reap immediately and bound the pipe
+                // drain below.
+                break
+            } else if now >= timeoutAt {
+                didTimeOut = true
+                _ = kill(-spawnedPID, SIGTERM)
+                terminationStartedAt = now
+            }
+
+            if leaderExitObserved,
+               let forceKillSentAt,
+               now - forceKillSentAt >= 0.05 {
+                break
+            }
+
+            usleep(10_000)
         }
-        timer.cancel()
 
-        if reader.wait(timeout: .now() + 1) == .timedOut {
-            // A successful command should not leave background children holding
-            // the output pipe. Treat the command tree as a unit and clean it up.
-            _ = kill(-spawnedPID, SIGTERM)
-            usleep(100_000)
-            _ = kill(-spawnedPID, SIGKILL)
-            _ = reader.wait(timeout: .now() + 1)
+        if waitError == nil {
+            // This is the sole reap point. Every possible process-group signal
+            // is complete before waitpid releases the numeric PID/PGID.
+            while waitpid(spawnedPID, &waitStatus, 0) == -1 {
+                if errno == EINTR { continue }
+                waitError = errno
+                break
+            }
+        }
+
+        // The group leader is now reaped (or is no longer our child). A
+        // descendant may still hold the output pipe open, so do a short,
+        // nonblocking drain and then stop. Never signal the reaped PGID merely
+        // to make a pipe reader finish.
+        let drainDeadline = ProcessInfo.processInfo.systemUptime + 0.15
+        var shouldStopReading = outputIsClosed
+        while !shouldStopReading {
+            shouldStopReading = drainOutput(from: readFD, into: output)
+                || ProcessInfo.processInfo.systemUptime >= drainDeadline
+            if !shouldStopReading {
+                usleep(5_000)
+            }
+        }
+
+        if let waitError {
+            let detail = String(cString: strerror(waitError))
+            let captured = output.string().trimmingCharacters(in: .whitespacesAndNewlines)
+            let message = captured.isEmpty ? detail : "\(captured)\nwaitpid: \(detail)"
+            return CommandResult(exitCode: 127, output: message, timedOut: didTimeOut)
         }
 
         return CommandResult(
             exitCode: exitCode(from: waitStatus),
             output: output.string().trimmingCharacters(in: .whitespacesAndNewlines),
-            timedOut: didTimeOut.get()
+            timedOut: didTimeOut
         )
+    }
+
+    /// Drains a bounded number of nonblocking reads so a continuously writing
+    /// child cannot starve wait/timeout polling. Returns true at EOF or on a
+    /// terminal read error, and false when the pipe remains open.
+    private static func drainOutput(
+        from readFD: Int32,
+        into output: BoundedOutput
+    ) -> Bool {
+        var buffer = [UInt8](repeating: 0, count: 16 * 1_024)
+        for _ in 0..<32 {
+            let count = buffer.withUnsafeMutableBytes { bytes in
+                Darwin.read(readFD, bytes.baseAddress, bytes.count)
+            }
+            if count > 0 {
+                buffer.withUnsafeBytes { bytes in
+                    output.append(UnsafeRawBufferPointer(rebasing: bytes[..<count]))
+                }
+                continue
+            }
+            if count == 0 { return true }
+            if errno == EINTR { continue }
+            if errno == EAGAIN || errno == EWOULDBLOCK { return false }
+            return true
+        }
+        return false
     }
 
     private static func exitCode(from status: Int32) -> Int32 {

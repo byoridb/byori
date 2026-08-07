@@ -2,8 +2,12 @@ import AppKit
 import SwiftUI
 
 struct MenuBarView: View {
+    let openWorkspaceWindow: () -> Void
+    let openSettingsWindow: () -> Void
+
     @EnvironmentObject private var model: ManagerViewModel
-    @Environment(\.openWindow) private var openWindow
+    @EnvironmentObject private var workspaceModel: WorkspaceViewModel
+    @EnvironmentObject private var terminalController: TerminalSessionController
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -12,7 +16,7 @@ struct MenuBarView: View {
                     .font(.title2)
                     .foregroundStyle(statusColor)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Byori Manager").font(.headline)
+                    Text("Byori").font(.headline)
                     Text(statusText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -24,42 +28,48 @@ struct MenuBarView: View {
             Divider()
 
             Button {
-                open(.overview)
+                openWorkspace()
             } label: {
-                Label("Manager 열기", systemImage: "macwindow")
+                Label("Open Workspace", systemImage: "macwindow")
             }
             Button {
-                open(.knowledgeGraph)
+                openWorkspace()
+                Task { await workspaceModel.prepareNewSession() }
             } label: {
-                Label("지식 그래프 열기", systemImage: "point.3.connected.trianglepath.dotted")
+                Label("New Session…", systemImage: "plus.rectangle.on.rectangle")
             }
+            .disabled(workspaceModel.projects.isEmpty)
+
             Button {
-                open(.integrations)
+                openSettingsWindow()
             } label: {
-                Label("에이전트 연결", systemImage: "link")
+                Label("Settings…", systemImage: "gearshape")
             }
 
             Divider()
 
             Button {
-                Task { await model.refresh() }
+                Task {
+                    async let managerRefresh: Void = model.refresh()
+                    async let workspaceRefresh: Void = workspaceModel.load(force: true)
+                    _ = await (managerRefresh, workspaceRefresh)
+                }
             } label: {
-                Label("상태 새로고침", systemImage: "arrow.clockwise")
+                Label("Refresh", systemImage: "arrow.clockwise")
             }
-            .disabled(model.isBusy)
+            .disabled(model.isBusy || workspaceModel.isRefreshing)
 
             Button {
                 model.openLogs()
             } label: {
-                Label("로그 열기", systemImage: "doc.text.magnifyingglass")
+                Label("Open Logs", systemImage: "doc.text.magnifyingglass")
             }
 
             Divider()
 
-            Button("Byori Manager 종료") {
+            Button("Quit Byori") {
                 NSApplication.shared.terminate(nil)
             }
-            .disabled(model.isBusy)
         }
         .padding(14)
         .frame(width: 270)
@@ -74,19 +84,28 @@ struct MenuBarView: View {
     }
 
     private var statusColor: Color {
-        model.snapshot?.byori.isHealthy == true ? .green : .orange
+        guard let status = model.snapshot?.byori else { return .orange }
+        if status.isHealthy { return .green }
+        return status.serviceLoaded ? .red : .orange
     }
 
     private var statusText: String {
         if model.isBusy { return model.currentOperation }
-        guard let status = model.snapshot?.byori else { return "상태 확인 중" }
-        if status.isHealthy { return "ByoriDB 실행 중" }
-        return status.isInstalled ? "ByoriDB 중지됨" : "ByoriDB 설치 필요"
+        let sessions = terminalController.activeSessionCount
+        guard let status = model.snapshot?.byori else {
+            return sessions == 0 ? "Checking ByoriDB" : "\(sessions) active session\(sessions == 1 ? "" : "s")"
+        }
+        let database = status.isHealthy
+            ? "ByoriDB running"
+            : status.serviceLoaded
+                ? "ByoriDB unavailable"
+                : status.isInstalled ? "ByoriDB stopped" : "ByoriDB setup needed"
+        guard sessions > 0 else { return database }
+        return "\(database) · \(sessions) active session\(sessions == 1 ? "" : "s")"
     }
 
-    private func open(_ section: ManagerSection) {
-        model.selectedSection = section
-        openWindow(id: "manager")
-        NSApplication.shared.activate(ignoringOtherApps: true)
+    private func openWorkspace() {
+        openWorkspaceWindow()
     }
+
 }
