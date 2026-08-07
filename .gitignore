@@ -8,9 +8,7 @@ history.txt
 .claude/
 
 # Secret files — never commit
-.env
-.env.*
-.env.local
+.env*
 
 # mdBook build output
 book/book/
