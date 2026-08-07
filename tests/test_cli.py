@@ -477,6 +477,59 @@ class OrchestrationTests(TemporaryRepository, unittest.TestCase):
         self.assertTrue(any("branch" in command and "-D" in command for command in commands))
 
 
+class McpLauncherTemplateTests(unittest.TestCase):
+    """`child_environment` pins workers to the readonly profile; the launcher
+    that actually starts the MCP has to honour that pin instead of overwriting
+    it with the installed default."""
+
+    def render(self, home):
+        template = (ROOT / "templates" / "run-mcp.sh").read_text()
+        stub = home / "stub-python"
+        stub.write_text('#!/bin/sh\nprintf "%s\\n" "${BYORIDB_MCP_PROFILE-unset}"\n')
+        stub.chmod(0o755)
+        (home / "env").write_text(
+            "BYORIDB_ROOT_PASSWORD=secret\n"
+            "BYORIDB_HTTP=http://127.0.0.1:19669\n"
+            "BYORIDB_USER=root\n"
+            "BYORIDB_MCP_PROFILE=safe\n"
+        )
+        launcher = home / "run-mcp.sh"
+        launcher.write_text(
+            template.replace("@BYORIDB_HOME@", str(home)).replace("@PYTHON@", str(stub))
+        )
+        launcher.chmod(0o755)
+        return launcher
+
+    def launch(self, profile):
+        with tempfile.TemporaryDirectory() as directory:
+            launcher = self.render(pathlib.Path(directory))
+            environment = dict(os.environ)
+            environment.pop("BYORIDB_MCP_PROFILE", None)
+            if profile is not None:
+                environment["BYORIDB_MCP_PROFILE"] = profile
+            completed = subprocess.run(
+                ["sh", str(launcher)],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=environment,
+            )
+            return completed.stdout.strip()
+
+    def test_caller_profile_survives_the_env_file_default(self):
+        self.assertEqual(self.launch("readonly"), "readonly")
+        self.assertEqual(self.launch("legacy"), "legacy")
+
+    def test_env_file_still_supplies_the_default_profile(self):
+        self.assertEqual(self.launch(None), "safe")
+
+    def test_worker_environment_reaches_the_launcher_as_readonly(self):
+        environment = CLI.child_environment("sample_memory", True)
+        self.assertEqual(environment["BYORIDB_MCP_PROFILE"], "readonly")
+        self.assertEqual(self.launch(environment["BYORIDB_MCP_PROFILE"]), "readonly")
+
+
 class CheckpointTests(unittest.TestCase):
     def test_coordinator_promotes_only_project_and_task_records(self):
         module = mock.Mock()
