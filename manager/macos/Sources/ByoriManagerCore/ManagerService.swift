@@ -349,43 +349,68 @@ public actor ManagerService {
         }
     }
 
-    public func syncSkill(_ kind: AgentKind) throws -> OperationResult {
-        guard fileManager.fileExists(atPath: paths.skillSource.path) else {
-            throw ManagerError.missingResource(paths.skillSource.path)
+    public func syncSkill(
+        _ kind: AgentKind,
+        skill: ManagedSkill = .byoridbMemory
+    ) throws -> OperationResult {
+        let assets = skill.assetPaths.map { assetPath in
+            (
+                source: paths.skillSource(skill, assetPath: assetPath),
+                destination: paths.skillDestination(skill, for: kind, assetPath: assetPath),
+                legacy: paths.legacyCodexSkill(skill, assetPath: assetPath)
+            )
         }
-        let destination = skillDestination(kind)
-        let changed = try files.install(
-            source: paths.skillSource,
-            destination: destination,
-            backupRoot: paths.backups
-        )
-        if kind == .codex, fileManager.fileExists(atPath: paths.legacyCodexSkill.path) {
-            _ = try files.remove(destination: paths.legacyCodexSkill, backupRoot: paths.backups)
+        for asset in assets where !fileManager.fileExists(atPath: asset.source.path) {
+            throw ManagerError.missingResource(asset.source.path)
+        }
+
+        var changed = false
+        for asset in assets {
+            if try files.install(
+                source: asset.source,
+                destination: asset.destination,
+                backupRoot: paths.backups
+            ) {
+                changed = true
+            }
+            if kind == .codex, fileManager.fileExists(atPath: asset.legacy.path) {
+                _ = try files.remove(destination: asset.legacy, backupRoot: paths.backups)
+            }
         }
         return OperationResult(
             summary: changed
-                ? "\(kind.displayName) Skill 설치 완료"
-                : "\(kind.displayName) Skill이 이미 최신입니다.",
-            detail: destination.path
+                ? "\(kind.displayName) \(skill.rawValue) Skill 설치 완료"
+                : "\(kind.displayName) \(skill.rawValue) Skill이 이미 최신입니다.",
+            detail: paths.skillDirectory(skill, for: kind).path
         )
     }
 
-    public func removeSkill(_ kind: AgentKind) throws -> OperationResult {
-        let removed = try files.remove(
-            destination: skillDestination(kind),
-            backupRoot: paths.backups
-        )
+    public func removeSkill(
+        _ kind: AgentKind,
+        skill: ManagedSkill = .byoridbMemory
+    ) throws -> OperationResult {
+        var removed = false
         var removedLegacy = false
-        if kind == .codex {
-            removedLegacy = try files.remove(
-                destination: paths.legacyCodexSkill,
+        for assetPath in skill.assetPaths.reversed() {
+            if try files.remove(
+                destination: paths.skillDestination(skill, for: kind, assetPath: assetPath),
                 backupRoot: paths.backups
-            )
+            ) {
+                removed = true
+            }
+            if kind == .codex {
+                if try files.remove(
+                    destination: paths.legacyCodexSkill(skill, assetPath: assetPath),
+                    backupRoot: paths.backups
+                ) {
+                    removedLegacy = true
+                }
+            }
         }
         return OperationResult(
             summary: removed || removedLegacy
-                ? "\(kind.displayName) Skill 제거 완료"
-                : "제거할 \(kind.displayName) Skill이 없습니다.",
+                ? "\(kind.displayName) \(skill.rawValue) Skill 제거 완료"
+                : "제거할 \(kind.displayName) \(skill.rawValue) Skill이 없습니다.",
             detail: "기존 파일은 변경 전에 \(paths.backups.path)에 백업됩니다."
         )
     }
@@ -489,13 +514,6 @@ public actor ManagerService {
         "gui/\(getuid())/\(paths.serviceLabel)"
     }
 
-    private func skillDestination(_ kind: AgentKind) -> URL {
-        switch kind {
-        case .claude: return paths.claudeSkill
-        case .codex: return paths.codexSkill
-        }
-    }
-
     private func configFile(_ kind: AgentKind) -> URL {
         switch kind {
         case .claude: return paths.claudeConfig
@@ -556,7 +574,7 @@ public actor ManagerService {
                 executablePath: nil,
                 version: nil,
                 mcpConnected: false,
-                skillState: skillState(kind)
+                skillStates: skillStates(kind)
             )
         }
         let versionResult = await runner.run(CommandSpec(
@@ -570,7 +588,7 @@ public actor ManagerService {
             executablePath: cli.path,
             version: versionResult.succeeded ? versionResult.output.components(separatedBy: .newlines).first : nil,
             mcpConnected: await isMCPConnected(kind, cli: cli),
-            skillState: skillState(kind)
+            skillStates: skillStates(kind)
         )
     }
 
@@ -657,12 +675,30 @@ public actor ManagerService {
         return (.ready, summaries)
     }
 
-    private func skillState(_ kind: AgentKind) -> ManagedFileState {
-        let destination = skillDestination(kind)
-        let state = files.state(source: paths.skillSource, destination: destination)
+    private func skillStates(_ kind: AgentKind) -> [ManagedSkill: ManagedFileState] {
+        Dictionary(uniqueKeysWithValues: ManagedSkill.allCases.map { skill in
+            (skill, skillState(kind, skill: skill))
+        })
+    }
+
+    private func skillState(_ kind: AgentKind, skill: ManagedSkill) -> ManagedFileState {
+        let states = skill.assetPaths.map { assetPath in
+            files.state(
+                source: paths.skillSource(skill, assetPath: assetPath),
+                destination: paths.skillDestination(skill, for: kind, assetPath: assetPath)
+            )
+        }
+        let state: ManagedFileState
+        if states.contains(.missing) {
+            state = .missing
+        } else if states.contains(.outdated) {
+            state = .outdated
+        } else {
+            state = .current
+        }
         if kind == .codex,
            state == .missing,
-           fileManager.fileExists(atPath: paths.legacyCodexSkill.path) {
+           fileManager.fileExists(atPath: paths.legacyCodexSkill(skill).path) {
             return .legacy
         }
         return state

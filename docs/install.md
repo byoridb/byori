@@ -4,10 +4,10 @@
 
 Install the local runtime that gives Byori projects a **shared durable knowledge graph** across
 Claude Code, Codex, and other MCP-capable sessions. The installer sets up the database server,
-MCP server, compatibility multi-CLI coordinator, and Skill together.
+MCP server, compatibility multi-CLI coordinator, and Byori Skills together.
 If the
 `claude` or `codex` CLI is available, it also registers the MCP server and installs
-the skill automatically (use `--no-claude` or `--no-codex` to skip either integration).
+the skills automatically (use `--no-claude` or `--no-codex` to skip either integration).
 
 ## One-line install
 
@@ -42,7 +42,8 @@ project's ByoriDB knowledge graph through the Context inspector.
 | `byoridb_mcp.py` | `~/.byoridb/` | Exposes compatibility note tools plus validated typed-wiki CRUD, export, and read-only query tools over stdio. The default `legacy` profile also exposes unrestricted `memory_query`. Writer profiles bootstrap and migrate the configured space to schema v2 (`note`/`rel` + typed wiki); `readonly` only validates that version |
 | Persistent service | launchd `com.byoridb.local` (macOS) / systemd --user (Linux) | launchd uses `RunAtLoad` + `KeepAlive`; the systemd user unit is attached to `default.target` and uses `Restart=always` |
 | `env` | `~/.byoridb/env` (chmod 600) | Randomly generated root password |
-| Skill | `~/.claude/skills/byoridb-memory/SKILL.md` | Policy for what to remember, when to remember it, and when to recall it |
+| Memory Skill | `~/.claude/skills/byoridb-memory/SKILL.md` | Policy for what to remember, when to remember it, and when to recall it |
+| Design Skill | `~/.claude/skills/byori-design/` | Product and UX/UI continuity across repository artifacts and Byori memory |
 | Data | `~/.byoridb/data/` | redb files (local only) |
 
 ## Options
@@ -61,16 +62,16 @@ install.sh [--with-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z] [--uninstall]
 - `--engine-tag` — overrides the ByoriDB engine release. The default is the pinned
   engine version verified with this Byori release.
 - `--uninstall` — stops and unregisters the service, unregisters the Claude/Codex
-  MCP integration, and removes the skill. **You are prompted to keep or delete the data.**
+  MCP integration, and removes both Byori skills. **You are prompted to keep or delete the data.**
   Orchestration records and worktrees under `~/.byori` are preserved because they may contain
   unmerged user changes.
 - `--binary PATH` — uses a local `byoridb-server` binary instead of downloading one.
-- `--assets DIR` — reads the CLI, mcp.py, templates, and the skill from a local repository
+- `--assets DIR` — reads the CLI, mcp.py, templates, and the skills from a local repository
   checkout (`DIR`) instead of downloading them.
 - `--no-service` — runs a background process for the current session without
   registering a launchd/systemd service.
-- `--no-claude` — skips Claude MCP registration and skill and hook installation.
-- `--no-codex` — skips Codex MCP registration and skill installation.
+- `--no-claude` — skips Claude MCP registration and skills and hook installation.
+- `--no-codex` — skips Codex MCP registration and skills installation.
 
 Installer environment variables: `BYORIDB_HOME` (default: `~/.byoridb`),
 `BYORIDB_HTTP_PORT` (default: 19669), `BYORIDB_GRAPH_PORT` (default: 9669),
@@ -157,8 +158,8 @@ systemctl --user start com.byoridb.local.service
 ## Connecting Codex
 
 When the installer detects the `codex` CLI, it automatically registers the stdio MCP
-server and installs the skill under `~/.agents/skills/`. `--uninstall` removes both,
-and `--no-codex` skips them. Restart Codex, then verify the connection with
+server and installs both Byori skills under `~/.agents/skills/`. `--uninstall` removes
+the MCP registration and skills, and `--no-codex` skips them. Restart Codex, then verify the connection with
 `codex mcp list`. Claude hooks are not installed for Codex.
 
 If you used `--no-codex` or want to connect Codex later, register it manually:
@@ -168,6 +169,9 @@ codex mcp add byoridb -- "$HOME/.byoridb/bin/run-mcp.sh"
 mkdir -p "$HOME/.agents/skills/byoridb-memory"
 cp "$HOME/.claude/skills/byoridb-memory/SKILL.md" \
   "$HOME/.agents/skills/byoridb-memory/SKILL.md"
+mkdir -p "$HOME/.agents/skills/byori-design"
+cp -R "$HOME/.claude/skills/byori-design/." \
+  "$HOME/.agents/skills/byori-design/"
 codex mcp list
 ```
 
@@ -175,7 +179,7 @@ To remove the manual integration:
 
 ```sh
 codex mcp remove byoridb
-rm -rf "$HOME/.agents/skills/byoridb-memory"
+rm -rf "$HOME/.agents/skills/byoridb-memory" "$HOME/.agents/skills/byori-design"
 ```
 
 ## Connecting NaraeClaw or another manual MCP host
@@ -199,7 +203,8 @@ it with `./install.sh --assets .`.
 ## Limitations
 
 - The MCP server provides actual data tools, not reminders. The `byoridb-memory` skill
-  defines **whether and what to remember**.
+  defines **whether and what to remember**; `byori-design` coordinates product/design work
+  but does not replace repository artifacts.
 - `safe` blocks only unrestricted raw nGQL. Treat structured delete/link operations as writes and
   require the same user-intent checks you would use in `legacy`.
 - `readonly` blocks mutation tools but is not an authentication sandbox. Its startup schema check

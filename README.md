@@ -163,9 +163,10 @@ changes. Restart Claude Code after installation. See the
 
 #### Codex
 
-When the installer detects `codex`, it registers the MCP server and installs the Skill under
-`~/.agents/skills/`; pass `--no-codex` to skip this. Restart Codex, verify with `codex mcp list`,
-and use it in a new session. The Claude reminder hook is not installed for Codex.
+When the installer detects `codex`, it registers the MCP server and installs the
+`byoridb-memory` and `byori-design` Skills under `~/.agents/skills/`; pass `--no-codex`
+to skip this. Restart Codex, verify with `codex mcp list`, and use it in a new session.
+The Claude reminder hook is not installed for Codex.
 
 #### NaraeClaw (reference adapter)
 
@@ -191,10 +192,12 @@ flowchart LR
     D --> E[~/.byoridb/data<br/>redb]
 ```
 
-The Skill tells an agent to retrieve relevant memories when work begins and to record durable
-knowledge at checkpoints such as decisions, bug fixes, and incident closure. MCP provides the
-actual read/write tools. The optional Claude Code hook only injects reminders; it does not call
-MCP directly. The agent still decides what to record and whether to record it.
+The `byoridb-memory` Skill tells an agent to retrieve relevant memories when work begins and to
+record durable knowledge at checkpoints such as decisions, bug fixes, and incident closure.
+The `byori-design` Skill applies the same continuity to product and UX/UI work, coordinating
+repository-native design artifacts with durable Byori context.
+MCP provides the actual read/write tools. The optional Claude Code hook only injects reminders;
+it does not call MCP directly. The agent still decides what to record and whether to record it.
 
 ### How it differs from document-based LLM wikis
 

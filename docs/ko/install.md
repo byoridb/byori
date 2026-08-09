@@ -3,10 +3,10 @@
 # Byori — 설치와 관리
 
 Claude Code, Codex와 다른 MCP 호환 세션이 Byori 프로젝트의 **지속 가능한 지식 그래프**를
-공유하도록 로컬 runtime을 설치한다. 서버·MCP 서버·호환 멀티 CLI coordinator·Skill을
+공유하도록 로컬 runtime을 설치한다. 서버·MCP 서버·호환 멀티 CLI coordinator·Byori Skill들을
 한 번에 세팅한다. `claude`/`codex` CLI가
 있으면 각각 자동으로
-MCP를 등록하고 Skill을 설치한다(`--no-claude`/`--no-codex`로 건너뜀).
+MCP를 등록하고 Skill들을 설치한다(`--no-claude`/`--no-codex`로 건너뜀).
 
 ## 한 줄 설치
 
@@ -39,7 +39,8 @@ ByoriDB 지식 그래프를 공유한다.
 | `byoridb_mcp.py` | `~/.byoridb/` | 호환 note tool + 검증된 typed-wiki CRUD/export/read-only query tool을 stdio로 노출. 기본 `legacy` profile은 unrestricted `memory_query`도 제공. Writer profile은 설정 space를 schema v2(`note`/`rel` + typed wiki)로 bootstrap·migration하고 `readonly`는 그 version만 검증 |
 | 상시 실행 서비스 | launchd `com.byoridb.local`(macOS) / systemd --user(Linux) | launchd는 `RunAtLoad` + `KeepAlive`; systemd user unit은 `default.target` 연결 + `Restart=always` |
 | `env` | `~/.byoridb/env` (chmod 600) | 랜덤 생성된 root 비밀번호 |
-| 스킬 | `~/.claude/skills/byoridb-memory/SKILL.md` | 언제/무엇을 기억·회수할지의 정책 |
+| 기억 스킬 | `~/.claude/skills/byoridb-memory/SKILL.md` | 언제/무엇을 기억·회수할지의 정책 |
+| 디자인 스킬 | `~/.claude/skills/byori-design/` | 저장소 산출물과 Byori 기억 사이의 제품·UX/UI 연속성 |
 | 데이터 | `~/.byoridb/data/` | redb 파일 (로컬 전용) |
 
 ## 옵션
@@ -54,14 +55,14 @@ install.sh [--with-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z] [--uninstall]
   (재실행 idempotent). 변경 전 `settings.json.bak.<timestamp>` 백업을 자동 생성한다. `jq` 필요.
 - `--tag` — byori 자산(MCP/스킬/템플릿) 버전 고정(기본: 최신 byori 릴리스).
 - `--engine-tag` — ByoriDB 엔진 릴리스 override(기본: 이 byori 버전과 함께 검증된 고정 태그).
-- `--uninstall` — 서비스 중지·해제, Claude/Codex MCP 등록 해제, skill 제거.
+- `--uninstall` — 서비스 중지·해제, Claude/Codex MCP 등록 해제, Byori skill 두 개 제거.
   **데이터는 확인 후 보존/삭제 선택.** merge되지 않은 사용자 변경이 있을 수 있어
   `~/.byori`의 오케스트레이션 record와 worktree는 보존한다.
 - `--binary PATH` — 다운로드 대신 로컬 `byoridb-server` 바이너리 사용.
 - `--assets DIR` — 다운로드 대신 로컬 repo 체크아웃(`DIR`)에서 CLI/mcp.py/템플릿/스킬을 가져옴.
 - `--no-service` — launchd/systemd 등록 없이 현재 세션의 background process로 실행.
-- `--no-claude` — Claude MCP 등록, skill, hook 설치를 건너뜀.
-- `--no-codex` — Codex MCP 등록과 skill 설치를 건너뜀.
+- `--no-claude` — Claude MCP 등록, skill들, hook 설치를 건너뜀.
+- `--no-codex` — Codex MCP 등록과 skill들 설치를 건너뜀.
 
 설치기 환경변수: `BYORIDB_HOME`(기본 `~/.byoridb`), `BYORIDB_HTTP_PORT`(기본 19669),
 `BYORIDB_GRAPH_PORT`(기본 9669), `BYORIDB_LABEL`(기본 `com.byoridb.local`),
@@ -143,7 +144,7 @@ systemctl --user start com.byoridb.local.service
 
 ## Codex 연결
 
-설치기가 `codex` CLI를 감지하면 stdio MCP 등록과 skill 설치(`~/.agents/skills/`)를
+설치기가 `codex` CLI를 감지하면 stdio MCP 등록과 Byori skill 두 개 설치(`~/.agents/skills/`)를
 자동으로 수행하고, `--uninstall` 시 함께 제거한다(`--no-codex`로 건너뜀).
 Codex 재시작 후 `codex mcp list`로 확인한다. Claude용 hook은 Codex에 설치되지 않는다.
 
@@ -154,6 +155,9 @@ codex mcp add byoridb -- "$HOME/.byoridb/bin/run-mcp.sh"
 mkdir -p "$HOME/.agents/skills/byoridb-memory"
 cp "$HOME/.claude/skills/byoridb-memory/SKILL.md" \
   "$HOME/.agents/skills/byoridb-memory/SKILL.md"
+mkdir -p "$HOME/.agents/skills/byori-design"
+cp -R "$HOME/.claude/skills/byori-design/." \
+  "$HOME/.agents/skills/byori-design/"
 codex mcp list
 ```
 
@@ -161,7 +165,7 @@ codex mcp list
 
 ```sh
 codex mcp remove byoridb
-rm -rf "$HOME/.agents/skills/byoridb-memory"
+rm -rf "$HOME/.agents/skills/byoridb-memory" "$HOME/.agents/skills/byori-design"
 ```
 
 ## NaraeClaw 또는 기타 수동 MCP host 연결
@@ -185,6 +189,7 @@ NaraeClaw 전용 hook은 제공하지 않는다. 다른 host에만 설정된 spa
 ## 한계
 
 - MCP 서버는 리마인더가 아니라 실제 데이터 도구다. **기억할지 말지의 정책은 스킬**(`byoridb-memory`)에 있다.
+  `byori-design`은 제품/디자인 작업을 조율하지만 저장소 산출물을 대체하지 않는다.
 - `safe`는 unrestricted raw nGQL만 차단한다. structured delete/link도 write이므로
   `legacy`와 같은 사용자 의도 확인이 필요하다.
 - `readonly`는 mutation tool을 차단하지만 authentication sandbox는 아니다. Startup schema
