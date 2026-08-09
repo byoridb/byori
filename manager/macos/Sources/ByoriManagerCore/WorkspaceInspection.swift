@@ -242,16 +242,60 @@ public struct WorkspaceGitWorktreeSnapshot: Equatable, Sendable {
     }
 }
 
+/// A branch the user can start work on. Remote-tracking branches are offered
+/// too, because wanting to work on a colleague's branch is the ordinary reason
+/// to open a second checkout.
+public struct WorkspaceGitBranch: Identifiable, Equatable, Sendable {
+    public let name: String
+    public let isRemote: Bool
+    /// Already checked out somewhere, so Git will refuse a second worktree for it.
+    public let isCheckedOut: Bool
+
+    public var id: String { isRemote ? "remote:\(name)" : "local:\(name)" }
+
+    public init(name: String, isRemote: Bool, isCheckedOut: Bool) {
+        self.name = name
+        self.isRemote = isRemote
+        self.isCheckedOut = isCheckedOut
+    }
+}
+
 public protocol WorkspaceGitInspecting: Sendable {
     func repositoryRoot(at path: URL) async throws -> URL
     func originRemote(at repositoryRoot: URL) async throws -> String?
     func worktrees(at path: URL) async throws -> [WorkspaceGitWorktreeSnapshot]
     func status(at path: URL, maxChanges: Int) async throws -> WorkspaceGitStatusSnapshot
+    func branches(at path: URL) async throws -> [WorkspaceGitBranch]
+    func addWorktree(
+        repositoryRoot: URL,
+        at destination: URL,
+        branch: String,
+        creatingFrom startPoint: String?
+    ) async throws -> WorkspaceGitWorktreeSnapshot
+}
+
+/// Project registration only inspects; branch listing and worktree creation are
+/// for the workspace UI. Defaulting them here keeps inspection-only conformers
+/// from having to implement what they never call.
+extension WorkspaceGitInspecting {
+    public func branches(at path: URL) async throws -> [WorkspaceGitBranch] {
+        throw WorkspaceError.gitCommandFailed("Branch listing is not available here.")
+    }
+
+    public func addWorktree(
+        repositoryRoot: URL,
+        at destination: URL,
+        branch: String,
+        creatingFrom startPoint: String?
+    ) async throws -> WorkspaceGitWorktreeSnapshot {
+        throw WorkspaceError.gitCommandFailed("Worktree creation is not available here.")
+    }
 }
 
 public struct WorkspaceGitService: WorkspaceGitInspecting, Sendable {
     private static let commandOutputLimit = 256 * 1_024
     private static let worktreeLimit = 2_000
+    private static let branchLimit = 5_000
     private let runner: any CommandRunning
     private let gitExecutable: String
 
@@ -371,6 +415,122 @@ public struct WorkspaceGitService: WorkspaceGitInspecting, Sendable {
             changes: changes,
             isTruncated: isTruncated
         )
+    }
+
+    public func branches(at path: URL) async throws -> [WorkspaceGitBranch] {
+        let root = try await repositoryRoot(at: path)
+        // %(worktreepath) is empty unless the branch is checked out somewhere,
+        // which is exactly what makes a second worktree impossible.
+        let result = await git(
+            [
+                "-C", root.path, "for-each-ref",
+                "--format=%(refname)%00%(worktreepath)",
+                "--count=\(Self.branchLimit)",
+                "refs/heads", "refs/remotes",
+            ],
+            workingDirectory: root.path
+        )
+        guard result.succeeded else {
+            throw WorkspaceError.gitCommandFailed("git could not list branches")
+        }
+        guard result.output.utf8.count <= Self.commandOutputLimit else {
+            throw WorkspaceError.gitCommandFailed("git returned an unbounded branch list")
+        }
+
+        var branches: [WorkspaceGitBranch] = []
+        var seen = Set<String>()
+        for line in result.output.split(whereSeparator: \.isNewline) {
+            let fields = line.split(separator: "\0", omittingEmptySubsequences: false)
+            guard let reference = fields.first.map(String.init), !reference.isEmpty else { continue }
+            let worktreePath = fields.count > 1 ? String(fields[1]) : ""
+
+            let name: String
+            let isRemote: Bool
+            if reference.hasPrefix("refs/heads/") {
+                name = String(reference.dropFirst("refs/heads/".count))
+                isRemote = false
+            } else if reference.hasPrefix("refs/remotes/") {
+                name = String(reference.dropFirst("refs/remotes/".count))
+                isRemote = true
+            } else {
+                continue
+            }
+            // origin/HEAD is a symbolic pointer, not somewhere to start work.
+            guard !name.isEmpty, !name.hasSuffix("/HEAD"), seen.insert(reference).inserted else {
+                continue
+            }
+            branches.append(WorkspaceGitBranch(
+                name: name,
+                isRemote: isRemote,
+                isCheckedOut: !worktreePath.isEmpty
+            ))
+        }
+        return branches
+    }
+
+    public func addWorktree(
+        repositoryRoot: URL,
+        at destination: URL,
+        branch: String,
+        creatingFrom startPoint: String?
+    ) async throws -> WorkspaceGitWorktreeSnapshot {
+        try Self.validateBranchName(branch)
+        if let startPoint {
+            try Self.validateStartPoint(startPoint)
+        }
+        let target = destination.standardizedFileURL
+        guard !FileManager.default.fileExists(atPath: target.path) else {
+            throw WorkspaceError.gitCommandFailed("\(target.path) already exists")
+        }
+
+        var arguments = ["-C", repositoryRoot.path, "worktree", "add"]
+        if let startPoint {
+            arguments += ["-b", branch, target.path, startPoint]
+        } else {
+            arguments += [target.path, branch]
+        }
+        // Creating a checkout can pull in a large tree, so it gets its own
+        // budget rather than the short inspection timeout.
+        let result = await runner.run(CommandSpec(
+            executable: gitExecutable,
+            arguments: arguments,
+            environment: ["LC_ALL": "C", "LANG": "C"],
+            workingDirectory: repositoryRoot.path,
+            timeout: 300
+        ))
+        guard result.succeeded else {
+            throw WorkspaceError.gitCommandFailed(
+                result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
+
+        // Report what Git actually recorded rather than what was requested.
+        let created = try await worktrees(at: repositoryRoot).first {
+            URL(fileURLWithPath: $0.path).standardizedFileURL.path == target.path
+        }
+        guard let created else {
+            throw WorkspaceError.gitCommandFailed("git did not register the new worktree")
+        }
+        return created
+    }
+
+    /// Delegates the rules to Git itself; a hand-rolled pattern would drift from
+    /// what `git worktree add` will actually accept.
+    static func validateBranchName(_ name: String) throws {
+        guard !name.isEmpty, name.utf8.count <= 255,
+              !name.hasPrefix("-"),
+              !name.contains("\n"), !name.contains("\r"), !name.contains("\0"),
+              name.trimmingCharacters(in: .whitespaces) == name else {
+            throw WorkspaceError.gitCommandFailed("Branch name is not usable: \(name)")
+        }
+    }
+
+    static func validateStartPoint(_ value: String) throws {
+        guard !value.isEmpty, value.utf8.count <= 255,
+              !value.hasPrefix("-"),
+              !value.contains("\n"), !value.contains("\r"), !value.contains("\0") else {
+            throw WorkspaceError.gitCommandFailed("Start point is not usable: \(value)")
+        }
     }
 
     private func git(_ arguments: [String], workingDirectory: String) async -> CommandResult {
