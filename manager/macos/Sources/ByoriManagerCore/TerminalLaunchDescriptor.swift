@@ -5,6 +5,9 @@ import Foundation
 /// silently fall back to an unrestricted shell.
 public enum TerminalLaunchTarget: Equatable, Sendable {
     case codingAgent(AgentKind)
+    /// A CLI the user registered. Carries the provider id so a session started
+    /// this way is never mistaken for a built-in provider.
+    case customAgent(String)
     case systemShellDemo
 }
 
@@ -176,6 +179,34 @@ public struct TerminalLaunchDescriptorFactory {
             id: sessionID,
             target: .codingAgent(provider),
             modelSelection: modelSelection,
+            executable: executable,
+            arguments: arguments,
+            environment: environment,
+            workingDirectory: directory
+        )
+    }
+
+    /// Launches a user-registered CLI.
+    ///
+    /// No model flag and no Byori-supplied arguments: nothing is known about
+    /// this CLI's interface, so anything beyond the executable and the
+    /// arguments the user chose would be a guess.
+    public func customAgent(
+        _ provider: CustomAgentProvider,
+        workingDirectory: URL,
+        sessionID: UUID = UUID(),
+        environmentOverrides: [String: String] = [:],
+        additionalArguments: [String] = []
+    ) throws -> TerminalLaunchDescriptor {
+        let directory = try validateDirectory(workingDirectory)
+        let executable = try validateExecutable(provider.executableURL)
+        let environment = try makeEnvironment(overrides: environmentOverrides)
+        let arguments = try (provider.defaultArguments + additionalArguments).map(validateArgument)
+
+        return TerminalLaunchDescriptor(
+            id: sessionID,
+            target: .customAgent(provider.id),
+            modelSelection: nil,
             executable: executable,
             arguments: arguments,
             environment: environment,

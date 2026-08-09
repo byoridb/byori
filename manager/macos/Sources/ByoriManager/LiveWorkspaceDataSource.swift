@@ -55,6 +55,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
     private let launchFactory: TerminalLaunchDescriptorFactory
     private let terminalController: TerminalSessionController
     private let operationGate = WorkspaceOperationGate()
+    private let customProviders: CustomAgentProviderStore
 
     private struct CheckoutKey: Hashable {
         let projectID: String
@@ -64,6 +65,13 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
     private struct RegisteredCheckout {
         let url: URL
         let kind: WorkspaceCheckoutKind
+    }
+
+    /// One of the two ways a session can be started, resolved once so the launch
+    /// path never has to re-derive it from a raw string.
+    private enum ResolvedProvider {
+        case builtIn(AgentKind)
+        case custom(CustomAgentProvider)
     }
 
     private var coreProjects: [String: ByoriManagerCore.WorkspaceProject] = [:]
@@ -92,6 +100,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         self.files = LocalWorkspaceFileTreeService()
         self.managerService = managerService
         self.launchFactory = TerminalLaunchDescriptorFactory(paths: managerService.paths)
+        self.customProviders = CustomAgentProviderStore(paths: managerService.paths)
         self.terminalController = terminalController
     }
 
@@ -204,7 +213,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
             throw WorkspaceAdapterError.invalidState("The selected project is no longer registered.")
         }
         let snapshot = await managerService.snapshot()
-        return AgentKind.allCases.map { kind in
+        let builtIn = AgentKind.allCases.map { kind in
             let descriptor = kind.descriptor
             let status = snapshot.agent(kind)
             let availability: WorkspaceOptionAvailability = status?.isInstalled == true
@@ -242,6 +251,31 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
                 models: models
             )
         }
+
+        // Registered CLIs are offered alongside the built-in ones, but never
+        // with a model list: Byori does not know their interfaces and would only
+        // be inventing a flag.
+        let custom = await customProviders.providers().map { provider in
+            let isExecutable = FileManager.default.isExecutableFile(atPath: provider.executablePath)
+            let availability: WorkspaceOptionAvailability = isExecutable
+                ? .available
+                : .unavailable(reason: "Registered executable is missing")
+            return WorkspaceProviderOption(
+                id: provider.id,
+                displayName: provider.displayName,
+                systemImage: "terminal",
+                availability: availability,
+                models: [
+                    WorkspaceModelOption(
+                        id: Self.cliDefaultModelID,
+                        displayName: Self.cliDefaultModelName,
+                        detail: "Byori does not pass a model to a registered CLI",
+                        availability: availability
+                    ),
+                ]
+            )
+        }
+        return builtIn + custom
     }
 
     func registerProject(at repositoryURL: URL) async throws {
@@ -413,7 +447,15 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
               let checkout = checkouts[checkoutKey] else {
             throw WorkspaceAdapterError.invalidState("Refresh the workspace and choose a valid source tree.")
         }
-        guard let agent = AgentKind(rawValue: request.providerID) else {
+        // A provider id is either a built-in kind or a CLI the user registered.
+        // Nothing else may start a session: an unknown id must not fall through
+        // to some default executable.
+        let resolvedProvider: ResolvedProvider
+        if let agent = AgentKind(rawValue: request.providerID) {
+            resolvedProvider = .builtIn(agent)
+        } else if let custom = await customProviders.provider(id: request.providerID) {
+            resolvedProvider = .custom(custom)
+        } else {
             throw WorkspaceAdapterError.invalidState("The selected coding provider is not supported.")
         }
         // Validate before creating a new task so an invalid session identity
@@ -458,21 +500,34 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         let session = try await taskStore.createSession(
             taskID: task.id,
             name: sessionName,
-            provider: WorkspaceProvider(rawValue: agent.rawValue),
+            provider: WorkspaceProvider(rawValue: request.providerID),
             model: persistedModel
         )
         let terminalID = UUID()
         var didActivateSession = false
 
         do {
-            let descriptor = try launchFactory.codingAgent(
-                agent,
-                model: explicitModel,
-                workingDirectory: checkout.url,
-                sessionID: terminalID,
-                environmentOverrides: ["BYORIDB_MEMORY_SPACE": project.memorySpace],
-                additionalArguments: request.additionalArguments
-            )
+            let environment = ["BYORIDB_MEMORY_SPACE": project.memorySpace]
+            let descriptor: TerminalLaunchDescriptor
+            switch resolvedProvider {
+            case let .builtIn(agent):
+                descriptor = try launchFactory.codingAgent(
+                    agent,
+                    model: explicitModel,
+                    workingDirectory: checkout.url,
+                    sessionID: terminalID,
+                    environmentOverrides: environment,
+                    additionalArguments: request.additionalArguments
+                )
+            case let .custom(custom):
+                descriptor = try launchFactory.customAgent(
+                    custom,
+                    workingDirectory: checkout.url,
+                    sessionID: terminalID,
+                    environmentOverrides: environment,
+                    additionalArguments: request.additionalArguments
+                )
+            }
             _ = try await taskStore.updateSessionStatus(
                 taskID: task.id,
                 sessionID: session.id,
