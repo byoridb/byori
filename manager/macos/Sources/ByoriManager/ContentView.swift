@@ -993,9 +993,21 @@ private struct MaintenanceView: View {
                         LabeledContent("현재 버전") {
                             Text(model.appVersion ?? "알 수 없음")
                         }
+                        if let update = model.availableUpdate {
+                            LabeledContent("사용 가능") {
+                                Text(update.version.description)
+                                    .foregroundStyle(.orange)
+                            }
+                        }
                         Divider()
                         HStack {
-                            Button("업데이트 확인 후 설치") {
+                            // The version goes in parentheses rather than into
+                            // the sentence: Korean particles change with the
+                            // preceding sound, and this one is interpolated.
+                            Button(
+                                model.availableUpdate.map { "업데이트 설치 (\($0.version.description))" }
+                                    ?? "업데이트 확인 후 설치"
+                            ) {
                                 model.request(.updateApp, confirmation: true)
                             }
                             Spacer()

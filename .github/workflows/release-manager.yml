@@ -1,6 +1,14 @@
 name: Release Byori
 
+# Triggered by the tag itself rather than by `release: published`, because the
+# release is created by another workflow using GITHUB_TOKEN, and events raised
+# with that token never start a new workflow run. Releasing is therefore a
+# single `git push origin vX.Y.Z`; the release job and this one both address the
+# same release, and whichever arrives first creates it.
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       version:
@@ -22,9 +30,23 @@ jobs:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
     steps:
+      - name: Resolve the release version
+        id: release
+        run: |
+          # Empty on a tag push; set only when dispatched by hand.
+          version="${{ inputs.version }}"
+          [ -n "$version" ] || version="${{ github.ref_name }}"
+          version="${version#v}"
+          case "$version" in
+            [0-9]*) ;;
+            *) echo "::error::unexpected release version '$version'"; exit 1 ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v6
         with:
-          ref: v${{ inputs.version }}
+          ref: ${{ steps.release.outputs.tag }}
 
       - name: Require signing and notarization secrets
         run: |
@@ -97,13 +119,13 @@ jobs:
       - name: Build signed universal Byori DMG
         run: |
           scripts/build-macos-dmg.sh \
-            --version "${{ inputs.version }}" \
+            --version "${{ steps.release.outputs.version }}" \
             --universal \
             --sign "$SIGN_IDENTITY"
 
       - name: Notarize and staple Byori DMG
         run: |
-          DMG="dist/Byori-${{ inputs.version }}-universal.dmg"
+          DMG="dist/Byori-${{ steps.release.outputs.version }}-universal.dmg"
           xcrun notarytool submit "$DMG" \
             --apple-id "$APPLE_ID" \
             --team-id "$APPLE_TEAM_ID" \
@@ -116,8 +138,8 @@ jobs:
       - name: Attach Byori DMG to release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ inputs.version }}
-          files: dist/Byori-${{ inputs.version }}-universal.dmg
+          tag_name: v${{ steps.release.outputs.version }}
+          files: dist/Byori-${{ steps.release.outputs.version }}-universal.dmg
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
