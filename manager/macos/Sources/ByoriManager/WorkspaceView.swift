@@ -88,9 +88,6 @@ struct WorkspaceView<TerminalHost: View>: View {
                 requestRemoval: { removalRequest = $0 },
                 restoreSourceTree: { sourceTree in
                     Task { await model.restoreSourceTree(sourceTree) }
-                },
-                restoreSession: { task, session in
-                    Task { await model.restoreClosedSession(session, in: task) }
                 }
             )
             .frame(minWidth: 250, idealWidth: 290, maxWidth: 360)
@@ -199,10 +196,8 @@ struct WorkspaceView<TerminalHost: View>: View {
                 task: task,
                 session: session,
                 isStopping: model.stoppingSessionIDs.contains(session.id),
-                isClosing: model.closingSessionIDs.contains(session.id),
                 stop: { Task { await model.stopSession(session) } },
                 newSession: { Task { await model.prepareNewSession(after: session) } },
-                close: { Task { await model.closeEndedSession(session) } },
                 terminalHost: terminalHost
             )
         } else if let project = model.selectedProject,
@@ -306,7 +301,6 @@ private struct WorkspaceSidebar: View {
     let openSettings: () -> Void
     let requestRemoval: (WorkspaceRemovalRequest) -> Void
     let restoreSourceTree: (WorkspaceHiddenSourceTreeItem) -> Void
-    let restoreSession: (WorkspaceTaskItem, WorkspaceSessionItem) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -391,9 +385,7 @@ private struct WorkspaceSidebar: View {
                         },
                         requestRemoval: requestRemoval,
                         restoreSourceTree: restoreSourceTree,
-                        restoreSession: restoreSession,
                         isMutatingWorkspace: model.isMutatingWorkspace,
-                        restoringSessionIDs: model.restoringSessionIDs
                     )
                 }
             }
@@ -416,7 +408,13 @@ private struct WorkspaceSidebar: View {
                     let taskDisabledReason = activeSessionReason ?? (!task.status.allowsNewSession
                         ? "This \(task.status.label.lowercased()) task cannot start another session."
                         : nil)
-                    let sessions = task.sessions.map { session in
+                    // An ended session has nothing left to show: the PTY is gone
+                    // and no transcript is kept, so its row would only ever open
+                    // an "ended" placeholder. Keep the selected one so the pane
+                    // the user is reading does not vanish under them.
+                    let sessions = task.sessions.filter {
+                        $0.state.isActive || model.selection == .session($0.id)
+                    }.map { session in
                         WorkspaceSidebarNode(
                             id: "session:\(session.id)",
                             selection: .session(session.id),
@@ -520,9 +518,7 @@ private struct WorkspaceSidebarBranch: View {
     let newSession: (WorkspaceNewSessionTarget) -> Void
     let requestRemoval: (WorkspaceRemovalRequest) -> Void
     let restoreSourceTree: (WorkspaceHiddenSourceTreeItem) -> Void
-    let restoreSession: (WorkspaceTaskItem, WorkspaceSessionItem) -> Void
     let isMutatingWorkspace: Bool
-    let restoringSessionIDs: Set<String>
 
     @State private var isExpanded = true
 
@@ -535,9 +531,7 @@ private struct WorkspaceSidebarBranch: View {
                         newSession: newSession,
                         requestRemoval: requestRemoval,
                         restoreSourceTree: restoreSourceTree,
-                        restoreSession: restoreSession,
                         isMutatingWorkspace: isMutatingWorkspace,
-                        restoringSessionIDs: restoringSessionIDs
                     )
                 }
             } label: {
@@ -563,9 +557,7 @@ private struct WorkspaceSidebarBranch: View {
             newSession: newSession,
             requestRemoval: requestRemoval,
             restoreSourceTree: restoreSourceTree,
-            restoreSession: restoreSession,
             isMutatingWorkspace: isMutatingWorkspace,
-            restoringSessionIDs: restoringSessionIDs
         )
     }
 }
@@ -575,9 +567,7 @@ private struct WorkspaceSidebarRow: View {
     let newSession: (WorkspaceNewSessionTarget) -> Void
     let requestRemoval: (WorkspaceRemovalRequest) -> Void
     let restoreSourceTree: (WorkspaceHiddenSourceTreeItem) -> Void
-    let restoreSession: (WorkspaceTaskItem, WorkspaceSessionItem) -> Void
     let isMutatingWorkspace: Bool
-    let restoringSessionIDs: Set<String>
 
     var body: some View {
         HStack(spacing: 7) {
@@ -645,31 +635,11 @@ private struct WorkspaceSidebarRow: View {
     }
 
     private var hasRowActions: Bool {
-        node.removalRequest != nil || !node.restorableSourceTrees.isEmpty || hasClosedSessions
+        node.removalRequest != nil || !node.restorableSourceTrees.isEmpty
     }
 
     @ViewBuilder
     private var rowActions: some View {
-        if case let .task(task) = node.kind, !task.closedSessions.isEmpty {
-            Menu {
-                ForEach(task.closedSessions) { session in
-                    Button {
-                        restoreSession(task, session)
-                    } label: {
-                        Label(session.displayName, systemImage: "arrow.uturn.backward.circle")
-                    }
-                    .disabled(restoringSessionIDs.contains(session.id))
-                    .help("Restore \(session.displayName) to the sidebar")
-                }
-            } label: {
-                Label("Closed Sessions", systemImage: "clock.arrow.circlepath")
-            }
-        }
-
-        if hasClosedSessions, !node.restorableSourceTrees.isEmpty {
-            Divider()
-        }
-
         if !node.restorableSourceTrees.isEmpty {
             Menu {
                 ForEach(node.restorableSourceTrees) { sourceTree in
@@ -686,7 +656,7 @@ private struct WorkspaceSidebarRow: View {
             }
         }
 
-        if (hasClosedSessions || !node.restorableSourceTrees.isEmpty), node.removalRequest != nil {
+        if !node.restorableSourceTrees.isEmpty, node.removalRequest != nil {
             Divider()
         }
 
@@ -701,10 +671,6 @@ private struct WorkspaceSidebarRow: View {
         }
     }
 
-    private var hasClosedSessions: Bool {
-        guard case let .task(task) = node.kind else { return false }
-        return !task.closedSessions.isEmpty
-    }
 
     private func removalMenuTitle(for request: WorkspaceRemovalRequest) -> String {
         switch request {
@@ -809,10 +775,8 @@ private struct WorkspaceTerminalPane<TerminalHost: View>: View {
     let task: WorkspaceTaskItem
     let session: WorkspaceSessionItem
     let isStopping: Bool
-    let isClosing: Bool
     let stop: () -> Void
     let newSession: () -> Void
-    let close: () -> Void
     let terminalHost: (WorkspaceSessionItem) -> TerminalHost
 
     var body: some View {
@@ -844,30 +808,12 @@ private struct WorkspaceTerminalPane<TerminalHost: View>: View {
                     Button(action: newSession) {
                         Label("New Session", systemImage: "plus.rectangle.on.rectangle")
                     }
-                    .disabled(isClosing)
                     .help("Start another session for \(task.title)")
                     .accessibilityLabel("New session for task \(task.title)")
                     .accessibilityHint(
                         "Opens session setup for this task and keeps the ended session in history"
                     )
 
-                    Button(action: close) {
-                        if isClosing {
-                            HStack(spacing: 6) {
-                                ProgressView()
-                                    .controlSize(.small)
-                                Text("Closing…")
-                            }
-                        } else {
-                            Label("Close", systemImage: "xmark")
-                        }
-                    }
-                    .disabled(isClosing)
-                    .help("Hide this ended session from the sidebar")
-                    .accessibilityLabel("Close ended session \(session.displayName)")
-                    .accessibilityHint(
-                        "Hides this session from the sidebar and keeps its task history"
-                    )
                 }
             }
             .padding(.horizontal, 16)
@@ -943,29 +889,11 @@ private struct WorkspaceTerminalPane<TerminalHost: View>: View {
                     Label("New Session", systemImage: "plus.rectangle.on.rectangle")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(isClosing)
                 .accessibilityLabel("New session for task \(task.title)")
                 .accessibilityHint(
                     "Opens session setup for this task and keeps the ended session in history"
                 )
 
-                Button(action: close) {
-                    if isClosing {
-                        HStack(spacing: 6) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Closing…")
-                        }
-                    } else {
-                        Text("Close")
-                    }
-                }
-                    .buttonStyle(.bordered)
-                    .disabled(isClosing)
-                    .accessibilityLabel("Close ended session \(session.displayName)")
-                    .accessibilityHint(
-                        "Hides this session from the sidebar and keeps its task history"
-                    )
             }
             .padding(.top, 4)
         }

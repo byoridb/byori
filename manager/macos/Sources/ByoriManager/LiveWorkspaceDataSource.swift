@@ -47,7 +47,6 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
 
     private let projectRegistry: WorkspaceProjectRegistry
     private let checkoutVisibilityStore: WorkspaceCheckoutVisibilityStore
-    private let sessionVisibilityStore: WorkspaceSessionVisibilityStore
     private let taskStore: WorkspaceTaskStore
     private let git: WorkspaceGitService
     private let files: LocalWorkspaceFileTreeService
@@ -70,7 +69,6 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
     private var coreTasks: [String: ByoriManagerCore.WorkspaceTask] = [:]
     private var checkouts: [CheckoutKey: RegisteredCheckout] = [:]
     private var taskIDBySessionID: [String: String] = [:]
-    private var closedSessionKeys: Set<WorkspaceClosedSessionKey> = []
     private var lastTerminalStatus: [String: TerminalSessionStatus] = [:]
 
     init(
@@ -87,7 +85,6 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
             visibilityStore: checkoutVisibilityStore
         )
         self.checkoutVisibilityStore = checkoutVisibilityStore
-        self.sessionVisibilityStore = WorkspaceSessionVisibilityStore(home: workspaceHome)
         self.taskStore = WorkspaceTaskStore(home: workspaceHome)
         self.git = git
         self.files = LocalWorkspaceFileTreeService()
@@ -104,7 +101,6 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
 
     private func loadWorkspaceLocked() async throws -> WorkspacePresentationSnapshot {
         let projects = try await projectRegistry.projects()
-        let nextClosedSessionKeys = try await sessionVisibilityStore.closedSessionKeys()
         var projectItems: [WorkspaceProjectItem] = []
         var nextProjects: [String: ByoriManagerCore.WorkspaceProject] = [:]
         var nextTasks: [String: ByoriManagerCore.WorkspaceTask] = [:]
@@ -145,7 +141,6 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
                     tasks: reconciledTasks.filter {
                         $0.checkout.kind == .sourceTree && $0.checkout.id == sourceTree.id
                     },
-                    closedSessionKeys: nextClosedSessionKeys
                 ))
 
                 for worktree in sourceTree.worktrees {
@@ -169,8 +164,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
                             $0.checkout.kind == .worktree && $0.checkout.id == worktree.id
                         },
                         branchFallback: worktree.branch,
-                        closedSessionKeys: nextClosedSessionKeys
-                    ))
+                        ))
                 }
             }
 
@@ -200,7 +194,6 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         coreTasks = nextTasks
         checkouts = nextCheckouts
         taskIDBySessionID = nextTaskBySession
-        closedSessionKeys = nextClosedSessionKeys
         return WorkspacePresentationSnapshot(projects: projectItems)
     }
 
@@ -454,33 +447,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         }
     }
 
-    func closeSession(
-        projectID: String,
-        taskID: String,
-        sessionID: String
-    ) async throws -> WorkspaceTaskItem {
-        try await operationGate.perform { [self] in
-            try await closeSessionLocked(
-                projectID: projectID,
-                taskID: taskID,
-                sessionID: sessionID
-            )
-        }
-    }
 
-    func restoreSession(
-        projectID: String,
-        taskID: String,
-        sessionID: String
-    ) async throws -> WorkspaceTaskItem {
-        try await operationGate.perform { [self] in
-            try await restoreSessionLocked(
-                projectID: projectID,
-                taskID: taskID,
-                sessionID: sessionID
-            )
-        }
-    }
 
     private func stopSessionLocked(id: String) async throws -> WorkspaceSessionItem {
         guard let taskID = taskIDBySessionID[id],
@@ -502,101 +469,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         return makeSessionItem(updated, taskID: taskID)
     }
 
-    private func closeSessionLocked(
-        projectID: String,
-        taskID: String,
-        sessionID: String
-    ) async throws -> WorkspaceTaskItem {
-        guard var task = try await taskStore.task(id: taskID),
-              task.projectID == projectID,
-              var session = task.sessions.first(where: { $0.id == sessionID }) else {
-            throw WorkspaceAdapterError.invalidState("The selected session could not be found.")
-        }
 
-        let terminalID = session.nativeSessionID.flatMap(UUID.init(uuidString:))
-        let terminalSnapshot = terminalID.flatMap { terminalController.snapshot(for: $0) }
-        if terminalSnapshot?.status.isActive == true {
-            throw WorkspaceAdapterError.invalidState(
-                "Stop the active terminal session before closing it from the sidebar."
-            )
-        }
-
-        // A process-exit callback and a Close click can arrive in either order.
-        // Finalize stale core metadata here so Close remains deterministic while
-        // still refusing a genuinely active PTY.
-        if !session.status.isTerminal {
-            guard let terminalSnapshot,
-                  let terminalStatus = terminalCompletionStatus(terminalSnapshot.status) else {
-                throw WorkspaceAdapterError.invalidState(
-                    "The session has not reached a terminal state. Stop it or refresh the workspace first."
-                )
-            }
-            _ = try await taskStore.updateSessionStatus(
-                taskID: taskID,
-                sessionID: sessionID,
-                status: terminalStatus,
-                nativeSessionID: session.nativeSessionID
-            )
-            guard let reloadedTask = try await taskStore.task(id: taskID),
-                  let reloadedSession = reloadedTask.sessions.first(where: { $0.id == sessionID }) else {
-                throw WorkspaceAdapterError.invalidState(
-                    "The ended session could not be finalized before closing."
-                )
-            }
-            task = reloadedTask
-            session = reloadedSession
-        }
-
-        guard session.status.isTerminal else {
-            throw WorkspaceAdapterError.invalidState(
-                "Only an ended session can be closed from the sidebar."
-            )
-        }
-        let key = WorkspaceClosedSessionKey(
-            projectID: projectID,
-            taskID: taskID,
-            sessionID: sessionID
-        )
-        try await sessionVisibilityStore.close(key)
-        closedSessionKeys.insert(key)
-        coreTasks[taskID] = task
-
-        if let terminalID,
-           terminalController.snapshot(for: terminalID)?.status.isActive == false {
-            // Persistence is already committed. Releasing an ended terminal
-            // buffer is best-effort and must not turn a successful Close into a
-            // misleading failure.
-            try? terminalController.discard(terminalID)
-        }
-        return makeTaskItem(task, sourceTreeID: task.checkout.id)
-    }
-
-    private func restoreSessionLocked(
-        projectID: String,
-        taskID: String,
-        sessionID: String
-    ) async throws -> WorkspaceTaskItem {
-        guard let task = try await taskStore.task(id: taskID),
-              task.projectID == projectID,
-              let session = task.sessions.first(where: { $0.id == sessionID }) else {
-            throw WorkspaceAdapterError.invalidState("The closed session could not be found.")
-        }
-        guard session.status.isTerminal else {
-            throw WorkspaceAdapterError.invalidState(
-                "An active session cannot be restored from closed history."
-            )
-        }
-        let key = WorkspaceClosedSessionKey(
-            projectID: projectID,
-            taskID: taskID,
-            sessionID: sessionID
-        )
-        try await sessionVisibilityStore.restore(key)
-        closedSessionKeys.remove(key)
-        coreTasks[taskID] = task
-        taskIDBySessionID[sessionID] = taskID
-        return makeTaskItem(task, sourceTreeID: task.checkout.id)
-    }
 
     func loadInspector(_ request: WorkspaceInspectorRequest) async throws -> WorkspaceInspectorSnapshot {
         let checkoutKey = CheckoutKey(
@@ -675,7 +548,6 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         kind: WorkspaceSourceTreeItemKind,
         tasks: [ByoriManagerCore.WorkspaceTask],
         branchFallback: String? = nil,
-        closedSessionKeys: Set<WorkspaceClosedSessionKey>
     ) async -> WorkspaceSourceTreeItem {
         do {
             let status = try await git.status(at: url, maxChanges: 400)
@@ -689,7 +561,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
                 headRevision: status.headRevision,
                 workingState: status.isClean ? .clean : .modified(changeCount: status.changes.count),
                 tasks: tasks.map {
-                    makeTaskItem($0, sourceTreeID: id, closedSessionKeys: closedSessionKeys)
+                    makeTaskItem($0, sourceTreeID: id)
                 }
             )
         } catch {
@@ -704,7 +576,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
                 headRevision: nil,
                 workingState: .unavailable(reason: error.localizedDescription),
                 tasks: tasks.map {
-                    makeTaskItem($0, sourceTreeID: id, closedSessionKeys: closedSessionKeys)
+                    makeTaskItem($0, sourceTreeID: id)
                 }
             )
         }
@@ -712,34 +584,15 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
 
     private func makeTaskItem(
         _ task: ByoriManagerCore.WorkspaceTask,
-        sourceTreeID: String,
-        closedSessionKeys keysOverride: Set<WorkspaceClosedSessionKey>? = nil
+        sourceTreeID: String
     ) -> WorkspaceTaskItem {
-        let keys = keysOverride ?? closedSessionKeys
-        let partitioned = task.sessions.reduce(
-            into: (visible: [WorkspaceSessionItem](), closed: [WorkspaceSessionItem]())
-        ) { result, session in
-            let item = makeSessionItem(session, taskID: task.id)
-            let key = WorkspaceClosedSessionKey(
-                projectID: task.projectID,
-                taskID: task.id,
-                sessionID: session.id
-            )
-            if session.status.isTerminal, keys.contains(key) {
-                result.closed.append(item)
-            } else {
-                // An inconsistent visibility entry must never hide a live PTY.
-                result.visible.append(item)
-            }
-        }
         return WorkspaceTaskItem(
             id: task.id,
             sourceTreeID: sourceTreeID,
             title: task.title,
             status: taskItemStatus(task.status),
             createdAt: task.createdAt,
-            sessions: partitioned.visible,
-            closedSessions: partitioned.closed
+            sessions: task.sessions.map { makeSessionItem($0, taskID: task.id) }
         )
     }
 
