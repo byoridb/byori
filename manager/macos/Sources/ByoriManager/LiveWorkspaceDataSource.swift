@@ -205,31 +205,41 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         }
         let snapshot = await managerService.snapshot()
         return AgentKind.allCases.map { kind in
+            let descriptor = kind.descriptor
             let status = snapshot.agent(kind)
             let availability: WorkspaceOptionAvailability = status?.isInstalled == true
                 ? .available
-                : .unavailable(reason: "CLI not installed")
+                : .unavailable(reason: descriptor.canInstall
+                    ? "CLI not installed"
+                    : "CLI not installed — Byori does not install this one")
+
+            var models = [
+                WorkspaceModelOption(
+                    id: Self.cliDefaultModelID,
+                    displayName: Self.cliDefaultModelName,
+                    detail: "Resolved by the agent CLI when this session starts",
+                    availability: availability
+                ),
+            ]
+            // Offering a model box for a CLI that takes no model flag would only
+            // produce a session that refuses to launch.
+            if descriptor.supportsModelFlag {
+                models.append(WorkspaceModelOption(
+                    id: Self.customModelOptionID,
+                    displayName: "Custom identifier",
+                    detail: "Use an exact model identifier accepted by this CLI",
+                    availability: availability,
+                    acceptsCustomIdentifier: true,
+                    customIdentifierPlaceholder: "Provider model identifier"
+                ))
+            }
+
             return WorkspaceProviderOption(
                 id: kind.rawValue,
-                displayName: kind.displayName,
-                systemImage: providerIcon(kind),
+                displayName: descriptor.displayName,
+                systemImage: descriptor.systemImage,
                 availability: availability,
-                models: [
-                    WorkspaceModelOption(
-                        id: Self.cliDefaultModelID,
-                        displayName: Self.cliDefaultModelName,
-                        detail: "Resolved by the agent CLI when this session starts",
-                        availability: availability
-                    ),
-                    WorkspaceModelOption(
-                        id: Self.customModelOptionID,
-                        displayName: "Custom identifier",
-                        detail: "Use an exact model identifier accepted by this CLI",
-                        availability: availability,
-                        acceptsCustomIdentifier: true,
-                        customIdentifierPlaceholder: "Provider model identifier"
-                    ),
-                ]
+                models: models
             )
         }
     }
@@ -460,7 +470,8 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
                 model: explicitModel,
                 workingDirectory: checkout.url,
                 sessionID: terminalID,
-                environmentOverrides: ["BYORIDB_MEMORY_SPACE": project.memorySpace]
+                environmentOverrides: ["BYORIDB_MEMORY_SPACE": project.memorySpace],
+                additionalArguments: request.additionalArguments
             )
             _ = try await taskStore.updateSessionStatus(
                 taskID: task.id,
@@ -693,7 +704,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
             name: session.name,
             providerID: session.provider.rawValue,
             providerName: kind?.displayName ?? session.provider.rawValue,
-            providerSystemImage: kind.map(providerIcon) ?? "terminal",
+            providerSystemImage: kind?.descriptor.systemImage ?? "terminal",
             modelID: session.model == Self.cliDefaultModelName ? Self.cliDefaultModelID : session.model,
             modelName: session.model,
             state: presentation.status,
@@ -954,10 +965,6 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         if raw.contains("D") { return .deleted }
         if raw.contains("A") { return .added }
         return .modified
-    }
-
-    private func providerIcon(_ kind: AgentKind) -> String {
-        kind == .claude ? "sparkles" : "terminal"
     }
 
     private func boundedContext(_ value: String) -> String {

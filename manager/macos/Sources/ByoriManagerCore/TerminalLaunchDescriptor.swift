@@ -61,6 +61,8 @@ public struct TerminalLaunchDescriptor: Identifiable, Equatable, Sendable {
 
 public enum TerminalLaunchDescriptorError: LocalizedError, Equatable {
     case invalidModel
+    case modelNotSupported(String)
+    case invalidArgument(String)
     case invalidWorkingDirectory(String)
     case missingExecutable(String)
     case invalidExecutable(String)
@@ -69,6 +71,10 @@ public enum TerminalLaunchDescriptorError: LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
+        case .invalidArgument:
+            return "추가 실행 인자는 비어 있지 않은 512바이트 이하의 한 줄이어야 합니다."
+        case let .modelNotSupported(name):
+            return "\(name)에는 Byori가 모델을 지정할 수 없습니다. CLI 기본 모델로 실행해 주세요."
         case .invalidModel:
             return "모델 이름이 비어 있거나 안전한 CLI 값 형식이 아닙니다."
         case let .invalidWorkingDirectory(path):
@@ -124,10 +130,18 @@ public struct TerminalLaunchDescriptorFactory {
         workingDirectory: URL,
         sessionID: UUID = UUID(),
         executableOverride: URL? = nil,
-        environmentOverrides: [String: String] = [:]
+        environmentOverrides: [String: String] = [:],
+        additionalArguments: [String] = []
     ) throws -> TerminalLaunchDescriptor {
+        let descriptor = provider.descriptor
         let modelSelection: TerminalModelSelection
         if let model {
+            // A model flag is only passed to a CLI known to accept one. Sending
+            // `--model` to a CLI that does not take it turns a session launch
+            // into an argument-parsing error the user cannot act on.
+            guard descriptor.supportsModelFlag else {
+                throw TerminalLaunchDescriptorError.modelNotSupported(descriptor.displayName)
+            }
             modelSelection = .explicit(try validateModel(model))
         } else {
             modelSelection = .cliDefault
@@ -135,7 +149,7 @@ public struct TerminalLaunchDescriptorFactory {
         let directory = try validateDirectory(workingDirectory)
         let executable = try resolveExecutable(
             executableOverride,
-            defaultName: provider.executableName
+            defaultName: descriptor.executableName
         )
         let environment = try makeEnvironment(overrides: environmentOverrides)
 
@@ -143,14 +157,20 @@ public struct TerminalLaunchDescriptorFactory {
         if case let .explicit(model) = modelSelection {
             arguments.append(contentsOf: ["--model", model])
         }
-        switch provider {
-        case .claude:
+        switch descriptor.launchArguments {
+        case .none:
+            break
+        case .claudeSessionID:
             arguments.append(contentsOf: [
                 "--session-id", sessionID.uuidString.lowercased(),
             ])
-        case .codex:
+        case .codexWorkingDirectory:
             arguments.append(contentsOf: ["--cd", directory.path])
         }
+        // Appended last so a caller-supplied flag wins where a CLI takes the
+        // final occurrence, and so Byori's own arguments stay recognisable in
+        // the recorded descriptor.
+        arguments.append(contentsOf: try additionalArguments.map(validateArgument))
 
         return TerminalLaunchDescriptor(
             id: sessionID,
@@ -184,6 +204,47 @@ public struct TerminalLaunchDescriptorFactory {
             environment: environment,
             workingDirectory: directory
         )
+    }
+
+    /// Extra flags are handed to the CLI as separate `argv` entries and never go
+    /// through a shell, so quoting and metacharacters carry no meaning here. The
+    /// checks that remain are the ones `execve` cannot express: a NUL would
+    /// truncate the argument, and a newline would make the recorded launch
+    /// unreadable in logs and the activity list.
+    private func validateArgument(_ value: String) throws -> String {
+        guard !value.isEmpty,
+              value.utf8.count <= 512,
+              !value.contains("\0"),
+              !value.contains("\n"),
+              !value.contains("\r") else {
+            throw TerminalLaunchDescriptorError.invalidArgument(value)
+        }
+        return value
+    }
+
+    /// Splits a typed argument line into `argv` entries, honouring double quotes
+    /// so a path with a space survives. Nothing else about shell syntax applies:
+    /// no expansion, no globbing, no operators.
+    public static func splitArguments(_ line: String) -> [String] {
+        var arguments: [String] = []
+        var current = ""
+        var isQuoted = false
+        var hasContent = false
+        for character in line {
+            if character == "\"" {
+                isQuoted.toggle()
+                hasContent = true
+            } else if character.isWhitespace && !isQuoted {
+                if hasContent { arguments.append(current) }
+                current = ""
+                hasContent = false
+            } else {
+                current.append(character)
+                hasContent = true
+            }
+        }
+        if hasContent { arguments.append(current) }
+        return arguments
     }
 
     private func validateModel(_ value: String) throws -> String {

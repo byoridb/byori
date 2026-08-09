@@ -35,6 +35,8 @@ public struct ManagerPaths: Sendable {
     }
     public var claudeConfig: URL { home.appendingPathComponent(".claude.json") }
     public var codexConfig: URL { home.appendingPathComponent(".codex/config.toml") }
+    /// Where `gemini mcp add --scope user` writes its `mcpServers` map.
+    public var geminiConfig: URL { home.appendingPathComponent(".gemini/settings.json") }
     public var legacyCodexSkill: URL {
         home.appendingPathComponent(".codex/skills/byoridb-memory/SKILL.md")
     }

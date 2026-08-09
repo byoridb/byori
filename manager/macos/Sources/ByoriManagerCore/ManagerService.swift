@@ -79,16 +79,15 @@ public actor ManagerService {
     }
 
     public func installOrUpdateCLI(_ kind: AgentKind) async throws -> OperationResult {
-        let command: String
-        switch kind {
-        case .claude:
-            command = "/usr/bin/curl -fsSL https://claude.ai/install.sh | /bin/bash"
-        case .codex:
-            command = "/usr/bin/curl -fsSL https://chatgpt.com/codex/install.sh | /bin/sh"
+        let descriptor = kind.descriptor
+        guard let install = descriptor.install else {
+            throw ManagerError.prerequisite(
+                "Byori는 \(descriptor.displayName)를 설치하지 않습니다. 직접 설치한 뒤 다시 확인해 주세요."
+            )
         }
         let result = await runner.run(CommandSpec(
             executable: "/bin/bash",
-            arguments: ["-o", "pipefail", "-c", command],
+            arguments: ["-o", "pipefail", "-c", install.command],
             environment: commonEnvironment,
             timeout: 900
         ))
@@ -213,21 +212,19 @@ public actor ManagerService {
             throw ManagerError.prerequisite("ByoriDB를 먼저 설치해 주세요.")
         }
 
-        let removeArguments: [String]
-        let addArguments: [String]
-        switch kind {
-        case .claude:
-            removeArguments = ["mcp", "remove", "--scope", "user", "byoridb"]
-            addArguments = [
-                "mcp", "add", "--transport", "stdio", "--scope", "user",
-                "byoridb", "--", paths.mcpRunner.path,
-            ]
-        case .codex:
-            removeArguments = ["mcp", "remove", "byoridb"]
-            addArguments = ["mcp", "add", "byoridb", "--", paths.mcpRunner.path]
+        guard let style = kind.descriptor.mcp else {
+            throw ManagerError.prerequisite(
+                "Byori는 \(kind.displayName)의 MCP 설정을 관리하지 않습니다. 직접 연결해 주세요."
+            )
         }
+        let removeArguments = style.removeArguments(name: "byoridb")
+        let addArguments = style.addArguments(name: "byoridb", command: paths.mcpRunner.path)
 
-        let config = configFile(kind)
+        // Every CLI with a registration style has a known config file; the
+        // rollback below has nothing to restore without one.
+        guard let config = configFile(kind) else {
+            throw ManagerError.prerequisite("\(kind.displayName)의 설정 파일 위치를 알 수 없습니다.")
+        }
         let backup = try files.backup(file: config, root: paths.backups)
         do {
             _ = await runner.run(CommandSpec(
@@ -269,14 +266,12 @@ public actor ManagerService {
 
     public func disconnectMCP(_ kind: AgentKind) async throws -> OperationResult {
         let cli = try requireCLI(kind)
-        let arguments: [String]
-        switch kind {
-        case .claude:
-            arguments = ["mcp", "remove", "--scope", "user", "byoridb"]
-        case .codex:
-            arguments = ["mcp", "remove", "byoridb"]
+        guard let style = kind.descriptor.mcp, let config = configFile(kind) else {
+            throw ManagerError.prerequisite(
+                "Byori는 \(kind.displayName)의 MCP 설정을 관리하지 않습니다."
+            )
         }
-        let config = configFile(kind)
+        let arguments = style.removeArguments(name: "byoridb")
         let backup = try files.backup(file: config, root: paths.backups)
         do {
             let result = await runner.run(CommandSpec(
@@ -345,16 +340,14 @@ public actor ManagerService {
             }
         }
 
-        let config = configFile(server.agent)
+        guard let style = server.agent.descriptor.mcp, let config = configFile(server.agent) else {
+            throw ManagerError.prerequisite(
+                "Byori는 \(server.agent.displayName)의 MCP 설정을 관리하지 않습니다."
+            )
+        }
         let backup = try files.backup(file: config, root: paths.backups)
         do {
-            let removeArguments: [String]
-            switch server.agent {
-            case .claude:
-                removeArguments = ["mcp", "remove", "--scope", "user", safeName]
-            case .codex:
-                removeArguments = ["mcp", "remove", safeName]
-            }
+            let removeArguments = style.removeArguments(name: safeName)
             let result = await runner.run(CommandSpec(
                 executable: cli.path,
                 arguments: removeArguments,
@@ -397,7 +390,11 @@ public actor ManagerService {
         guard fileManager.fileExists(atPath: paths.skillSource.path) else {
             throw ManagerError.missingResource(paths.skillSource.path)
         }
-        let destination = skillDestination(kind)
+        guard let destination = skillDestination(kind) else {
+            throw ManagerError.prerequisite(
+                "\(kind.displayName)는 Byori가 관리하는 Skill 디렉터리를 사용하지 않습니다."
+            )
+        }
         let changed = try files.install(
             source: paths.skillSource,
             destination: destination,
@@ -415,10 +412,9 @@ public actor ManagerService {
     }
 
     public func removeSkill(_ kind: AgentKind) throws -> OperationResult {
-        let removed = try files.remove(
-            destination: skillDestination(kind),
-            backupRoot: paths.backups
-        )
+        let removed = try skillDestination(kind).map {
+            try files.remove(destination: $0, backupRoot: paths.backups)
+        } ?? false
         var removedLegacy = false
         if kind == .codex {
             removedLegacy = try files.remove(
@@ -533,17 +529,22 @@ public actor ManagerService {
         "gui/\(getuid())/\(paths.serviceLabel)"
     }
 
-    private func skillDestination(_ kind: AgentKind) -> URL {
-        switch kind {
-        case .claude: return paths.claudeSkill
-        case .codex: return paths.codexSkill
+    private func skillDestination(_ kind: AgentKind) -> URL? {
+        kind.descriptor.skillRelativePath.map {
+            paths.home.appendingPathComponent($0)
         }
     }
 
-    private func configFile(_ kind: AgentKind) -> URL {
+    /// The file backed up before an MCP registration is rewritten. Only the CLIs
+    /// whose config location Byori knows have one; for the rest the registration
+    /// path is refused earlier, so the backup is skipped rather than aimed at a
+    /// guessed path.
+    private func configFile(_ kind: AgentKind) -> URL? {
         switch kind {
         case .claude: return paths.claudeConfig
         case .codex: return paths.codexConfig
+        case .gemini: return paths.geminiConfig
+        case .cursorAgent, .opencode: return nil
         }
     }
 
@@ -645,34 +646,39 @@ public actor ManagerService {
         _ kind: AgentKind,
         cli: URL
     ) async -> (state: AgentInventoryState, servers: [MCPServerSummary]) {
-        let arguments: [String]
-        let timeout: TimeInterval
-        switch kind {
-        case .claude:
-            arguments = ["mcp", "list"]
-            timeout = 20
-        case .codex:
-            arguments = ["mcp", "list", "--json"]
-            timeout = 10
-        }
-        let result = await runner.run(CommandSpec(
-            executable: cli.path,
-            arguments: arguments,
-            environment: commonEnvironment,
-            workingDirectory: paths.home.path,
-            timeout: timeout
-        ))
-        guard result.succeeded else { return (.unavailable, []) }
-
         let parsed: [MCPInventoryParser.ParsedServer]
         switch kind {
-        case .claude:
-            parsed = MCPInventoryParser.claudeServers(fromText: result.output)
-        case .codex:
-            guard let codex = MCPInventoryParser.codexServers(fromJSON: result.output) else {
-                return (.unavailable, [])
+        case .claude, .codex:
+            let arguments = kind == .claude ? ["mcp", "list"] : ["mcp", "list", "--json"]
+            let result = await runner.run(CommandSpec(
+                executable: cli.path,
+                arguments: arguments,
+                environment: commonEnvironment,
+                workingDirectory: paths.home.path,
+                timeout: kind == .claude ? 20 : 10
+            ))
+            guard result.succeeded else { return (.unavailable, []) }
+            if kind == .claude {
+                parsed = MCPInventoryParser.claudeServers(fromText: result.output)
+            } else {
+                guard let codex = MCPInventoryParser.codexServers(fromJSON: result.output) else {
+                    return (.unavailable, [])
+                }
+                parsed = codex
             }
-            parsed = codex
+        case .gemini:
+            // `gemini mcp list` prints nothing even with servers configured
+            // (0.37), so the settings file is read instead of shelling out to a
+            // command whose silence is indistinguishable from "none".
+            guard let config = configFile(kind) else { return (.unavailable, []) }
+            parsed = MCPInventoryParser.settingsServers(
+                in: config,
+                serversKey: "mcpServers"
+            )
+        case .cursorAgent, .opencode:
+            // Byori does not manage MCP for these, so it reports nothing rather
+            // than guessing at a config location.
+            return (.unavailable, [])
         }
 
         let hasByoriName = parsed.contains { $0.name == "byoridb" }
@@ -702,7 +708,9 @@ public actor ManagerService {
     }
 
     private func skillState(_ kind: AgentKind) -> ManagedFileState {
-        let destination = skillDestination(kind)
+        // A CLI Byori installs no Skill into is permanently "missing" rather
+        // than pretending to track one.
+        guard let destination = skillDestination(kind) else { return .missing }
         let state = files.state(source: paths.skillSource, destination: destination)
         if kind == .codex,
            state == .missing,
@@ -713,17 +721,20 @@ public actor ManagerService {
     }
 
     private func isMCPConnected(_ kind: AgentKind, cli: URL) async -> Bool {
-        let result = await runner.run(CommandSpec(
-            executable: cli.path,
-            arguments: ["mcp", "get", "byoridb"],
-            environment: commonEnvironment,
-            timeout: 15
-        ))
-        guard result.succeeded,
-              mcpField("command", in: result.output) == paths.mcpRunner.path else {
-            return false
-        }
-        if kind == .claude {
+        guard let verification = kind.descriptor.mcp?.verification else { return false }
+        switch verification {
+        case let .cliGet(requiresUserScope):
+            let result = await runner.run(CommandSpec(
+                executable: cli.path,
+                arguments: ["mcp", "get", "byoridb"],
+                environment: commonEnvironment,
+                timeout: 15
+            ))
+            guard result.succeeded,
+                  mcpField("command", in: result.output) == paths.mcpRunner.path else {
+                return false
+            }
+            guard requiresUserScope else { return true }
             guard let scope = mcpField("scope", in: result.output) else { return false }
             // `claude mcp get` prints the scope as "User config (available in all
             // your projects)". Drop a trailing parenthetical before matching so a
@@ -732,8 +743,32 @@ public actor ManagerService {
             let base = scope.split(separator: "(", maxSplits: 1).first
                 .map { $0.trimmingCharacters(in: .whitespaces) } ?? scope
             return base.lowercased() == "user config"
+        case let .settingsJSON(serversKey, commandKey):
+            guard let config = configFile(kind) else { return false }
+            return Self.settingsMCPCommand(
+                name: "byoridb",
+                in: config,
+                serversKey: serversKey,
+                commandKey: commandKey
+            ) == paths.mcpRunner.path
         }
-        return true
+    }
+
+    /// Reads one server's command out of a CLI settings file shaped like
+    /// `{"<serversKey>": {"<name>": {"<commandKey>": "…"}}}`.
+    static func settingsMCPCommand(
+        name: String,
+        in file: URL,
+        serversKey: String,
+        commandKey: String
+    ) -> String? {
+        guard let data = try? Data(contentsOf: file),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let servers = root[serversKey] as? [String: Any],
+              let entry = servers[name] as? [String: Any] else {
+            return nil
+        }
+        return entry[commandKey] as? String
     }
 
     private func mcpField(_ name: String, in output: String) -> String? {

@@ -1538,6 +1538,17 @@ private struct NewWorkspaceSessionSheet: View {
                     .foregroundStyle(.secondary)
             }
 
+            TextField(
+                "Additional CLI arguments (optional)",
+                text: $model.newSessionDraft.additionalArguments
+            )
+            .accessibilityLabel("Additional CLI arguments")
+            .accessibilityHint("Passed to the CLI as written, for example --dangerously-skip-permissions")
+
+            Text("Appended to the CLI invocation exactly as typed, after Byori's own arguments. Quote values containing spaces; no shell expansion is performed.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             if let availabilityMessage {
                 Label(availabilityMessage, systemImage: "exclamationmark.circle")
                     .font(.caption)
