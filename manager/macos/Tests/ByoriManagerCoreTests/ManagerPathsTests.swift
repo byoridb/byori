@@ -56,6 +56,15 @@ final class ManagerPathsTests: XCTestCase {
         let paths = ManagerPaths(home: temporaryRoot, runtimeRoot: temporaryRoot)
         XCTAssertTrue(paths.codexSkill.path.hasSuffix("/.agents/skills/byoridb-memory/SKILL.md"))
         XCTAssertTrue(paths.legacyCodexSkill.path.hasSuffix("/.codex/skills/byoridb-memory/SKILL.md"))
+        XCTAssertTrue(paths.skillSource(.byoriDesign).path.hasSuffix(
+            "/adapters/claude/skills/byori-design/SKILL.md"
+        ))
+        XCTAssertTrue(paths.skillDestination(.byoriDesign, for: .codex).path.hasSuffix(
+            "/.agents/skills/byori-design/SKILL.md"
+        ))
+        XCTAssertTrue(paths.legacyCodexSkill(.byoriDesign).path.hasSuffix(
+            "/.codex/skills/byori-design/SKILL.md"
+        ))
     }
 
     func testKnowledgeGraphLayoutsAreDeterministicCompleteAndFinite() {

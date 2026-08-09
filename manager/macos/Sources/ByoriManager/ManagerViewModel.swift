@@ -46,8 +46,12 @@ enum ManagerAction: String, Identifiable {
     case disconnectCodex
     case syncClaudeSkill
     case syncCodexSkill
+    case syncClaudeDesignSkill
+    case syncCodexDesignSkill
     case removeClaudeSkill
     case removeCodexSkill
+    case removeClaudeDesignSkill
+    case removeCodexDesignSkill
 
     var id: String { rawValue }
 
@@ -61,8 +65,10 @@ enum ManagerAction: String, Identifiable {
         case .stopByori: return "ByoriDB 서비스를 중지할까요?"
         case .disconnectClaude: return "Claude Code에서 Byori MCP 연결을 해제할까요?"
         case .disconnectCodex: return "Codex에서 Byori MCP 연결을 해제할까요?"
-        case .removeClaudeSkill: return "Claude Code에서 Byori Skill을 제거할까요?"
-        case .removeCodexSkill: return "Codex에서 Byori Skill을 제거할까요?"
+        case .removeClaudeSkill: return "Claude Code에서 byoridb-memory Skill을 제거할까요?"
+        case .removeCodexSkill: return "Codex에서 byoridb-memory Skill을 제거할까요?"
+        case .removeClaudeDesignSkill: return "Claude Code에서 byori-design Skill을 제거할까요?"
+        case .removeCodexDesignSkill: return "Codex에서 byori-design Skill을 제거할까요?"
         default: return "이 작업을 실행할까요?"
         }
     }
@@ -79,7 +85,8 @@ enum ManagerAction: String, Identifiable {
             return "최신 릴리스의 디스크 이미지를 내려받아 Apple 공증과 개발자 서명을 확인한 뒤 교체합니다. 확인에 실패하면 설치하지 않습니다. 교체를 위해 앱이 한 번 종료되었다가 다시 열립니다."
         case .installByori:
             return "앱에 포함된 MCP·Skill·서비스 자산을 사용하고, 호환되는 ByoriDB 엔진은 GitHub 릴리스에서 다운로드합니다. 기존 runtime은 먼저 백업합니다."
-        case .removeClaudeSkill, .removeCodexSkill:
+        case .removeClaudeSkill, .removeCodexSkill,
+             .removeClaudeDesignSkill, .removeCodexDesignSkill:
             return "기존 파일은 ~/.byori-manager/backups에 백업한 뒤 제거합니다."
         default:
             return "완료 후 상태를 다시 검사합니다."
@@ -89,7 +96,8 @@ enum ManagerAction: String, Identifiable {
     var isDestructive: Bool {
         switch self {
         case .stopByori, .disconnectClaude, .disconnectCodex,
-             .removeClaudeSkill, .removeCodexSkill:
+             .removeClaudeSkill, .removeCodexSkill,
+             .removeClaudeDesignSkill, .removeCodexDesignSkill:
             return true
         default:
             return false
@@ -112,8 +120,12 @@ enum ManagerAction: String, Identifiable {
         case .disconnectCodex: return "Codex MCP 연결 해제 중…"
         case .syncClaudeSkill: return "Claude Code Memory Skill 동기화 중…"
         case .syncCodexSkill: return "Codex Memory Skill 동기화 중…"
+        case .syncClaudeDesignSkill: return "Claude Code Design Skill 동기화 중…"
+        case .syncCodexDesignSkill: return "Codex Design Skill 동기화 중…"
         case .removeClaudeSkill: return "Claude Code Memory Skill 제거 중…"
         case .removeCodexSkill: return "Codex Memory Skill 제거 중…"
+        case .removeClaudeDesignSkill: return "Claude Code Design Skill 제거 중…"
+        case .removeCodexDesignSkill: return "Codex Design Skill 제거 중…"
         }
     }
 
@@ -485,13 +497,21 @@ final class ManagerViewModel: ObservableObject {
             case .disconnectCodex:
                 result = try await service.disconnectMCP(.codex)
             case .syncClaudeSkill:
-                result = try await service.syncSkill(.claude)
+                result = try await service.syncSkill(.claude, skill: .byoridbMemory)
             case .syncCodexSkill:
-                result = try await service.syncSkill(.codex)
+                result = try await service.syncSkill(.codex, skill: .byoridbMemory)
+            case .syncClaudeDesignSkill:
+                result = try await service.syncSkill(.claude, skill: .byoriDesign)
+            case .syncCodexDesignSkill:
+                result = try await service.syncSkill(.codex, skill: .byoriDesign)
             case .removeClaudeSkill:
-                result = try await service.removeSkill(.claude)
+                result = try await service.removeSkill(.claude, skill: .byoridbMemory)
             case .removeCodexSkill:
-                result = try await service.removeSkill(.codex)
+                result = try await service.removeSkill(.codex, skill: .byoridbMemory)
+            case .removeClaudeDesignSkill:
+                result = try await service.removeSkill(.claude, skill: .byoriDesign)
+            case .removeCodexDesignSkill:
+                result = try await service.removeSkill(.codex, skill: .byoriDesign)
             }
             // A returned OperationResult is the service's commit boundary.
             // Do not reinterpret a late Cancel as though the mutation failed.

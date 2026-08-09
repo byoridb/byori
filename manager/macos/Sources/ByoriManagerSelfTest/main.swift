@@ -46,6 +46,10 @@ enum ByoriManagerSelfTest {
         guard paths.codexSkill.path.hasSuffix("/.agents/skills/byoridb-memory/SKILL.md") else {
             throw Failure("Codex skill path is not the current official location")
         }
+        guard paths.skillDestination(.byoriDesign, for: .codex).path
+            .hasSuffix("/.agents/skills/byori-design/SKILL.md") else {
+            throw Failure("Codex design skill path is not the current official location")
+        }
 
         let claudeInventory = MCPInventoryParser.claudeServers(fromText: """
         \u{001B}[32mlocal-tools:\u{001B}[0m /bin/error-handler --header Authorization:Bearer-super-secret - ✓ Connected

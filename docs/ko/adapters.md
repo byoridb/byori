@@ -1,9 +1,11 @@
 [English](../../adapters/README.md) | **한국어**
 
-# Agent Memory — ByoriDB를 코딩 에이전트의 장기 기억으로
+# Agent Skills — 코딩 에이전트 workflow에서 ByoriDB 사용하기
 
-[memory ontology 설계](memory-ontology.md)를 구동하는 **에이전트 측 자산의 참조 사본**이다.
-설치기는 Claude/Codex 공용 skill을 `~/.claude/`에 자동 설치하고, `codex` CLI가 있으면
+이 디렉터리는 에이전트 workflow를 ByoriDB에 연결하는 **자산의 참조 사본**이다.
+기억 skill은 [memory ontology](memory-ontology.md)를 구현하고, 디자인 skill은 그 연속성을
+제품·UX/UI 작업에 적용한다.
+설치기는 Claude/Codex 공용 skill들을 `~/.claude/`에 자동 설치하고, `codex` CLI가 있으면
 `~/.agents/skills/`에도 설치한다. NaraeClaw 자산은 수동 참조 어댑터이며 설치기와
 Byori macOS 앱은 이를 자동 설정하거나 설치하지 않는다.
 
@@ -16,6 +18,7 @@ Byori macOS 앱은 이를 자동 설정하거나 설치하지 않는다.
 | 파일 | 라이브 위치 | 역할 |
 |---|---|---|
 | `claude/skills/byoridb-memory/SKILL.md` | `~/.claude/skills/byoridb-memory/SKILL.md` 및 `~/.agents/skills/byoridb-memory/SKILL.md` | Claude/Codex 공용 기억 skill. note + typed wiki, structured tool, 인과 포착·체크포인트 규율 |
+| `claude/skills/byori-design/` | `~/.claude/skills/byori-design/` 및 `~/.agents/skills/byori-design/` | 저장소 디자인 산출물과 지속 가능한 Byori context를 연결하는 Claude/Codex 공용 제품 디자인 workflow |
 | `claude/hooks.snippet.json` | `~/.claude/settings.json`의 `hooks` 키 | 체크포인트 자동화 훅 2개 (SessionStart recall / git commit capture 리마인더) |
 | `naraeclaw/skills/byoridb-memory/SKILL.md` | host가 선택한 수동 위치 | reduced raw-query surface를 쓰는 MCP 호환 NaraeClaw host용 참조 정책. 자동 설치 안 함 |
 
@@ -37,6 +40,8 @@ hook 연결 없이 개발용 skill 사본만 설치하려면:
 ```bash
 mkdir -p ~/.claude/skills/byoridb-memory
 cp adapters/claude/skills/byoridb-memory/SKILL.md ~/.claude/skills/byoridb-memory/
+mkdir -p ~/.claude/skills/byori-design
+cp -R adapters/claude/skills/byori-design/. ~/.claude/skills/byori-design/
 ```
 
 설치기의 `--with-hooks`는 기존 항목을 중복하지 않고 append하며 변경 전
@@ -52,6 +57,9 @@ codex mcp add byoridb -- "$HOME/.byoridb/bin/run-mcp.sh"
 mkdir -p "$HOME/.agents/skills/byoridb-memory"
 cp adapters/claude/skills/byoridb-memory/SKILL.md \
   "$HOME/.agents/skills/byoridb-memory/SKILL.md"
+mkdir -p "$HOME/.agents/skills/byori-design"
+cp -R adapters/claude/skills/byori-design/. \
+  "$HOME/.agents/skills/byori-design/"
 ```
 
 현재 hook snippet은 Claude Code 전용이다.

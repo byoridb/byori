@@ -23,15 +23,46 @@ public enum ManagedFileState: String, Equatable, Sendable {
     case legacy
 }
 
+public enum ManagedSkill: String, CaseIterable, Identifiable, Sendable {
+    case byoridbMemory = "byoridb-memory"
+    case byoriDesign = "byori-design"
+
+    public var id: String { rawValue }
+
+    public var assetPaths: [String] {
+        switch self {
+        case .byoridbMemory:
+            return ["SKILL.md"]
+        case .byoriDesign:
+            return ["SKILL.md", "agents/openai.yaml"]
+        }
+    }
+}
+
 public struct AgentStatus: Identifiable, Equatable, Sendable {
     public let kind: AgentKind
     public let executablePath: String?
     public let version: String?
     public let mcpConnected: Bool
-    public let skillState: ManagedFileState
+    public let skillStates: [ManagedSkill: ManagedFileState]
 
     public var id: String { kind.id }
     public var isInstalled: Bool { executablePath != nil }
+    public var skillState: ManagedFileState { state(for: .byoridbMemory) }
+
+    public init(
+        kind: AgentKind,
+        executablePath: String?,
+        version: String?,
+        mcpConnected: Bool,
+        skillStates: [ManagedSkill: ManagedFileState]
+    ) {
+        self.kind = kind
+        self.executablePath = executablePath
+        self.version = version
+        self.mcpConnected = mcpConnected
+        self.skillStates = skillStates
+    }
 
     public init(
         kind: AgentKind,
@@ -40,11 +71,17 @@ public struct AgentStatus: Identifiable, Equatable, Sendable {
         mcpConnected: Bool,
         skillState: ManagedFileState
     ) {
-        self.kind = kind
-        self.executablePath = executablePath
-        self.version = version
-        self.mcpConnected = mcpConnected
-        self.skillState = skillState
+        self.init(
+            kind: kind,
+            executablePath: executablePath,
+            version: version,
+            mcpConnected: mcpConnected,
+            skillStates: [.byoridbMemory: skillState]
+        )
+    }
+
+    public func state(for skill: ManagedSkill) -> ManagedFileState {
+        skillStates[skill] ?? .missing
     }
 }
 

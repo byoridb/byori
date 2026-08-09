@@ -172,6 +172,10 @@ for template in "${RUNTIME_TEMPLATES[@]}"; do
 done
 [ -f "$REPO_ROOT/adapters/claude/skills/byoridb-memory/SKILL.md" ] || \
   die "missing Claude skill: adapters/claude/skills/byoridb-memory/SKILL.md"
+[ -f "$REPO_ROOT/adapters/claude/skills/byori-design/SKILL.md" ] || \
+  die "missing Claude skill: adapters/claude/skills/byori-design/SKILL.md"
+[ -f "$REPO_ROOT/adapters/claude/skills/byori-design/agents/openai.yaml" ] || \
+  die "missing Codex skill metadata: adapters/claude/skills/byori-design/agents/openai.yaml"
 [ -f "$REPO_ROOT/adapters/claude/hooks.snippet.json" ] || \
   die "missing Claude hooks snippet"
 
@@ -215,7 +219,8 @@ MACOS_DIR="$CONTENTS/MacOS"
 RESOURCES_DIR="$CONTENTS/Resources"
 RUNTIME_DIR="$RESOURCES_DIR/runtime"
 mkdir -p "$MACOS_DIR" "$RUNTIME_DIR/mcp" "$RUNTIME_DIR/cli" \
-  "$RUNTIME_DIR/adapters/claude/skills/byoridb-memory"
+  "$RUNTIME_DIR/adapters/claude/skills/byoridb-memory" \
+  "$RUNTIME_DIR/adapters/claude/skills/byori-design/agents"
 
 build_arch() {
   local target_arch="$1"
@@ -288,6 +293,12 @@ done
 install -m 644 \
   "$REPO_ROOT/adapters/claude/skills/byoridb-memory/SKILL.md" \
   "$RUNTIME_DIR/adapters/claude/skills/byoridb-memory/SKILL.md"
+install -m 644 \
+  "$REPO_ROOT/adapters/claude/skills/byori-design/SKILL.md" \
+  "$RUNTIME_DIR/adapters/claude/skills/byori-design/SKILL.md"
+install -m 644 \
+  "$REPO_ROOT/adapters/claude/skills/byori-design/agents/openai.yaml" \
+  "$RUNTIME_DIR/adapters/claude/skills/byori-design/agents/openai.yaml"
 install -m 644 \
   "$REPO_ROOT/adapters/claude/hooks.snippet.json" \
   "$RUNTIME_DIR/adapters/claude/hooks.snippet.json"

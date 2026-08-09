@@ -594,9 +594,6 @@ private struct AgentInventoryPane: View {
     private var installAction: ManagerAction { kind == .claude ? .installClaude : .installCodex }
     private var connectAction: ManagerAction { kind == .claude ? .connectClaude : .connectCodex }
     private var disconnectAction: ManagerAction { kind == .claude ? .disconnectClaude : .disconnectCodex }
-    private var syncAction: ManagerAction { kind == .claude ? .syncClaudeSkill : .syncCodexSkill }
-    private var removeAction: ManagerAction { kind == .claude ? .removeClaudeSkill : .removeCodexSkill }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 12) {
@@ -693,25 +690,17 @@ private struct AgentInventoryPane: View {
                 action: {}
             )
 
-            if managedSkills.isEmpty {
+            ForEach(Array(ManagedSkill.allCases.enumerated()), id: \.element.id) { index, definition in
+                if index > 0 { Divider().padding(.leading, 36) }
+                let installedSkill = managedSkills.first { $0.name == definition.rawValue }
                 ManagedSkillInventoryRow(
                     kind: kind,
-                    skill: nil,
-                    state: status?.skillState,
-                    sync: { model.request(syncAction) },
-                    remove: { model.request(removeAction, confirmation: true) }
+                    definition: definition,
+                    skill: installedSkill,
+                    state: status?.state(for: definition),
+                    sync: { model.request(syncAction(for: definition)) },
+                    remove: { model.request(removeAction(for: definition), confirmation: true) }
                 )
-            } else {
-                ForEach(Array(managedSkills.enumerated()), id: \.element.id) { index, skill in
-                    if index > 0 { Divider().padding(.leading, 36) }
-                    ManagedSkillInventoryRow(
-                        kind: kind,
-                        skill: skill,
-                        state: status?.skillState,
-                        sync: { model.request(syncAction) },
-                        remove: { model.request(removeAction, confirmation: true) }
-                    )
-                }
             }
 
             ForEach(otherSkills) { skill in
@@ -719,15 +708,6 @@ private struct AgentInventoryPane: View {
                 UserSkillInventoryRow(skill: skill)
             }
 
-            if managedSkills.isEmpty, otherSkills.isEmpty,
-               status?.skillState == .missing, inventory != nil {
-                Divider().padding(.leading, 36)
-                InventoryMessageRow(
-                    icon: "tray",
-                    title: "설치된 사용자 Skill이 없습니다.",
-                    detail: nil
-                )
-            }
             if inventory?.skillsWereTruncated == true {
                 Divider().padding(.leading, 36)
                 InventoryMessageRow(
@@ -753,11 +733,29 @@ private struct AgentInventoryPane: View {
     }
 
     private var managedSkills: [UserSkillSummary] {
-        inventory?.skills.filter { $0.name == "byoridb-memory" } ?? []
+        inventory?.skills.filter(\.isByoriManaged) ?? []
     }
 
     private var otherSkills: [UserSkillSummary] {
-        inventory?.skills.filter { $0.name != "byoridb-memory" } ?? []
+        inventory?.skills.filter { !$0.isByoriManaged } ?? []
+    }
+
+    private func syncAction(for skill: ManagedSkill) -> ManagerAction {
+        switch (kind, skill) {
+        case (.claude, .byoridbMemory): return .syncClaudeSkill
+        case (.codex, .byoridbMemory): return .syncCodexSkill
+        case (.claude, .byoriDesign): return .syncClaudeDesignSkill
+        case (.codex, .byoriDesign): return .syncCodexDesignSkill
+        }
+    }
+
+    private func removeAction(for skill: ManagedSkill) -> ManagerAction {
+        switch (kind, skill) {
+        case (.claude, .byoridbMemory): return .removeClaudeSkill
+        case (.codex, .byoridbMemory): return .removeCodexSkill
+        case (.claude, .byoriDesign): return .removeClaudeDesignSkill
+        case (.codex, .byoriDesign): return .removeCodexDesignSkill
+        }
     }
 }
 
@@ -896,6 +894,7 @@ private struct MCPInventoryRow: View {
 private struct ManagedSkillInventoryRow: View {
     @EnvironmentObject private var model: ManagerViewModel
     let kind: AgentKind
+    let definition: ManagedSkill
     let skill: UserSkillSummary?
     let state: ManagedFileState?
     let sync: () -> Void
@@ -903,12 +902,12 @@ private struct ManagedSkillInventoryRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: state == .current ? "checkmark.circle.fill" : "puzzlepiece.extension")
-                .foregroundStyle(state == .current ? .green : .orange)
+            Image(systemName: stateIcon)
+                .foregroundStyle(stateColor)
                 .frame(width: 26)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 7) {
-                    Text("byoridb-memory").font(.body.weight(.medium))
+                    Text(definition.rawValue).font(.body.weight(.medium))
                     Text(managedSkillMetadata)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -945,8 +944,25 @@ private struct ManagedSkillInventoryRow: View {
     }
 
     private var skillDetail: String {
-        kind == .claude ? "~/.claude/skills/byoridb-memory/SKILL.md"
-            : "~/.agents/skills/byoridb-memory/SKILL.md"
+        kind == .claude ? "~/.claude/skills/\(definition.rawValue)/SKILL.md"
+            : "~/.agents/skills/\(definition.rawValue)/SKILL.md"
+    }
+
+    private var stateIcon: String {
+        switch state {
+        case .current: return "checkmark.circle.fill"
+        case .outdated: return "arrow.triangle.2.circlepath.circle.fill"
+        case .legacy: return "clock.arrow.circlepath"
+        default: return "puzzlepiece.extension"
+        }
+    }
+
+    private var stateColor: Color {
+        switch state {
+        case .current: return .green
+        case .outdated, .legacy: return .orange
+        default: return .secondary
+        }
     }
 
     private var managedSkillMetadata: String {
