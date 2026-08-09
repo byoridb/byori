@@ -22,15 +22,26 @@ enum ManagerSection: String, CaseIterable, Identifiable {
     }
 }
 
-/// A manager operation. The per-agent cases carry their `AgentKind` instead of
-/// existing once per CLI: with five providers, a flat list meant every new CLI
-/// silently had no way to be installed, connected or synced from Settings.
+/// The three states the update button has to tell apart. `AvailableUpdate?`
+/// could not: it collapsed "no check has succeeded yet" and "this is the newest
+/// release" into the same `nil`, so a current app looked unchecked.
+enum AppUpdateAvailability: Equatable {
+    case unknown
+    case upToDate(AppVersion)
+    case available(AvailableUpdate)
+}
+
+/// A manager operation. The per-agent cases carry their `AgentKind`, and the
+/// skill cases their `ManagedSkill`, instead of existing once per combination:
+/// with five providers and more than one skill, a flat list meant every new CLI
+/// or skill silently had no way to be installed, connected or synced from
+/// Settings.
 enum ManagerAction: Identifiable, Equatable {
     case installCLI(AgentKind)
     case connectMCP(AgentKind)
     case disconnectMCP(AgentKind)
-    case syncSkill(AgentKind)
-    case removeSkill(AgentKind)
+    case syncSkill(AgentKind, ManagedSkill)
+    case removeSkill(AgentKind, ManagedSkill)
     case installByori
     case updateByori
     case updateApp
@@ -43,8 +54,8 @@ enum ManagerAction: Identifiable, Equatable {
         case let .installCLI(kind): return "install-cli:\(kind.rawValue)"
         case let .connectMCP(kind): return "connect-mcp:\(kind.rawValue)"
         case let .disconnectMCP(kind): return "disconnect-mcp:\(kind.rawValue)"
-        case let .syncSkill(kind): return "sync-skill:\(kind.rawValue)"
-        case let .removeSkill(kind): return "remove-skill:\(kind.rawValue)"
+        case let .syncSkill(kind, skill): return "sync-skill:\(kind.rawValue):\(skill.rawValue)"
+        case let .removeSkill(kind, skill): return "remove-skill:\(kind.rawValue):\(skill.rawValue)"
         case .installByori: return "install-byori"
         case .updateByori: return "update-byori"
         case .updateApp: return "update-app"
@@ -58,7 +69,8 @@ enum ManagerAction: Identifiable, Equatable {
         switch self {
         case let .installCLI(kind): return "\(kind.displayName)를 설치하거나 업데이트할까요?"
         case let .disconnectMCP(kind): return "\(kind.displayName)에서 Byori MCP 연결을 해제할까요?"
-        case let .removeSkill(kind): return "\(kind.displayName)에서 Byori Skill을 제거할까요?"
+        case let .removeSkill(kind, skill):
+            return "\(kind.displayName)에서 \(skill.rawValue) Skill을 제거할까요?"
         case .installByori: return "번들 자산으로 ByoriDB를 설치할까요?"
         case .updateByori: return "최신 ByoriDB 설치기를 내려받아 업데이트할까요?"
         case .updateApp: return "Byori 앱을 최신 버전으로 업데이트할까요?"
@@ -98,8 +110,10 @@ enum ManagerAction: Identifiable, Equatable {
         case let .installCLI(kind): return "\(kind.displayName) 설치·업데이트 중…"
         case let .connectMCP(kind): return "\(kind.displayName) MCP 연결 중…"
         case let .disconnectMCP(kind): return "\(kind.displayName) MCP 연결 해제 중…"
-        case let .syncSkill(kind): return "\(kind.displayName) Memory Skill 동기화 중…"
-        case let .removeSkill(kind): return "\(kind.displayName) Memory Skill 제거 중…"
+        case let .syncSkill(kind, skill):
+            return "\(kind.displayName) \(skill.displayName) Skill 동기화 중…"
+        case let .removeSkill(kind, skill):
+            return "\(kind.displayName) \(skill.displayName) Skill 제거 중…"
         case .installByori: return "ByoriDB 설치·복구 중…"
         case .updateByori: return "ByoriDB 업데이트 중…"
         case .updateApp: return "앱 업데이트 확인·검증 중…"
@@ -218,10 +232,18 @@ final class ManagerViewModel: ObservableObject {
     /// updater refuses to replace anything.
     let appVersion: String? = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
 
-    /// Set when a newer signed release exists. Byori only reports it — nothing
-    /// is downloaded or installed until the user asks, because this app owns
-    /// live agent sessions that a surprise relaunch would cut off.
-    @Published private(set) var availableUpdate: AvailableUpdate?
+    /// What the last release check found. Byori only reports it — nothing is
+    /// downloaded or installed until the user asks, because this app owns live
+    /// agent sessions that a surprise relaunch would cut off.
+    ///
+    /// `unknown` and `upToDate` are kept apart because the button says different
+    /// things: having failed to reach GitHub is not the same as being current.
+    @Published private(set) var updateAvailability: AppUpdateAvailability = .unknown
+
+    var availableUpdate: AvailableUpdate? {
+        if case let .available(update) = updateAvailability { return update }
+        return nil
+    }
 
     let service: ManagerService
     private var operationTask: Task<Void, Never>?
@@ -261,10 +283,10 @@ final class ManagerViewModel: ObservableObject {
     private func checkForUpdateQuietly() async {
         guard let status = try? await service.checkForAppUpdate() else { return }
         switch status {
-        case .upToDate:
-            availableUpdate = nil
+        case let .upToDate(version):
+            updateAvailability = .upToDate(version)
         case let .available(update):
-            availableUpdate = update
+            updateAvailability = .available(update)
         }
     }
 
@@ -431,6 +453,8 @@ final class ManagerViewModel: ObservableObject {
 
         do {
             let result: OperationResult
+            // Only an update that actually staged a new bundle may quit the app.
+            var relaunchForUpdate = false
             switch action {
             case let .installCLI(kind):
                 result = try await service.installOrUpdateCLI(kind)
@@ -439,11 +463,16 @@ final class ManagerViewModel: ObservableObject {
             case .updateByori:
                 result = try await service.updateByoriOnline()
             case .updateApp:
-                result = try await service.updateApp { [weak self] stage in
+                let outcome = try await service.updateApp { [weak self] stage in
                     Task { @MainActor in
                         self?.currentOperation = stage.message
                         self?.operationProgress = stage.fraction
                     }
+                }
+                result = outcome.result
+                relaunchForUpdate = outcome.requiresRelaunch
+                if case let .alreadyCurrent(version) = outcome {
+                    updateAvailability = .upToDate(version)
                 }
             case .startByori:
                 result = try await service.startService()
@@ -455,10 +484,10 @@ final class ManagerViewModel: ObservableObject {
                 result = try await service.connectMCP(kind)
             case let .disconnectMCP(kind):
                 result = try await service.disconnectMCP(kind)
-            case let .syncSkill(kind):
-                result = try await service.syncSkill(kind)
-            case let .removeSkill(kind):
-                result = try await service.removeSkill(kind)
+            case let .syncSkill(kind, skill):
+                result = try await service.syncSkill(kind, skill: skill)
+            case let .removeSkill(kind, skill):
+                result = try await service.removeSkill(kind, skill: skill)
             }
             // A returned OperationResult is the service's commit boundary.
             // Do not reinterpret a late Cancel as though the mutation failed.
@@ -469,7 +498,7 @@ final class ManagerViewModel: ObservableObject {
                 detail: result.detail,
                 level: .success
             )
-            if action == .updateApp {
+            if relaunchForUpdate {
                 // The helper is already waiting on this process: it cannot
                 // replace the bundle until the app it belongs to has exited.
                 //

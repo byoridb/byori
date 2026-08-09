@@ -1,10 +1,12 @@
 **English** | [한국어](../docs/ko/adapters.md)
 
-# Agent Memory — Use ByoriDB as Long-term Memory for Coding Agents
+# Agent Skills — Use ByoriDB Across Coding-Agent Workflows
 
-This directory contains the **reference copies of agent-side assets** that implement
-the design in [the memory ontology](../docs/memory-ontology.md). The installer copies
-the Claude/Codex skill automatically to `~/.claude/` and, when the `codex` CLI is
+This directory contains the **reference copies of agent-side assets** that connect coding
+workflows to ByoriDB. The memory skill implements the design in
+[the memory ontology](../docs/memory-ontology.md), while the design skill applies that
+continuity to product and UX/UI work. The installer copies
+the Claude/Codex skills automatically to `~/.claude/` and, when the `codex` CLI is
 available, to `~/.agents/skills/`. The NaraeClaw asset is a manual reference adapter;
 the installer, Byori macOS app, and DMG do not configure or install it.
 
@@ -25,6 +27,7 @@ within that Project.
 | File | Live location | Purpose |
 |---|---|---|
 | `claude/skills/byoridb-memory/SKILL.md` | `~/.claude/skills/byoridb-memory/SKILL.md` and `~/.agents/skills/byoridb-memory/SKILL.md` | Shared Claude/Codex memory skill: notes + typed wiki, structured tools, causal capture, and checkpoint discipline |
+| `claude/skills/byori-design/` | `~/.claude/skills/byori-design/` and `~/.agents/skills/byori-design/` | Shared Claude/Codex product-design workflow: repository artifacts + durable Byori context |
 | `claude/hooks.snippet.json` | The `hooks` key in `~/.claude/settings.json` | Two checkpoint automation hooks (SessionStart recall and git commit capture reminders) |
 | `naraeclaw/skills/byoridb-memory/SKILL.md` | Host-selected manual location | Reference policy for an MCP-capable NaraeClaw host using the reduced raw-query surface; not auto-installed |
 
@@ -46,6 +49,8 @@ For a skill-only development copy, without hook wiring:
 ```bash
 mkdir -p ~/.claude/skills/byoridb-memory
 cp adapters/claude/skills/byoridb-memory/SKILL.md ~/.claude/skills/byoridb-memory/
+mkdir -p ~/.claude/skills/byori-design
+cp -R adapters/claude/skills/byori-design/. ~/.claude/skills/byori-design/
 ```
 
 The installer's `--with-hooks` option appends without duplicating existing entries and
@@ -62,6 +67,9 @@ codex mcp add byoridb -- "$HOME/.byoridb/bin/run-mcp.sh"
 mkdir -p "$HOME/.agents/skills/byoridb-memory"
 cp adapters/claude/skills/byoridb-memory/SKILL.md \
   "$HOME/.agents/skills/byoridb-memory/SKILL.md"
+mkdir -p "$HOME/.agents/skills/byori-design"
+cp -R adapters/claude/skills/byori-design/. \
+  "$HOME/.agents/skills/byori-design/"
 ```
 
 The current hook snippet is specific to Claude Code.

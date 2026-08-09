@@ -369,6 +369,10 @@ public enum WorkspaceError: LocalizedError, Equatable, Sendable {
     case gitCommandFailed(String)
     case persistence(String)
     case inspection(String)
+    case fileNotEditable(String)
+    /// The file changed underneath an open editor. Agents write these trees
+    /// while the user has them open, so this is an ordinary race, not a bug.
+    case fileChangedOnDisk(String)
 
     public var errorDescription: String? {
         switch self {
@@ -392,6 +396,9 @@ public enum WorkspaceError: LocalizedError, Equatable, Sendable {
         case let .gitCommandFailed(message): return "Git inspection failed: \(message)"
         case let .persistence(message): return "Workspace persistence failed: \(message)"
         case let .inspection(message): return "Workspace inspection failed: \(message)"
+        case let .fileNotEditable(message): return "File cannot be edited here: \(message)"
+        case let .fileChangedOnDisk(path):
+            return "\(path) changed on disk since it was opened. Reload it before saving."
         }
     }
 }

@@ -52,10 +52,35 @@ final class ManagerPathsTests: XCTestCase {
         XCTAssertFalse(try installer.remove(destination: destination, backupRoot: backups))
     }
 
-    func testPathsUseCurrentCodexSkillLocation() {
+    func testPathsUseCurrentCodexSkillLocation() throws {
         let paths = ManagerPaths(home: temporaryRoot, runtimeRoot: temporaryRoot)
-        XCTAssertTrue(paths.codexSkill.path.hasSuffix("/.agents/skills/byoridb-memory/SKILL.md"))
+        let codexSkill = try XCTUnwrap(paths.codexSkill)
+        XCTAssertTrue(codexSkill.path.hasSuffix("/.agents/skills/byoridb-memory/SKILL.md"))
         XCTAssertTrue(paths.legacyCodexSkill.path.hasSuffix("/.codex/skills/byoridb-memory/SKILL.md"))
+        XCTAssertTrue(paths.skillSource(.byoriDesign).path.hasSuffix(
+            "/adapters/claude/skills/byori-design/SKILL.md"
+        ))
+        let codexDesign = try XCTUnwrap(paths.skillDestination(.byoriDesign, for: .codex))
+        XCTAssertTrue(codexDesign.path.hasSuffix("/.agents/skills/byori-design/SKILL.md"))
+        XCTAssertTrue(paths.legacyCodexSkill(.byoriDesign).path.hasSuffix(
+            "/.codex/skills/byori-design/SKILL.md"
+        ))
+    }
+
+    /// A CLI Byori only launches has no skills directory. Without this, a
+    /// catalog edit could aim a skill write at a layout that was never checked.
+    func testLaunchOnlyCLIsHaveNoSkillDirectory() {
+        let paths = ManagerPaths(home: temporaryRoot, runtimeRoot: temporaryRoot)
+
+        for kind in AgentKind.allCases where !kind.descriptor.managesSkill {
+            for skill in ManagedSkill.allCases {
+                XCTAssertNil(
+                    paths.skillDirectory(skill, for: kind),
+                    "\(kind.rawValue) reported a \(skill.rawValue) directory"
+                )
+            }
+        }
+        XCTAssertNotNil(paths.skillDirectory(.byoridbMemory, for: .claude))
     }
 
     func testKnowledgeGraphLayoutsAreDeterministicCompleteAndFinite() {

@@ -109,8 +109,11 @@ public struct AgentProviderDescriptor: Identifiable, Equatable, Sendable {
     public let systemImage: String
     public let install: AgentInstallMethod?
     public let mcp: AgentMCPCommandStyle?
-    /// Path, relative to the user's home, where this CLI reads skills from.
-    public let skillRelativePath: String?
+    /// Directory, relative to the user's home, this CLI reads skills from.
+    ///
+    /// The root rather than one skill's file: Byori manages more than one skill,
+    /// and a per-skill path would have to be repeated for each of them.
+    public let skillsRootRelativePath: String?
     public let supportsModelFlag: Bool
     public let launchArguments: AgentLaunchArguments
     /// Said in the UI wherever a capability is missing, so "unsupported" never
@@ -118,7 +121,7 @@ public struct AgentProviderDescriptor: Identifiable, Equatable, Sendable {
     public let limitations: String?
 
     public var managesMCP: Bool { mcp != nil }
-    public var managesSkill: Bool { skillRelativePath != nil }
+    public var managesSkill: Bool { skillsRootRelativePath != nil }
     public var canInstall: Bool { install != nil }
 
     /// True when Byori drives every integration it has. Used by the UI to sort
@@ -132,7 +135,7 @@ public struct AgentProviderDescriptor: Identifiable, Equatable, Sendable {
         systemImage: String,
         install: AgentInstallMethod?,
         mcp: AgentMCPCommandStyle?,
-        skillRelativePath: String?,
+        skillsRootRelativePath: String?,
         supportsModelFlag: Bool,
         launchArguments: AgentLaunchArguments,
         limitations: String?
@@ -143,7 +146,7 @@ public struct AgentProviderDescriptor: Identifiable, Equatable, Sendable {
         self.systemImage = systemImage
         self.install = install
         self.mcp = mcp
-        self.skillRelativePath = skillRelativePath
+        self.skillsRootRelativePath = skillsRootRelativePath
         self.supportsModelFlag = supportsModelFlag
         self.launchArguments = launchArguments
         self.limitations = limitations
@@ -177,7 +180,7 @@ public enum AgentProviderCatalog {
                     shell: "/bin/bash"
                 ),
                 mcp: .claude,
-                skillRelativePath: ".claude/skills/byoridb-memory/SKILL.md",
+                skillsRootRelativePath: ".claude/skills",
                 supportsModelFlag: true,
                 launchArguments: .claudeSessionID,
                 limitations: nil
@@ -193,7 +196,7 @@ public enum AgentProviderCatalog {
                     shell: "/bin/sh"
                 ),
                 mcp: .codex,
-                skillRelativePath: ".agents/skills/byoridb-memory/SKILL.md",
+                skillsRootRelativePath: ".agents/skills",
                 supportsModelFlag: true,
                 launchArguments: .codexWorkingDirectory,
                 limitations: nil
@@ -211,7 +214,7 @@ public enum AgentProviderCatalog {
                 mcp: .gemini,
                 // It reads GEMINI.md context files, not a skills directory of
                 // the shape Byori installs.
-                skillRelativePath: nil,
+                skillsRootRelativePath: nil,
                 supportsModelFlag: true,
                 launchArguments: .none,
                 limitations: "Byori does not install this CLI or sync a Skill to it. MCP is connected."
@@ -225,7 +228,7 @@ public enum AgentProviderCatalog {
                 install: nil,
                 // Left unset rather than guessed: see AgentMCPCommandStyle.
                 mcp: nil,
-                skillRelativePath: nil,
+                skillsRootRelativePath: nil,
                 supportsModelFlag: false,
                 launchArguments: .none,
                 limitations: "Byori launches this CLI only. Install it and configure MCP yourself."
@@ -238,7 +241,7 @@ public enum AgentProviderCatalog {
                 systemImage: "terminal",
                 install: nil,
                 mcp: nil,
-                skillRelativePath: nil,
+                skillsRootRelativePath: nil,
                 supportsModelFlag: false,
                 launchArguments: .none,
                 limitations: "Byori launches this CLI only. Install it and configure MCP yourself."

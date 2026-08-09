@@ -43,8 +43,19 @@ enum ByoriManagerSelfTest {
         }
 
         let paths = ManagerPaths(home: root.appendingPathComponent("home"), runtimeRoot: root)
-        guard paths.codexSkill.path.hasSuffix("/.agents/skills/byoridb-memory/SKILL.md") else {
+        guard let codexSkill = paths.codexSkill,
+              codexSkill.path.hasSuffix("/.agents/skills/byoridb-memory/SKILL.md") else {
             throw Failure("Codex skill path is not the current official location")
+        }
+        guard let codexDesignSkill = paths.skillDestination(.byoriDesign, for: .codex),
+              codexDesignSkill.path.hasSuffix("/.agents/skills/byori-design/SKILL.md") else {
+            throw Failure("Codex design skill path is not the current official location")
+        }
+        // A launch-only CLI has no skills directory at all. Asserting the nil
+        // keeps a future catalog edit from silently pointing a skill write at a
+        // path that was never verified.
+        guard paths.skillDirectory(.byoridbMemory, for: .opencode) == nil else {
+            throw Failure("a launch-only CLI must not report a skill directory")
         }
 
         let claudeInventory = MCPInventoryParser.claudeServers(fromText: """

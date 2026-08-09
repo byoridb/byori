@@ -333,7 +333,7 @@ public struct UserSkillScanner: @unchecked Sendable {
     private struct Root {
         let url: URL
         let origin: UserSkillOrigin
-        let managedSkillFile: URL?
+        let managedSkillFiles: Set<URL>
     }
 
     private let home: URL
@@ -410,7 +410,9 @@ public struct UserSkillScanner: @unchecked Sendable {
             return [Root(
                 url: root,
                 origin: .claudeUser,
-                managedSkillFile: root.appendingPathComponent("byoridb-memory/SKILL.md")
+                managedSkillFiles: Set(ManagedSkill.allCases.map {
+                    root.appendingPathComponent("\($0.rawValue)/SKILL.md").standardizedFileURL
+                })
             )]
         case .codex:
             let shared = home.appendingPathComponent(".agents/skills", isDirectory: true)
@@ -419,9 +421,17 @@ public struct UserSkillScanner: @unchecked Sendable {
                 Root(
                     url: shared,
                     origin: .codexShared,
-                    managedSkillFile: shared.appendingPathComponent("byoridb-memory/SKILL.md")
+                    managedSkillFiles: Set(ManagedSkill.allCases.map {
+                        shared.appendingPathComponent("\($0.rawValue)/SKILL.md").standardizedFileURL
+                    })
                 ),
-                Root(url: legacy, origin: .codexLegacy, managedSkillFile: nil),
+                Root(
+                    url: legacy,
+                    origin: .codexLegacy,
+                    managedSkillFiles: Set(ManagedSkill.allCases.map {
+                        legacy.appendingPathComponent("\($0.rawValue)/SKILL.md").standardizedFileURL
+                    })
+                ),
             ]
         case .gemini, .cursorAgent, .opencode:
             // These CLIs do not read a Byori-managed skills directory, so there
@@ -453,7 +463,7 @@ public struct UserSkillScanner: @unchecked Sendable {
             directoryPath: directory.path,
             skillFilePath: skillFile.path,
             origin: root.origin,
-            isByoriManaged: root.managedSkillFile?.standardizedFileURL == skillFile.standardizedFileURL
+            isByoriManaged: root.managedSkillFiles.contains(skillFile.standardizedFileURL)
         )
     }
 

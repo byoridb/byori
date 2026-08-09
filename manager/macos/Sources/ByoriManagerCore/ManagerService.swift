@@ -169,21 +169,25 @@ public actor ManagerService {
         try await makeAppUpdater().check()
     }
 
-    /// Verifies a newer release and hands the swap to a detached helper. The
-    /// caller must quit the app once this returns; the helper waits for the
-    /// process to exit before replacing the bundle and reopening it.
-    public func updateApp(progress: AppUpdateProgress? = nil) async throws -> OperationResult {
+    /// Verifies a newer release and hands the swap to a detached helper. Only
+    /// `.installed` obliges the caller to quit: the helper waits for the process
+    /// to exit before replacing the bundle and reopening it. Running this while
+    /// already current is a no-op, not a failure, so it reports `.alreadyCurrent`
+    /// rather than throwing — the caller renders thrown errors as failures.
+    public func updateApp(progress: AppUpdateProgress? = nil) async throws -> AppUpdateOutcome {
         let updater = try makeAppUpdater()
         progress?(.checking)
-        guard case let .available(update) = try await updater.check() else {
-            throw ManagerError.prerequisite("이미 최신 버전입니다.")
-        }
-        let staged = try await updater.stage(update, progress: progress)
-        do {
-            return try await updater.apply(staged, progress: progress)
-        } catch {
-            await updater.discard(staged)
-            throw error
+        switch try await updater.check() {
+        case let .upToDate(version):
+            return .alreadyCurrent(version)
+        case let .available(update):
+            let staged = try await updater.stage(update, progress: progress)
+            do {
+                return .installed(try await updater.apply(staged, progress: progress))
+            } catch {
+                await updater.discard(staged)
+                throw error
+            }
         }
     }
 
@@ -386,46 +390,70 @@ public actor ManagerService {
         }
     }
 
-    public func syncSkill(_ kind: AgentKind) throws -> OperationResult {
-        guard fileManager.fileExists(atPath: paths.skillSource.path) else {
-            throw ManagerError.missingResource(paths.skillSource.path)
-        }
-        guard let destination = skillDestination(kind) else {
-            throw ManagerError.prerequisite(
-                "\(kind.displayName)는 Byori가 관리하는 Skill 디렉터리를 사용하지 않습니다."
+    public func syncSkill(
+        _ kind: AgentKind,
+        skill: ManagedSkill = .byoridbMemory
+    ) throws -> OperationResult {
+        let directory = try requireSkillDirectory(skill, for: kind)
+        let assets = skill.assetPaths.map { assetPath in
+            (
+                source: paths.skillSource(skill, assetPath: assetPath),
+                destination: directory.appendingPathComponent(assetPath),
+                legacy: paths.legacyCodexSkill(skill, assetPath: assetPath)
             )
         }
-        let changed = try files.install(
-            source: paths.skillSource,
-            destination: destination,
-            backupRoot: paths.backups
-        )
-        if kind == .codex, fileManager.fileExists(atPath: paths.legacyCodexSkill.path) {
-            _ = try files.remove(destination: paths.legacyCodexSkill, backupRoot: paths.backups)
+        for asset in assets where !fileManager.fileExists(atPath: asset.source.path) {
+            throw ManagerError.missingResource(asset.source.path)
+        }
+
+        var changed = false
+        for asset in assets {
+            if try files.install(
+                source: asset.source,
+                destination: asset.destination,
+                backupRoot: paths.backups
+            ) {
+                changed = true
+            }
+            if kind == .codex, fileManager.fileExists(atPath: asset.legacy.path) {
+                _ = try files.remove(destination: asset.legacy, backupRoot: paths.backups)
+            }
         }
         return OperationResult(
             summary: changed
-                ? "\(kind.displayName) Skill 설치 완료"
-                : "\(kind.displayName) Skill이 이미 최신입니다.",
-            detail: destination.path
+                ? "\(kind.displayName) \(skill.rawValue) Skill 설치 완료"
+                : "\(kind.displayName) \(skill.rawValue) Skill이 이미 최신입니다.",
+            detail: directory.path
         )
     }
 
-    public func removeSkill(_ kind: AgentKind) throws -> OperationResult {
-        let removed = try skillDestination(kind).map {
-            try files.remove(destination: $0, backupRoot: paths.backups)
-        } ?? false
+    public func removeSkill(
+        _ kind: AgentKind,
+        skill: ManagedSkill = .byoridbMemory
+    ) throws -> OperationResult {
+        let directory = try requireSkillDirectory(skill, for: kind)
+        var removed = false
         var removedLegacy = false
-        if kind == .codex {
-            removedLegacy = try files.remove(
-                destination: paths.legacyCodexSkill,
+        for assetPath in skill.assetPaths.reversed() {
+            if try files.remove(
+                destination: directory.appendingPathComponent(assetPath),
                 backupRoot: paths.backups
-            )
+            ) {
+                removed = true
+            }
+            if kind == .codex {
+                if try files.remove(
+                    destination: paths.legacyCodexSkill(skill, assetPath: assetPath),
+                    backupRoot: paths.backups
+                ) {
+                    removedLegacy = true
+                }
+            }
         }
         return OperationResult(
             summary: removed || removedLegacy
-                ? "\(kind.displayName) Skill 제거 완료"
-                : "제거할 \(kind.displayName) Skill이 없습니다.",
+                ? "\(kind.displayName) \(skill.rawValue) Skill 제거 완료"
+                : "제거할 \(kind.displayName) \(skill.rawValue) Skill이 없습니다.",
             detail: "기존 파일은 변경 전에 \(paths.backups.path)에 백업됩니다."
         )
     }
@@ -529,10 +557,18 @@ public actor ManagerService {
         "gui/\(getuid())/\(paths.serviceLabel)"
     }
 
-    private func skillDestination(_ kind: AgentKind) -> URL? {
-        kind.descriptor.skillRelativePath.map {
-            paths.home.appendingPathComponent($0)
+    /// Refuses a CLI Byori installs no skill into, rather than aiming a write at
+    /// a guessed directory for a skill layout that was never verified.
+    private func requireSkillDirectory(
+        _ skill: ManagedSkill,
+        for kind: AgentKind
+    ) throws -> URL {
+        guard let directory = paths.skillDirectory(skill, for: kind) else {
+            throw ManagerError.prerequisite(
+                "\(kind.displayName)는 Byori가 관리하는 Skill 디렉터리를 사용하지 않습니다."
+            )
         }
+        return directory
     }
 
     /// The file backed up before an MCP registration is rewritten. Only the CLIs
@@ -601,7 +637,7 @@ public actor ManagerService {
                 executablePath: nil,
                 version: nil,
                 mcpConnected: false,
-                skillState: skillState(kind)
+                skillStates: skillStates(kind)
             )
         }
         let versionResult = await runner.run(CommandSpec(
@@ -615,7 +651,7 @@ public actor ManagerService {
             executablePath: cli.path,
             version: versionResult.succeeded ? versionResult.output.components(separatedBy: .newlines).first : nil,
             mcpConnected: await isMCPConnected(kind, cli: cli),
-            skillState: skillState(kind)
+            skillStates: skillStates(kind)
         )
     }
 
@@ -707,14 +743,33 @@ public actor ManagerService {
         return (.ready, summaries)
     }
 
-    private func skillState(_ kind: AgentKind) -> ManagedFileState {
+    private func skillStates(_ kind: AgentKind) -> [ManagedSkill: ManagedFileState] {
+        Dictionary(uniqueKeysWithValues: ManagedSkill.allCases.map { skill in
+            (skill, skillState(kind, skill: skill))
+        })
+    }
+
+    private func skillState(_ kind: AgentKind, skill: ManagedSkill) -> ManagedFileState {
         // A CLI Byori installs no Skill into is permanently "missing" rather
         // than pretending to track one.
-        guard let destination = skillDestination(kind) else { return .missing }
-        let state = files.state(source: paths.skillSource, destination: destination)
+        guard let directory = paths.skillDirectory(skill, for: kind) else { return .missing }
+        let states = skill.assetPaths.map { assetPath in
+            files.state(
+                source: paths.skillSource(skill, assetPath: assetPath),
+                destination: directory.appendingPathComponent(assetPath)
+            )
+        }
+        let state: ManagedFileState
+        if states.contains(.missing) {
+            state = .missing
+        } else if states.contains(.outdated) {
+            state = .outdated
+        } else {
+            state = .current
+        }
         if kind == .codex,
            state == .missing,
-           fileManager.fileExists(atPath: paths.legacyCodexSkill.path) {
+           fileManager.fileExists(atPath: paths.legacyCodexSkill(skill).path) {
             return .legacy
         }
         return state
