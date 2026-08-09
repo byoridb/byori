@@ -45,11 +45,35 @@ jobs:
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          # A Keychain Access .p12 export carries the leaf and its private key
+          # but not the issuing intermediate. Without a chain to anchor, the
+          # import succeeds and codesign still reports "no identity found", so
+          # bring Apple's Developer ID intermediates along. Both generations are
+          # imported because a reissued certificate may move to G2.
+          for authority in DeveloperIDCA DeveloperIDG2CA; do
+            authority_path="$RUNNER_TEMP/$authority.cer"
+            curl -fsSL "https://www.apple.com/certificateauthority/$authority.cer" \
+              -o "$authority_path"
+            security import "$authority_path" -k "$KEYCHAIN_PATH" -T /usr/bin/codesign
+          done
           security import "$CERTIFICATE_PATH" -k "$KEYCHAIN_PATH" \
             -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s \
             -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          # Prepend rather than replace: -s discards the whole search list, and
+          # the evicted keychains are where the trust anchors live.
+          security list-keychains -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychains -d user | sed -e 's/^[[:space:]]*//' -e 's/"//g')
+          # Fails the step here, with a readable reason, rather than several
+          # minutes later inside the build with codesign's opaque message.
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | tee "$RUNNER_TEMP/identities"
+          grep -q "1 valid identities found" "$RUNNER_TEMP/identities" \
+            || { echo "::error::expected exactly one codesigning identity in the temporary keychain"; exit 1; }
+          # MACOS_SIGN_IDENTITY is hand-entered, and a mismatch otherwise surfaces
+          # minutes later as codesign's "no identity found". Note that a correct
+          # secret also masks the identity name in the diagnostic above.
+          grep -qF "$SIGN_IDENTITY" "$RUNNER_TEMP/identities" \
+            || { echo "::error::MACOS_SIGN_IDENTITY does not name the identity in the certificate"; exit 1; }
 
       - name: Test Byori Swift core
         run: |
