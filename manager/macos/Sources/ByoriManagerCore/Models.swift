@@ -1,19 +1,18 @@
 import Foundation
 
+/// The coding CLIs Byori ships knowledge of.
+///
+/// What each one supports lives in `AgentProviderCatalog`, not here: being in
+/// this list means Byori can detect and launch the CLI, not that every
+/// integration applies to it.
 public enum AgentKind: String, CaseIterable, Identifiable, Sendable {
     case claude
     case codex
+    case gemini
+    case cursorAgent = "cursor-agent"
+    case opencode
 
     public var id: String { rawValue }
-
-    public var displayName: String {
-        switch self {
-        case .claude: return "Claude Code"
-        case .codex: return "Codex"
-        }
-    }
-
-    public var executableName: String { rawValue }
 }
 
 public enum ManagedFileState: String, Equatable, Sendable {
@@ -28,6 +27,15 @@ public enum ManagedSkill: String, CaseIterable, Identifiable, Sendable {
     case byoriDesign = "byori-design"
 
     public var id: String { rawValue }
+
+    /// Names the skill in the UI. Kept short because it always appears next to
+    /// the CLI's own name.
+    public var displayName: String {
+        switch self {
+        case .byoridbMemory: return "Memory"
+        case .byoriDesign: return "Design"
+        }
+    }
 
     public var assetPaths: [String] {
         switch self {

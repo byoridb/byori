@@ -31,62 +31,65 @@ enum AppUpdateAvailability: Equatable {
     case available(AvailableUpdate)
 }
 
-enum ManagerAction: String, Identifiable {
-    case installClaude
-    case installCodex
+/// A manager operation. The per-agent cases carry their `AgentKind`, and the
+/// skill cases their `ManagedSkill`, instead of existing once per combination:
+/// with five providers and more than one skill, a flat list meant every new CLI
+/// or skill silently had no way to be installed, connected or synced from
+/// Settings.
+enum ManagerAction: Identifiable, Equatable {
+    case installCLI(AgentKind)
+    case connectMCP(AgentKind)
+    case disconnectMCP(AgentKind)
+    case syncSkill(AgentKind, ManagedSkill)
+    case removeSkill(AgentKind, ManagedSkill)
     case installByori
     case updateByori
     case updateApp
     case startByori
     case stopByori
     case restartByori
-    case connectClaude
-    case connectCodex
-    case disconnectClaude
-    case disconnectCodex
-    case syncClaudeSkill
-    case syncCodexSkill
-    case syncClaudeDesignSkill
-    case syncCodexDesignSkill
-    case removeClaudeSkill
-    case removeCodexSkill
-    case removeClaudeDesignSkill
-    case removeCodexDesignSkill
 
-    var id: String { rawValue }
+    var id: String {
+        switch self {
+        case let .installCLI(kind): return "install-cli:\(kind.rawValue)"
+        case let .connectMCP(kind): return "connect-mcp:\(kind.rawValue)"
+        case let .disconnectMCP(kind): return "disconnect-mcp:\(kind.rawValue)"
+        case let .syncSkill(kind, skill): return "sync-skill:\(kind.rawValue):\(skill.rawValue)"
+        case let .removeSkill(kind, skill): return "remove-skill:\(kind.rawValue):\(skill.rawValue)"
+        case .installByori: return "install-byori"
+        case .updateByori: return "update-byori"
+        case .updateApp: return "update-app"
+        case .startByori: return "start-byori"
+        case .stopByori: return "stop-byori"
+        case .restartByori: return "restart-byori"
+        }
+    }
 
     var confirmationTitle: String {
         switch self {
-        case .installClaude: return "Claude Code를 설치하거나 업데이트할까요?"
-        case .installCodex: return "Codex를 설치하거나 업데이트할까요?"
+        case let .installCLI(kind): return "\(kind.displayName)를 설치하거나 업데이트할까요?"
+        case let .disconnectMCP(kind): return "\(kind.displayName)에서 Byori MCP 연결을 해제할까요?"
+        case let .removeSkill(kind, skill):
+            return "\(kind.displayName)에서 \(skill.rawValue) Skill을 제거할까요?"
         case .installByori: return "번들 자산으로 ByoriDB를 설치할까요?"
         case .updateByori: return "최신 ByoriDB 설치기를 내려받아 업데이트할까요?"
         case .updateApp: return "Byori 앱을 최신 버전으로 업데이트할까요?"
         case .stopByori: return "ByoriDB 서비스를 중지할까요?"
-        case .disconnectClaude: return "Claude Code에서 Byori MCP 연결을 해제할까요?"
-        case .disconnectCodex: return "Codex에서 Byori MCP 연결을 해제할까요?"
-        case .removeClaudeSkill: return "Claude Code에서 byoridb-memory Skill을 제거할까요?"
-        case .removeCodexSkill: return "Codex에서 byoridb-memory Skill을 제거할까요?"
-        case .removeClaudeDesignSkill: return "Claude Code에서 byori-design Skill을 제거할까요?"
-        case .removeCodexDesignSkill: return "Codex에서 byori-design Skill을 제거할까요?"
         default: return "이 작업을 실행할까요?"
         }
     }
 
     var confirmationDetail: String {
         switch self {
-        case .installClaude:
-            return "Anthropic의 공식 설치 스크립트를 다운로드해 실행합니다. 로그인 정보는 Byori가 다루지 않습니다."
-        case .installCodex:
-            return "OpenAI의 공식 설치 스크립트를 다운로드해 실행합니다. 로그인 정보는 Byori가 다루지 않습니다."
+        case let .installCLI(kind):
+            return "\(kind.displayName)의 공식 설치 스크립트를 다운로드해 실행합니다. 로그인 정보는 Byori가 다루지 않습니다."
         case .updateByori:
             return "GitHub의 최신 Byori 릴리스 설치기를 실행합니다. 기존 데이터와 root 비밀번호는 보존됩니다."
         case .updateApp:
             return "최신 릴리스의 디스크 이미지를 내려받아 Apple 공증과 개발자 서명을 확인한 뒤 교체합니다. 확인에 실패하면 설치하지 않습니다. 교체를 위해 앱이 한 번 종료되었다가 다시 열립니다."
         case .installByori:
             return "앱에 포함된 MCP·Skill·서비스 자산을 사용하고, 호환되는 ByoriDB 엔진은 GitHub 릴리스에서 다운로드합니다. 기존 runtime은 먼저 백업합니다."
-        case .removeClaudeSkill, .removeCodexSkill,
-             .removeClaudeDesignSkill, .removeCodexDesignSkill:
+        case .removeSkill:
             return "기존 파일은 ~/.byori-manager/backups에 백업한 뒤 제거합니다."
         default:
             return "완료 후 상태를 다시 검사합니다."
@@ -95,9 +98,7 @@ enum ManagerAction: String, Identifiable {
 
     var isDestructive: Bool {
         switch self {
-        case .stopByori, .disconnectClaude, .disconnectCodex,
-             .removeClaudeSkill, .removeCodexSkill,
-             .removeClaudeDesignSkill, .removeCodexDesignSkill:
+        case .stopByori, .disconnectMCP, .removeSkill:
             return true
         default:
             return false
@@ -106,26 +107,19 @@ enum ManagerAction: String, Identifiable {
 
     var progressTitle: String {
         switch self {
-        case .installClaude: return "Claude Code 설치·업데이트 중…"
-        case .installCodex: return "Codex 설치·업데이트 중…"
+        case let .installCLI(kind): return "\(kind.displayName) 설치·업데이트 중…"
+        case let .connectMCP(kind): return "\(kind.displayName) MCP 연결 중…"
+        case let .disconnectMCP(kind): return "\(kind.displayName) MCP 연결 해제 중…"
+        case let .syncSkill(kind, skill):
+            return "\(kind.displayName) \(skill.displayName) Skill 동기화 중…"
+        case let .removeSkill(kind, skill):
+            return "\(kind.displayName) \(skill.displayName) Skill 제거 중…"
         case .installByori: return "ByoriDB 설치·복구 중…"
         case .updateByori: return "ByoriDB 업데이트 중…"
         case .updateApp: return "앱 업데이트 확인·검증 중…"
         case .startByori: return "ByoriDB 시작 중…"
         case .stopByori: return "ByoriDB 중지 중…"
         case .restartByori: return "ByoriDB 재시작 중…"
-        case .connectClaude: return "Claude Code MCP 연결 중…"
-        case .connectCodex: return "Codex MCP 연결 중…"
-        case .disconnectClaude: return "Claude Code MCP 연결 해제 중…"
-        case .disconnectCodex: return "Codex MCP 연결 해제 중…"
-        case .syncClaudeSkill: return "Claude Code Memory Skill 동기화 중…"
-        case .syncCodexSkill: return "Codex Memory Skill 동기화 중…"
-        case .syncClaudeDesignSkill: return "Claude Code Design Skill 동기화 중…"
-        case .syncCodexDesignSkill: return "Codex Design Skill 동기화 중…"
-        case .removeClaudeSkill: return "Claude Code Memory Skill 제거 중…"
-        case .removeCodexSkill: return "Codex Memory Skill 제거 중…"
-        case .removeClaudeDesignSkill: return "Claude Code Design Skill 제거 중…"
-        case .removeCodexDesignSkill: return "Codex Design Skill 제거 중…"
         }
     }
 
@@ -462,10 +456,8 @@ final class ManagerViewModel: ObservableObject {
             // Only an update that actually staged a new bundle may quit the app.
             var relaunchForUpdate = false
             switch action {
-            case .installClaude:
-                result = try await service.installOrUpdateCLI(.claude)
-            case .installCodex:
-                result = try await service.installOrUpdateCLI(.codex)
+            case let .installCLI(kind):
+                result = try await service.installOrUpdateCLI(kind)
             case .installByori:
                 result = try await service.installByoriBundled()
             case .updateByori:
@@ -488,30 +480,14 @@ final class ManagerViewModel: ObservableObject {
                 result = try await service.stopService()
             case .restartByori:
                 result = try await service.restartService()
-            case .connectClaude:
-                result = try await service.connectMCP(.claude)
-            case .connectCodex:
-                result = try await service.connectMCP(.codex)
-            case .disconnectClaude:
-                result = try await service.disconnectMCP(.claude)
-            case .disconnectCodex:
-                result = try await service.disconnectMCP(.codex)
-            case .syncClaudeSkill:
-                result = try await service.syncSkill(.claude, skill: .byoridbMemory)
-            case .syncCodexSkill:
-                result = try await service.syncSkill(.codex, skill: .byoridbMemory)
-            case .syncClaudeDesignSkill:
-                result = try await service.syncSkill(.claude, skill: .byoriDesign)
-            case .syncCodexDesignSkill:
-                result = try await service.syncSkill(.codex, skill: .byoriDesign)
-            case .removeClaudeSkill:
-                result = try await service.removeSkill(.claude, skill: .byoridbMemory)
-            case .removeCodexSkill:
-                result = try await service.removeSkill(.codex, skill: .byoridbMemory)
-            case .removeClaudeDesignSkill:
-                result = try await service.removeSkill(.claude, skill: .byoriDesign)
-            case .removeCodexDesignSkill:
-                result = try await service.removeSkill(.codex, skill: .byoriDesign)
+            case let .connectMCP(kind):
+                result = try await service.connectMCP(kind)
+            case let .disconnectMCP(kind):
+                result = try await service.disconnectMCP(kind)
+            case let .syncSkill(kind, skill):
+                result = try await service.syncSkill(kind, skill: skill)
+            case let .removeSkill(kind, skill):
+                result = try await service.removeSkill(kind, skill: skill)
             }
             // A returned OperationResult is the service's commit boundary.
             // Do not reinterpret a late Cancel as though the mutation failed.

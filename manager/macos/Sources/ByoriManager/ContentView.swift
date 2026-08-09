@@ -591,18 +591,20 @@ private struct AgentInventoryPane: View {
     let status: AgentStatus?
     let inventory: AgentIntegrationInventory?
 
-    private var installAction: ManagerAction { kind == .claude ? .installClaude : .installCodex }
-    private var connectAction: ManagerAction { kind == .claude ? .connectClaude : .connectCodex }
-    private var disconnectAction: ManagerAction { kind == .claude ? .disconnectClaude : .disconnectCodex }
+    private var descriptor: AgentProviderDescriptor { kind.descriptor }
+    private var installAction: ManagerAction { .installCLI(kind) }
+    private var connectAction: ManagerAction { .connectMCP(kind) }
+    private var disconnectAction: ManagerAction { .disconnectMCP(kind) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 12) {
-                Image(systemName: kind == .claude ? "sparkles" : "terminal")
+                Image(systemName: descriptor.systemImage)
                     .font(.title2)
                     .frame(width: 28)
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 7) {
-                        Text(kind.displayName)
+                        Text(descriptor.displayName)
                             .font(.title3.weight(.semibold))
                         Label(
                             status?.isInstalled == true ? "설치됨" : "설치 필요",
@@ -620,13 +622,25 @@ private struct AgentInventoryPane: View {
                         .truncationMode(.middle)
                 }
                 Spacer(minLength: 16)
-                Button(status?.isInstalled == true ? "공식 설치기로 업데이트" : "CLI 설치") {
-                    model.request(installAction, confirmation: true)
+                // Byori has no install command for every CLI it can launch.
+                // Showing a button that can only report a refusal would be worse
+                // than saying so plainly.
+                if descriptor.canInstall {
+                    Button(status?.isInstalled == true ? "공식 설치기로 업데이트" : "CLI 설치") {
+                        model.request(installAction, confirmation: true)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.isBusy || model.isRefreshingIntegrations)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(model.isBusy || model.isRefreshingIntegrations)
             }
             .padding(.vertical, 12)
+
+            if let limitations = descriptor.limitations {
+                Label(limitations, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 10)
+            }
 
             Divider()
 
@@ -741,21 +755,11 @@ private struct AgentInventoryPane: View {
     }
 
     private func syncAction(for skill: ManagedSkill) -> ManagerAction {
-        switch (kind, skill) {
-        case (.claude, .byoridbMemory): return .syncClaudeSkill
-        case (.codex, .byoridbMemory): return .syncCodexSkill
-        case (.claude, .byoriDesign): return .syncClaudeDesignSkill
-        case (.codex, .byoriDesign): return .syncCodexDesignSkill
-        }
+        .syncSkill(kind, skill)
     }
 
     private func removeAction(for skill: ManagedSkill) -> ManagerAction {
-        switch (kind, skill) {
-        case (.claude, .byoridbMemory): return .removeClaudeSkill
-        case (.codex, .byoridbMemory): return .removeCodexSkill
-        case (.claude, .byoriDesign): return .removeClaudeDesignSkill
-        case (.codex, .byoriDesign): return .removeCodexDesignSkill
-        }
+        .removeSkill(kind, skill)
     }
 }
 

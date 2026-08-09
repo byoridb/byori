@@ -444,6 +444,7 @@ struct WorkspaceSessionLaunchRequest: Hashable {
     let providerID: String
     let modelChoice: WorkspaceLaunchModelChoice
     let contextDepth: WorkspaceContextDepth
+    let additionalArguments: [String]
 }
 
 enum WorkspaceLaunchModelChoice: Hashable {
@@ -560,6 +561,9 @@ struct WorkspaceNewSessionDraft: Hashable {
     var customModelID = ""
     var contextDepth: WorkspaceContextDepth = .related
     var acceptsModifiedWorkingTree = false
+    /// Free-form flags appended to the CLI invocation, e.g.
+    /// `--dangerously-skip-permissions`. Byori does not interpret them.
+    var additionalArguments = ""
 }
 
 struct WorkspaceAlert: Identifiable, Equatable {
@@ -1166,7 +1170,9 @@ final class WorkspaceViewModel: ObservableObject {
             sessionName: sessionName,
             providerID: providerID,
             modelChoice: modelChoice,
-            contextDepth: newSessionDraft.contextDepth
+            contextDepth: newSessionDraft.contextDepth,
+            additionalArguments: TerminalLaunchDescriptorFactory
+                .splitArguments(newSessionDraft.additionalArguments)
         )
 
         isStartingSession = true

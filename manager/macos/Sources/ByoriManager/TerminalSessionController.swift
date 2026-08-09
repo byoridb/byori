@@ -502,6 +502,10 @@ final class TerminalSessionController: ObservableObject {
         case let .codingAgent(provider):
             let model = descriptor.model ?? "CLI default model"
             return "\(provider.displayName) terminal, \(model)"
+        case let .customAgent(id):
+            // The id is what a session records; the display name lives in the
+            // provider store, which this layer has no reason to read.
+            return "Registered CLI terminal, \(id)"
         case .systemShellDemo:
             return "System shell demo terminal"
         }

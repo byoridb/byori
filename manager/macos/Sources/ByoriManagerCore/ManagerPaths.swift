@@ -27,14 +27,16 @@ public struct ManagerPaths: Sendable {
     public var skillSource: URL {
         skillSource(.byoridbMemory)
     }
-    public var claudeSkill: URL {
+    public var claudeSkill: URL? {
         skillDestination(.byoridbMemory, for: .claude)
     }
-    public var codexSkill: URL {
+    public var codexSkill: URL? {
         skillDestination(.byoridbMemory, for: .codex)
     }
     public var claudeConfig: URL { home.appendingPathComponent(".claude.json") }
     public var codexConfig: URL { home.appendingPathComponent(".codex/config.toml") }
+    /// Where `gemini mcp add --scope user` writes its `mcpServers` map.
+    public var geminiConfig: URL { home.appendingPathComponent(".gemini/settings.json") }
     public var legacyCodexSkill: URL {
         legacyCodexSkill(.byoridbMemory)
     }
@@ -46,23 +48,24 @@ public struct ManagerPaths: Sendable {
             .appendingPathComponent(assetPath)
     }
 
-    public func skillDirectory(_ skill: ManagedSkill, for kind: AgentKind) -> URL {
-        let root: URL
-        switch kind {
-        case .claude:
-            root = home.appendingPathComponent(".claude/skills", isDirectory: true)
-        case .codex:
-            root = home.appendingPathComponent(".agents/skills", isDirectory: true)
-        }
-        return root.appendingPathComponent(skill.rawValue, isDirectory: true)
+    /// `nil` for a CLI Byori installs no skill into.
+    ///
+    /// The directory comes from the provider catalog rather than a `switch`
+    /// here, so a newly supported CLI cannot be added without also saying where
+    /// — or whether — its skills live.
+    public func skillDirectory(_ skill: ManagedSkill, for kind: AgentKind) -> URL? {
+        guard let root = kind.descriptor.skillsRootRelativePath else { return nil }
+        return home
+            .appendingPathComponent(root, isDirectory: true)
+            .appendingPathComponent(skill.rawValue, isDirectory: true)
     }
 
     public func skillDestination(
         _ skill: ManagedSkill,
         for kind: AgentKind,
         assetPath: String = "SKILL.md"
-    ) -> URL {
-        skillDirectory(skill, for: kind).appendingPathComponent(assetPath)
+    ) -> URL? {
+        skillDirectory(skill, for: kind)?.appendingPathComponent(assetPath)
     }
 
     public func legacyCodexSkill(
