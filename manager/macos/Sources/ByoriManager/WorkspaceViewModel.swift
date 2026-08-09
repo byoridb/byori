@@ -19,8 +19,6 @@ protocol WorkspaceDataSource: AnyObject {
     func restoreSourceTree(projectID: String, at url: URL) async throws
     func startSession(_ request: WorkspaceSessionLaunchRequest) async throws -> WorkspaceSessionLaunchResult
     func stopSession(id: String) async throws -> WorkspaceSessionItem
-    func closeSession(projectID: String, taskID: String, sessionID: String) async throws -> WorkspaceTaskItem
-    func restoreSession(projectID: String, taskID: String, sessionID: String) async throws -> WorkspaceTaskItem
 }
 
 extension WorkspaceDataSource {
@@ -52,13 +50,7 @@ extension WorkspaceDataSource {
         throw WorkspaceAdapterError.unsupported("Session stopping is not connected yet.")
     }
 
-    func closeSession(projectID: String, taskID: String, sessionID: String) async throws -> WorkspaceTaskItem {
-        throw WorkspaceAdapterError.unsupported("Session closing is not connected yet.")
-    }
 
-    func restoreSession(projectID: String, taskID: String, sessionID: String) async throws -> WorkspaceTaskItem {
-        throw WorkspaceAdapterError.unsupported("Session restore is not connected yet.")
-    }
 }
 
 enum WorkspaceAdapterError: LocalizedError, Equatable {
@@ -193,7 +185,6 @@ struct WorkspaceTaskItem: Identifiable, Hashable {
     var status: WorkspaceTaskItemStatus
     var createdAt: Date
     var sessions: [WorkspaceSessionItem]
-    var closedSessions: [WorkspaceSessionItem] = []
 }
 
 enum WorkspaceTaskItemStatus: String, Hashable {
@@ -543,8 +534,6 @@ final class WorkspaceViewModel: ObservableObject {
     @Published private(set) var isRegisteringProject = false
     @Published private(set) var isMutatingWorkspace = false
     @Published private(set) var stoppingSessionIDs: Set<String> = []
-    @Published private(set) var closingSessionIDs: Set<String> = []
-    @Published private(set) var restoringSessionIDs: Set<String> = []
 
     @Published var isPresentingNewSession = false
     @Published var newSessionDraft = WorkspaceNewSessionDraft()
@@ -837,61 +826,7 @@ final class WorkspaceViewModel: ObservableObject {
         ))
     }
 
-    func closeEndedSession(_ session: WorkspaceSessionItem) async {
-        guard let lineage = endedSessionLineage(for: session),
-              let sourceTree = lineage.sourceTree,
-              let task = lineage.task,
-              !closingSessionIDs.contains(session.id) else { return }
 
-        closingSessionIDs.insert(session.id)
-        defer { closingSessionIDs.remove(session.id) }
-        do {
-            let updatedTask = try await dataSource.closeSession(
-                projectID: lineage.project.id,
-                taskID: task.id,
-                sessionID: session.id
-            )
-            // Move focus to the parent before replacing the task presentation,
-            // so the selected row never points at a session that just vanished.
-            selection = fallbackSelection(
-                projectID: lineage.project.id,
-                sourceTreeID: sourceTree.id,
-                taskID: task.id
-            )
-            replaceTask(updatedTask)
-            await loadInspector()
-        } catch {
-            alert = WorkspaceAlert(
-                title: "Session could not be closed",
-                message: error.localizedDescription
-            )
-        }
-    }
-
-    func restoreClosedSession(
-        _ session: WorkspaceSessionItem,
-        in task: WorkspaceTaskItem
-    ) async {
-        guard !restoringSessionIDs.contains(session.id),
-              let location = taskLocation(taskID: task.id),
-              location.task.closedSessions.contains(where: { $0.id == session.id }) else { return }
-
-        restoringSessionIDs.insert(session.id)
-        defer { restoringSessionIDs.remove(session.id) }
-        do {
-            let updatedTask = try await dataSource.restoreSession(
-                projectID: location.project.id,
-                taskID: task.id,
-                sessionID: session.id
-            )
-            replaceTask(updatedTask)
-        } catch {
-            alert = WorkspaceAlert(
-                title: "Session could not be restored",
-                message: error.localizedDescription
-            )
-        }
-    }
 
     private func presentNewSession(for target: (
         project: WorkspaceProjectItem,

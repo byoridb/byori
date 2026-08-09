@@ -633,67 +633,6 @@ enum ByoriManagerSelfTest {
             throw Failure("restoring a hidden checkout did not preserve its stable identity")
         }
 
-        let workspaceTaskStore = WorkspaceTaskStore(home: registryHome)
-        let visibilityTask = try await workspaceTaskStore.createTask(
-            projectID: "selftest1234",
-            checkout: WorkspaceCheckoutReference(kind: .worktree, id: firstDiscovered.id),
-            title: "Verify session visibility isolation"
-        )
-        let visibilitySession = try await workspaceTaskStore.createSession(
-            taskID: visibilityTask.id,
-            provider: .codex,
-            model: "gpt-5-codex"
-        )
-        let taskStateURL = registryHome
-            .appendingPathComponent("tasks/\(visibilityTask.id)", isDirectory: true)
-            .appendingPathComponent("state.json")
-        let taskStateBeforeVisibilityChanges = try Data(contentsOf: taskStateURL)
-        let sessionVisibilityStore = WorkspaceSessionVisibilityStore(home: registryHome)
-        let closedSessionKey = WorkspaceClosedSessionKey(
-            projectID: visibilityTask.projectID,
-            taskID: visibilityTask.id,
-            sessionID: visibilitySession.id
-        )
-        let sameTaskAndSessionInAnotherProject = WorkspaceClosedSessionKey(
-            projectID: "anotherproject123",
-            taskID: visibilityTask.id,
-            sessionID: visibilitySession.id
-        )
-        let sameProjectAndSessionInAnotherTask = WorkspaceClosedSessionKey(
-            projectID: visibilityTask.projectID,
-            taskID: "anothertask123",
-            sessionID: visibilitySession.id
-        )
-        let sameProjectAndTaskWithAnotherSession = WorkspaceClosedSessionKey(
-            projectID: visibilityTask.projectID,
-            taskID: visibilityTask.id,
-            sessionID: "anothersession123"
-        )
-        let neighboringSessionKeys: Set<WorkspaceClosedSessionKey> = [
-            sameTaskAndSessionInAnotherProject,
-            sameProjectAndSessionInAnotherTask,
-            sameProjectAndTaskWithAnotherSession,
-        ]
-        for key in neighboringSessionKeys.union([closedSessionKey]) {
-            try await sessionVisibilityStore.close(key)
-        }
-        guard try await sessionVisibilityStore.closedSessionKeys()
-            == neighboringSessionKeys.union([closedSessionKey]),
-              try Data(contentsOf: taskStateURL) == taskStateBeforeVisibilityChanges else {
-            throw Failure("closing sessions did not preserve exact tuple isolation or task state bytes")
-        }
-        try await sessionVisibilityStore.restore(closedSessionKey)
-        guard try await sessionVisibilityStore.closedSessionKeys() == neighboringSessionKeys else {
-            throw Failure("restoring a session changed a neighboring project/task/session tuple")
-        }
-        for key in neighboringSessionKeys {
-            try await sessionVisibilityStore.restore(key)
-        }
-        guard try await sessionVisibilityStore.closedSessionKeys().isEmpty,
-              try Data(contentsOf: taskStateURL) == taskStateBeforeVisibilityChanges else {
-            throw Failure("restoring sessions changed task state bytes or left visibility metadata")
-        }
-
         _ = try await visibilityRegistry.removeProject(id: "selftest1234")
         let projectsAfterRemoval = try await visibilityRegistry.projects()
         guard projectsAfterRemoval.isEmpty,
