@@ -309,8 +309,16 @@ private struct SettingsOperationBar: View {
         VStack(spacing: 0) {
             Divider()
             HStack(spacing: 10) {
-                ProgressView()
-                    .controlSize(.small)
+                // A bare spinner cannot distinguish slow from stuck, so show a
+                // determinate bar whenever the operation reports its stages.
+                if let progress = model.operationProgress {
+                    ProgressView(value: progress)
+                        .controlSize(.small)
+                        .frame(width: 120)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(model.currentOperation)
                         .font(.callout.weight(.medium))

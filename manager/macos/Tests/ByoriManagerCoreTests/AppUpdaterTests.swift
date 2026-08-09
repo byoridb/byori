@@ -184,3 +184,103 @@ final class AppUpdaterCheckTests: XCTestCase {
         }
     }
 }
+
+/// The helper waits for the app to exit before swapping the bundle. A quit that
+/// never happens must not strand it: the first version waited forever, and when
+/// the app deadlocked instead of quitting, the helper sat there holding a
+/// mounted image with no way to make progress.
+final class AppUpdaterHelperScriptTests: XCTestCase {
+    func testTheHelperGivesUpWhenTheAppNeverExits() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("byori-helper-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let script = directory.appendingPathComponent("apply-update.sh")
+        try Data(AppUpdater.applyScript.utf8).write(to: script)
+
+        let source = directory.appendingPathComponent("New.app")
+        let target = directory.appendingPathComponent("Installed.app")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try Data("installed".utf8).write(to: target.appendingPathComponent("marker"))
+
+        // A process that outlives the helper's bound, standing in for an app
+        // that was asked to quit and did not.
+        let stubborn = Process()
+        stubborn.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        stubborn.arguments = ["30"]
+        try stubborn.run()
+        defer { stubborn.terminate() }
+
+        let helper = Process()
+        helper.executableURL = URL(fileURLWithPath: "/bin/sh")
+        helper.arguments = [
+            script.path,
+            String(stubborn.processIdentifier),
+            source.path,
+            target.path,
+            directory.appendingPathComponent("not-a-mount").path,
+            "5",
+        ]
+        try helper.run()
+        helper.waitUntilExit()
+
+        XCTAssertNotEqual(helper.terminationStatus, 0, "the helper should report giving up")
+        XCTAssertEqual(
+            try Data(contentsOf: target.appendingPathComponent("marker")),
+            Data("installed".utf8),
+            "the installed app must be left exactly as it was"
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: target.path + ".byori-new"),
+            "nothing should have been staged next to the target"
+        )
+    }
+
+    func testTheHelperSwapsAndKeepsNoLeftoversOnceTheAppExits() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("byori-helper-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let script = directory.appendingPathComponent("apply-update.sh")
+        try Data(AppUpdater.applyScript.utf8).write(to: script)
+
+        let source = directory.appendingPathComponent("New.app")
+        let target = directory.appendingPathComponent("Installed.app")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try Data("new".utf8).write(to: source.appendingPathComponent("marker"))
+        try Data("installed".utf8).write(to: target.appendingPathComponent("marker"))
+
+        let finished = Process()
+        finished.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        finished.arguments = ["0"]
+        try finished.run()
+        finished.waitUntilExit()
+
+        let helper = Process()
+        helper.executableURL = URL(fileURLWithPath: "/bin/sh")
+        helper.arguments = [
+            script.path,
+            String(finished.processIdentifier),
+            source.path,
+            target.path,
+            directory.appendingPathComponent("not-a-mount").path,
+            "50",
+        ]
+        // `open` at the end has no bundle to launch here; the swap itself is
+        // what this covers.
+        try helper.run()
+        helper.waitUntilExit()
+
+        XCTAssertEqual(
+            try Data(contentsOf: target.appendingPathComponent("marker")),
+            Data("new".utf8),
+            "the target should now hold the new app"
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path + ".byori-old"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path + ".byori-new"))
+    }
+}

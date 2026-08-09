@@ -173,14 +173,15 @@ public actor ManagerService {
     /// Verifies a newer release and hands the swap to a detached helper. The
     /// caller must quit the app once this returns; the helper waits for the
     /// process to exit before replacing the bundle and reopening it.
-    public func updateApp() async throws -> OperationResult {
+    public func updateApp(progress: AppUpdateProgress? = nil) async throws -> OperationResult {
         let updater = try makeAppUpdater()
+        progress?(.checking)
         guard case let .available(update) = try await updater.check() else {
             throw ManagerError.prerequisite("이미 최신 버전입니다.")
         }
-        let staged = try await updater.stage(update)
+        let staged = try await updater.stage(update, progress: progress)
         do {
-            return try await updater.apply(staged)
+            return try await updater.apply(staged, progress: progress)
         } catch {
             await updater.discard(staged)
             throw error
