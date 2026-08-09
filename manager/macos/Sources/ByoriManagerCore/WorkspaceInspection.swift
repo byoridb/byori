@@ -266,6 +266,8 @@ public protocol WorkspaceGitInspecting: Sendable {
     func worktrees(at path: URL) async throws -> [WorkspaceGitWorktreeSnapshot]
     func status(at path: URL, maxChanges: Int) async throws -> WorkspaceGitStatusSnapshot
     func branches(at path: URL) async throws -> [WorkspaceGitBranch]
+    func log(at path: URL, limit: Int) async throws -> (commits: [WorkspaceGitCommit], isTruncated: Bool)
+    func checkout(at path: URL, ref: String) async throws
     func addWorktree(
         repositoryRoot: URL,
         at destination: URL,
@@ -290,12 +292,24 @@ extension WorkspaceGitInspecting {
     ) async throws -> WorkspaceGitWorktreeSnapshot {
         throw WorkspaceError.gitCommandFailed("Worktree creation is not available here.")
     }
+
+    public func log(
+        at path: URL,
+        limit: Int
+    ) async throws -> (commits: [WorkspaceGitCommit], isTruncated: Bool) {
+        throw WorkspaceError.gitCommandFailed("History is not available here.")
+    }
+
+    public func checkout(at path: URL, ref: String) async throws {
+        throw WorkspaceError.gitCommandFailed("Checkout is not available here.")
+    }
 }
 
 public struct WorkspaceGitService: WorkspaceGitInspecting, Sendable {
     private static let commandOutputLimit = 256 * 1_024
     private static let worktreeLimit = 2_000
     private static let branchLimit = 5_000
+    private static let logLimit = 2_000
     private let runner: any CommandRunning
     private let gitExecutable: String
 
@@ -466,6 +480,67 @@ public struct WorkspaceGitService: WorkspaceGitInspecting, Sendable {
             ))
         }
         return branches
+    }
+
+    /// Reads recent history for the graph. The walk is bounded by `limit`; the
+    /// caller is told when it stopped early so the view can say the oldest edges
+    /// are cut off rather than drawing them as roots.
+    public func log(at path: URL, limit: Int) async throws -> (commits: [WorkspaceGitCommit], isTruncated: Bool) {
+        let limit = min(max(limit, 1), Self.logLimit)
+        let root = try await repositoryRoot(at: path)
+        let result = await git(
+            [
+                "-C", root.path, "log",
+                // One extra record answers "was there more?" without a second
+                // walk; it is dropped before returning.
+                "--max-count=\(limit + 1)",
+                "--decorate=full",
+                "--date-order",
+                WorkspaceGitLogFormat.prettyFormat,
+                "--all",
+            ],
+            workingDirectory: root.path
+        )
+        guard result.succeeded else {
+            // An empty repository has no HEAD to walk, and that is not a failure.
+            if result.output.contains("does not have any commits") {
+                return ([], false)
+            }
+            throw WorkspaceError.gitCommandFailed(bounded(result.output, limit: 2_048))
+        }
+        let output = utf8Prefix(result.output, byteLimit: Self.commandOutputLimit)
+        var commits = WorkspaceGitLogFormat.parse(output.value)
+        let hasMore = commits.count > limit || output.wasTruncated
+        if commits.count > limit {
+            commits.removeLast(commits.count - limit)
+        }
+        return (commits, hasMore)
+    }
+
+    /// Switches the checkout to `ref`.
+    ///
+    /// Refusing on a dirty tree is deliberate even though Git would allow a
+    /// checkout that does not conflict: this runs against source trees an agent
+    /// may be writing, and "it only carried some of your changes across" is not
+    /// a state worth landing a user in from a one-click button.
+    public func checkout(at path: URL, ref: String) async throws {
+        try Self.validateStartPoint(ref)
+        let status = try await status(at: path, maxChanges: 1)
+        guard status.isClean else {
+            throw WorkspaceError.checkoutRefused(
+                "This source tree has uncommitted changes. Commit or stash them first."
+            )
+        }
+        let result = await git(
+            // `--` closes the argument list so a ref that looks like a path
+            // cannot be reinterpreted as a pathspec checkout, which would
+            // overwrite files instead of switching branches.
+            ["-C", path.standardizedFileURL.path, "checkout", ref, "--"],
+            workingDirectory: path.standardizedFileURL.path
+        )
+        guard result.succeeded else {
+            throw WorkspaceError.checkoutRefused(bounded(result.output, limit: 2_048))
+        }
     }
 
     public func addWorktree(

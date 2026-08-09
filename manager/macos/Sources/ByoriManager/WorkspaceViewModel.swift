@@ -13,6 +13,8 @@ protocol WorkspaceDataSource: AnyObject {
     func loadSessionOptions(projectID: String) async throws -> [WorkspaceProviderOption]
     func loadInspector(_ request: WorkspaceInspectorRequest) async throws -> WorkspaceInspectorSnapshot
     func loadContext(_ request: WorkspaceInspectorRequest) async throws -> WorkspaceContextSnapshot
+    func loadHistory(projectID: String, sourceTreeID: String) async throws -> WorkspaceGitGraph
+    func checkout(projectID: String, sourceTreeID: String, ref: String) async throws
     func registerProject(at repositoryURL: URL) async throws
     func removeProject(id: String) async throws
     func branches(projectID: String) async throws -> [WorkspaceGitBranch]
@@ -30,6 +32,14 @@ extension WorkspaceDataSource {
 
     func loadContext(_ request: WorkspaceInspectorRequest) async throws -> WorkspaceContextSnapshot {
         throw WorkspaceAdapterError.unsupported("ByoriDB Context is not connected yet.")
+    }
+
+    func loadHistory(projectID: String, sourceTreeID: String) async throws -> WorkspaceGitGraph {
+        throw WorkspaceAdapterError.unsupported("Git history is not connected yet.")
+    }
+
+    func checkout(projectID: String, sourceTreeID: String, ref: String) async throws {
+        throw WorkspaceAdapterError.unsupported("Checkout is not connected yet.")
     }
 
     func registerProject(at repositoryURL: URL) async throws {
@@ -542,6 +552,30 @@ struct WorkspaceAlert: Identifiable, Equatable {
     let message: String
 }
 
+/// The history sheet's state. It is tied to one source tree because a checkout
+/// only ever means "switch *this* working tree", never the project as a whole.
+struct WorkspaceHistoryPresentation: Equatable {
+    enum Phase: Equatable {
+        case loading
+        case ready
+        case failed(String)
+    }
+
+    let projectID: String
+    let sourceTreeID: String
+    let sourceTreeName: String
+    /// Captured when the sheet opens: a checkout under a running agent is
+    /// refused, and the reason has to be sayable before anything is attempted.
+    let activeSessionBlockReason: String?
+    var phase: Phase = .loading
+    var graph: WorkspaceGitGraph = .empty
+    var selectedSHA: String?
+    var checkingOutRef: String?
+    var notice: String?
+
+    var canCheckOut: Bool { activeSessionBlockReason == nil && checkingOutRef == nil }
+}
+
 struct WorkspaceLineage {
     let project: WorkspaceProjectItem
     let sourceTree: WorkspaceSourceTreeItem?
@@ -571,6 +605,8 @@ final class WorkspaceViewModel: ObservableObject {
     @Published private(set) var isCreatingSourceTree = false
     @Published private(set) var isMutatingWorkspace = false
     @Published private(set) var stoppingSessionIDs: Set<String> = []
+
+    @Published var history: WorkspaceHistoryPresentation?
 
     @Published var isPresentingNewSession = false
     @Published var newSessionDraft = WorkspaceNewSessionDraft()
@@ -727,6 +763,84 @@ final class WorkspaceViewModel: ObservableObject {
 
     func refreshInspector() async {
         await loadInspector()
+    }
+
+    // MARK: - History and checkout
+
+    func showHistory() {
+        guard let lineage = selectedLineage, let sourceTree = lineage.sourceTree else { return }
+        history = WorkspaceHistoryPresentation(
+            projectID: lineage.project.id,
+            sourceTreeID: sourceTree.id,
+            sourceTreeName: sourceTree.name,
+            // Swapping the branch out from under a running agent would mix its
+            // work into a tree it never saw. The same guard already blocks
+            // removing a project with a live writing session.
+            activeSessionBlockReason: sourceTree.hasActiveWritingSession
+                ? "Stop this source tree's active writing session before checking out."
+                : nil
+        )
+        Task { await loadHistory() }
+    }
+
+    func dismissHistory() {
+        history = nil
+    }
+
+    func selectCommit(_ sha: String?) {
+        history?.selectedSHA = sha
+    }
+
+    private func loadHistory() async {
+        guard var presentation = history else { return }
+        presentation.phase = .loading
+        presentation.notice = nil
+        history = presentation
+        do {
+            let graph = try await dataSource.loadHistory(
+                projectID: presentation.projectID,
+                sourceTreeID: presentation.sourceTreeID
+            )
+            guard var current = history, current.sourceTreeID == presentation.sourceTreeID else { return }
+            current.phase = .ready
+            current.graph = graph
+            history = current
+        } catch {
+            guard var current = history, current.sourceTreeID == presentation.sourceTreeID else { return }
+            current.phase = .failed(error.localizedDescription)
+            history = current
+        }
+    }
+
+    func reloadHistory() async {
+        await loadHistory()
+    }
+
+    func checkout(_ ref: WorkspaceGitRef) async {
+        guard var presentation = history, presentation.canCheckOut, ref.isCheckoutable else { return }
+        presentation.checkingOutRef = ref.name
+        presentation.notice = nil
+        history = presentation
+        do {
+            try await dataSource.checkout(
+                projectID: presentation.projectID,
+                sourceTreeID: presentation.sourceTreeID,
+                ref: ref.name
+            )
+            guard var current = history, current.sourceTreeID == presentation.sourceTreeID else { return }
+            current.checkingOutRef = nil
+            current.notice = "Checked out \(ref.name)."
+            history = current
+            // Branch, HEAD and the working-tree summary all moved.
+            await load(force: true)
+            await loadHistory()
+            await loadInspector()
+        } catch {
+            guard var current = history, current.sourceTreeID == presentation.sourceTreeID else { return }
+            current.checkingOutRef = nil
+            current.notice = error.localizedDescription
+            history = current
+        }
     }
 
     func registerProject(at repositoryURL: URL) async {

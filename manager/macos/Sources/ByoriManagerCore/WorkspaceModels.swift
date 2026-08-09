@@ -369,6 +369,9 @@ public enum WorkspaceError: LocalizedError, Equatable, Sendable {
     case gitCommandFailed(String)
     case persistence(String)
     case inspection(String)
+    /// The checkout was not attempted, or Git declined it. Either way the
+    /// working tree is untouched, which is what the message has to convey.
+    case checkoutRefused(String)
 
     public var errorDescription: String? {
         switch self {
@@ -392,6 +395,7 @@ public enum WorkspaceError: LocalizedError, Equatable, Sendable {
         case let .gitCommandFailed(message): return "Git inspection failed: \(message)"
         case let .persistence(message): return "Workspace persistence failed: \(message)"
         case let .inspection(message): return "Workspace inspection failed: \(message)"
+        case let .checkoutRefused(message): return message
         }
     }
 }

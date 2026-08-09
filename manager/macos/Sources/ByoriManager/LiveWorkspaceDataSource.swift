@@ -567,6 +567,27 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         )
     }
 
+    func loadHistory(projectID: String, sourceTreeID: String) async throws -> WorkspaceGitGraph {
+        let url = try checkoutURL(projectID: projectID, sourceTreeID: sourceTreeID)
+        let history = try await git.log(at: url, limit: 300)
+        return WorkspaceGitGraph.layout(commits: history.commits, isTruncated: history.isTruncated)
+    }
+
+    func checkout(projectID: String, sourceTreeID: String, ref: String) async throws {
+        let url = try checkoutURL(projectID: projectID, sourceTreeID: sourceTreeID)
+        try await operationGate.perform {
+            try await git.checkout(at: url, ref: ref)
+        }
+    }
+
+    private func checkoutURL(projectID: String, sourceTreeID: String) throws -> URL {
+        let key = CheckoutKey(projectID: projectID, checkoutID: sourceTreeID)
+        guard coreProjects[projectID] != nil, let checkout = checkouts[key] else {
+            throw WorkspaceAdapterError.invalidState("Refresh the workspace before reading history.")
+        }
+        return checkout.url
+    }
+
     func loadContext(_ request: WorkspaceInspectorRequest) async throws -> WorkspaceContextSnapshot {
         let checkoutKey = CheckoutKey(
             projectID: request.projectID,
