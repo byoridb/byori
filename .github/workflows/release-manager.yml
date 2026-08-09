@@ -75,6 +75,20 @@ jobs:
           grep -qF "$SIGN_IDENTITY" "$RUNNER_TEMP/identities" \
             || { echo "::error::MACOS_SIGN_IDENTITY does not name the identity in the certificate"; exit 1; }
 
+      - name: Warn when the signing certificate is running out
+        run: |
+          # This job checks out the release tag, which may predate the script.
+          script=scripts/check-signing-certificate.sh
+          [ -x "$script" ] || { echo "no expiry check in this tag; skipping"; exit 0; }
+          "$script" "$RUNNER_TEMP/byori-signing.keychain-db" 90 > "$RUNNER_TEMP/expiry" || true
+          cat "$RUNNER_TEMP/expiry"
+          days="$(sed -n 's/^days_left=//p' "$RUNNER_TEMP/expiry")"
+          case "$(sed -n 's/^status=//p' "$RUNNER_TEMP/expiry")" in
+            ok) ;;
+            expiring) echo "::warning::signing certificate expires in $days days" ;;
+            *) echo "::warning::signing certificate is expired" ;;
+          esac
+
       - name: Test Byori Swift core
         run: |
           swift test --package-path manager/macos

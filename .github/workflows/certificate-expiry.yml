@@ -1,0 +1,95 @@
+name: Signing certificate expiry
+
+# Renewing a Developer ID certificate is manual work that comes due once every
+# few years — exactly the kind of deadline that gets missed. Check monthly and
+# open an issue with the runbook while there is still time to act.
+on:
+  schedule:
+    - cron: '0 0 1 * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  check:
+    name: Warn before the Developer ID certificate expires
+    runs-on: macos-latest
+    env:
+      CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+      CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Read the certificate expiry
+        id: certificate
+        env:
+          KEYCHAIN_PASSWORD: ${{ runner.temp }}-${{ github.run_id }}
+        run: |
+          test -n "$CERTIFICATE_P12" \
+            || { echo "::error::MACOS_CERTIFICATE_P12_BASE64 is not set"; exit 1; }
+          CERTIFICATE_PATH="$RUNNER_TEMP/signing.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/expiry.keychain-db"
+          printf '%s' "$CERTIFICATE_P12" | /usr/bin/base64 -D > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -k "$KEYCHAIN_PATH" \
+            -P "$CERTIFICATE_PASSWORD" -A
+          # An expired certificate exits non-zero; the reporting below is the
+          # point of the job, so read the status instead of failing here.
+          scripts/check-signing-certificate.sh "$KEYCHAIN_PATH" 90 \
+            >> "$GITHUB_OUTPUT" || true
+          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          rm -f "$CERTIFICATE_PATH"
+
+      - name: Report
+        run: |
+          echo "expires ${{ steps.certificate.outputs.not_after }}"
+          echo "${{ steps.certificate.outputs.days_left }} days left"
+          echo "status: ${{ steps.certificate.outputs.status }}"
+
+      - name: Open a renewal issue
+        if: steps.certificate.outputs.status != 'ok'
+        run: |
+          # Create the label first: listing by a label that does not exist yet
+          # is an error, not an empty result.
+          gh label create signing-certificate \
+            --description "Developer ID certificate renewal" --color B60205 \
+            2>/dev/null || true
+          # One open issue is a reminder; twelve are noise.
+          existing="$(gh issue list --state open --label signing-certificate \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            echo "issue #$existing is already open"
+            exit 0
+          fi
+          gh issue create --label signing-certificate \
+            --title "Renew the Developer ID signing certificate (expires ${{ steps.certificate.outputs.not_after }})" \
+            --body "$(cat <<'BODY'
+          The certificate that signs the release DMG is close to expiring.
+
+          Releases already published keep working: their signatures carry a secure
+          timestamp and a stapled notarization ticket, so Gatekeeper still accepts
+          them. What stops working is signing anything new.
+
+          Renewal is manual — Apple issues Developer ID certificates through Xcode
+          or the developer portal, with no API to automate:
+
+          1. Xcode -> Settings -> Accounts -> Manage Certificates -> `+` ->
+             **Developer ID Application**. It must be that type, and creating one
+             requires the Account Holder role.
+          2. Keychain Access -> **login** keychain -> **My Certificates** ->
+             right-click the certificate -> Export as `.p12`. The private key is
+             included automatically from that tab; choose an export password.
+          3. Update the secrets:
+             - `MACOS_CERTIFICATE_P12_BASE64` — `base64 -i cert.p12 -o cert.p12.b64`,
+               then `gh secret set MACOS_CERTIFICATE_P12_BASE64 < cert.p12.b64`
+             - `MACOS_CERTIFICATE_PASSWORD` — the export password
+             - `MACOS_SIGN_IDENTITY` — only if the certificate name changed
+          4. Run **Release Byori** on any existing release to confirm signing works.
+
+          The signing workflow imports both the G1 and G2 intermediates, so a
+          certificate reissued under the newer authority needs no workflow change.
+          BODY
+          )"
