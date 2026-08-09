@@ -358,15 +358,15 @@ public actor AppUpdater {
             timeout: 60
         ))
         guard signature.succeeded else {
-            throw ManagerError.verificationFailed("\(label)에 서명이 없습니다.")
+            throw ManagerError.verificationFailed("서명이 없습니다: \(label)")
         }
         let team = Self.teamIdentifier(fromCodesignOutput: signature.output)
         guard let team else {
-            throw ManagerError.verificationFailed("\(label)의 팀 식별자를 읽을 수 없습니다.")
+            throw ManagerError.verificationFailed("팀 식별자를 읽을 수 없습니다: \(label)")
         }
         guard team == configuration.teamIdentifier else {
             throw ManagerError.verificationFailed(
-                "\(label)이 다른 개발자(\(team))의 서명입니다. 예상: \(configuration.teamIdentifier)"
+                "다른 개발자(\(team))의 서명입니다. 예상: \(configuration.teamIdentifier) — \(label)"
             )
         }
 
@@ -380,8 +380,11 @@ public actor AppUpdater {
             timeout: 120
         ))
         guard Self.isNotarized(spctlOutput: assessment.output), assessment.succeeded else {
+            // The label is trailing on purpose: Korean subject particles vary
+            // with the final letter of the preceding noun, and these labels are
+            // interpolated, so a fixed particle would be wrong half the time.
             throw ManagerError.verificationFailed(
-                "\(label)이 공증되지 않았습니다. 설치를 중단합니다."
+                "공증되지 않았습니다. 설치를 중단합니다 — \(label)"
             )
         }
     }
