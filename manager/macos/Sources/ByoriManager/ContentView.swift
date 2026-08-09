@@ -988,6 +988,24 @@ private struct MaintenanceView: View {
                     title: "유지관리",
                     subtitle: "ByoriDB 서비스와 앱이 관리하는 파일을 점검합니다."
                 )
+                GroupBox("Byori 앱") {
+                    VStack(alignment: .leading, spacing: 14) {
+                        LabeledContent("현재 버전") {
+                            Text(model.appVersion ?? "알 수 없음")
+                        }
+                        Divider()
+                        HStack {
+                            Button("업데이트 확인 후 설치") {
+                                model.request(.updateApp, confirmation: true)
+                            }
+                            Spacer()
+                            Text("Developer ID 서명과 Apple 공증을 확인한 뒤에만 교체합니다.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(10)
+                }
                 GroupBox("ByoriDB") {
                     VStack(alignment: .leading, spacing: 14) {
                         LabeledContent("설치") {
