@@ -204,6 +204,9 @@ final class ManagerViewModel: ObservableObject {
     @Published private(set) var isBusy = false
     @Published private(set) var canCancelCurrentOperation = false
     @Published private(set) var currentOperation = ""
+    /// Non-nil only while an operation reports stages, so the shared activity
+    /// strip can show a determinate bar instead of an endless spinner.
+    @Published private(set) var operationProgress: Double?
     @Published var pendingAction: ManagerAction?
     @Published var pendingIntegrationRemoval: IntegrationRemovalRequest?
     @Published private(set) var activities: [ActivityEntry] = []
@@ -224,6 +227,7 @@ final class ManagerViewModel: ObservableObject {
     private var activeActivityID: UUID?
     private var lastOperationHadRollbackFailure = false
     private var updateCheckTask: Task<Void, Never>?
+    private var terminateAfterCurrentOperation = false
 
     private static let updateCheckInterval: Duration = .seconds(6 * 60 * 60)
 
@@ -411,8 +415,17 @@ final class ManagerViewModel: ObservableObject {
             isBusy = false
             canCancelCurrentOperation = false
             currentOperation = ""
+            operationProgress = nil
             operationTask = nil
             activeActivityID = nil
+            if terminateAfterCurrentOperation {
+                terminateAfterCurrentOperation = false
+                // `operationTask` is nil by now, so the terminate handler sees
+                // no operation to drain and can answer immediately.
+                Task { @MainActor in
+                    NSApplication.shared.terminate(nil)
+                }
+            }
         }
 
         do {
@@ -427,7 +440,12 @@ final class ManagerViewModel: ObservableObject {
             case .updateByori:
                 result = try await service.updateByoriOnline()
             case .updateApp:
-                result = try await service.updateApp()
+                result = try await service.updateApp { [weak self] stage in
+                    Task { @MainActor in
+                        self?.currentOperation = stage.message
+                        self?.operationProgress = stage.fraction
+                    }
+                }
             case .startByori:
                 result = try await service.startService()
             case .stopByori:
@@ -463,8 +481,14 @@ final class ManagerViewModel: ObservableObject {
             if action == .updateApp {
                 // The helper is already waiting on this process: it cannot
                 // replace the bundle until the app it belongs to has exited.
-                NSApplication.shared.terminate(nil)
-                return
+                //
+                // Quitting has to happen *after* this operation finishes, never
+                // from inside it. `applicationShouldTerminate` answers
+                // `.terminateLater` while an operation is running and waits for
+                // this very task, and `.terminateLater` spins a nested run loop
+                // that never returns — the task, the terminate call, and the
+                // helper would each wait on the other forever.
+                terminateAfterCurrentOperation = true
             }
         } catch {
             let rollbackFailed = isRollbackFailure(error)

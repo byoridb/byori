@@ -309,8 +309,16 @@ private struct SettingsOperationBar: View {
         VStack(spacing: 0) {
             Divider()
             HStack(spacing: 10) {
-                ProgressView()
-                    .controlSize(.small)
+                // A bare spinner cannot distinguish slow from stuck, so show a
+                // determinate bar whenever the operation reports its stages.
+                if let progress = model.operationProgress {
+                    ProgressView(value: progress)
+                        .controlSize(.small)
+                        .frame(width: 120)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(model.currentOperation)
                         .font(.callout.weight(.medium))
@@ -364,6 +372,41 @@ private struct OverviewView: View {
                     title: "Byori",
                     subtitle: "워크스페이스를 지원하는 ByoriDB와 코딩 에이전트 연결 상태"
                 )
+
+                // The app's own version belongs on the first screen Settings
+                // opens. It previously sat under the ByoriDB section, which is
+                // about the knowledge engine — nobody looking for the app
+                // version would think to open it.
+                GroupBox("Byori 앱") {
+                    VStack(alignment: .leading, spacing: 14) {
+                        LabeledContent("현재 버전") {
+                            Text(model.appVersion ?? "알 수 없음")
+                        }
+                        if let update = model.availableUpdate {
+                            LabeledContent("사용 가능") {
+                                Text(update.version.description)
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                        Divider()
+                        HStack {
+                            // The version goes in parentheses rather than into
+                            // the sentence: Korean particles change with the
+                            // preceding sound, and this one is interpolated.
+                            Button(
+                                model.availableUpdate.map { "업데이트 설치 (\($0.version.description))" }
+                                    ?? "업데이트 확인 후 설치"
+                            ) {
+                                model.request(.updateApp, confirmation: true)
+                            }
+                            Spacer()
+                            Text("Developer ID 서명과 Apple 공증을 확인한 뒤에만 교체합니다.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(10)
+                }
 
                 if let snapshot = model.snapshot {
                     HStack(spacing: 14) {
@@ -988,36 +1031,6 @@ private struct MaintenanceView: View {
                     title: "유지관리",
                     subtitle: "ByoriDB 서비스와 앱이 관리하는 파일을 점검합니다."
                 )
-                GroupBox("Byori 앱") {
-                    VStack(alignment: .leading, spacing: 14) {
-                        LabeledContent("현재 버전") {
-                            Text(model.appVersion ?? "알 수 없음")
-                        }
-                        if let update = model.availableUpdate {
-                            LabeledContent("사용 가능") {
-                                Text(update.version.description)
-                                    .foregroundStyle(.orange)
-                            }
-                        }
-                        Divider()
-                        HStack {
-                            // The version goes in parentheses rather than into
-                            // the sentence: Korean particles change with the
-                            // preceding sound, and this one is interpolated.
-                            Button(
-                                model.availableUpdate.map { "업데이트 설치 (\($0.version.description))" }
-                                    ?? "업데이트 확인 후 설치"
-                            ) {
-                                model.request(.updateApp, confirmation: true)
-                            }
-                            Spacer()
-                            Text("Developer ID 서명과 Apple 공증을 확인한 뒤에만 교체합니다.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(10)
-                }
                 GroupBox("ByoriDB") {
                     VStack(alignment: .leading, spacing: 14) {
                         LabeledContent("설치") {

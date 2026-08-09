@@ -81,6 +81,43 @@ public enum AppUpdateStatus: Sendable, Equatable {
     case available(AvailableUpdate)
 }
 
+/// Steps an update passes through. Verification runs several external tools and
+/// Gatekeeper may reach the network, so a single spinner leaves the user unable
+/// to tell slow from stuck.
+public enum AppUpdateStage: Sendable, Equatable {
+    case checking
+    case downloading
+    case verifyingImage
+    case verifyingApp
+    case preparing
+    case relaunching
+
+    public var message: String {
+        switch self {
+        case .checking: return "새 버전 확인 중…"
+        case .downloading: return "새 버전 내려받는 중…"
+        case .verifyingImage: return "디스크 이미지의 서명과 공증 확인 중…"
+        case .verifyingApp: return "앱의 서명과 공증 확인 중…"
+        case .preparing: return "교체 준비 중…"
+        case .relaunching: return "앱을 종료하고 새 버전으로 다시 엽니다…"
+        }
+    }
+
+    /// Rough share of the whole operation, for a determinate progress bar.
+    public var fraction: Double {
+        switch self {
+        case .checking: return 0.05
+        case .downloading: return 0.35
+        case .verifyingImage: return 0.6
+        case .verifyingApp: return 0.8
+        case .preparing: return 0.95
+        case .relaunching: return 1.0
+        }
+    }
+}
+
+public typealias AppUpdateProgress = @Sendable (AppUpdateStage) -> Void
+
 /// A verified copy of the new app, sitting on a mounted image and ready to be
 /// swapped in. Holding the mount point keeps the disk image attached until the
 /// caller either applies or discards the update.
@@ -241,7 +278,10 @@ public actor AppUpdater {
 
     /// Downloads the image and refuses it unless every check passes. The disk
     /// image stays mounted on success; call `discard` or `apply` to release it.
-    public func stage(_ update: AvailableUpdate) async throws -> StagedUpdate {
+    public func stage(
+        _ update: AvailableUpdate,
+        progress: AppUpdateProgress? = nil
+    ) async throws -> StagedUpdate {
         guard update.version > currentVersion else {
             throw ManagerError.prerequisite(
                 "설치된 \(currentVersion)보다 낮거나 같은 \(update.version)로는 업데이트하지 않습니다."
@@ -252,13 +292,16 @@ public actor AppUpdater {
             .appendingPathComponent("byori-update-\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         let image = directory.appendingPathComponent(update.assetName)
+        progress?(.downloading)
         try await fetcher.download(from: update.downloadURL, to: image)
 
+        progress?(.verifyingImage)
         try await verifySignature(path: image.path, label: "다운로드한 디스크 이미지")
 
         let mountPoint = try await attach(image: image)
         do {
             let app = try locateApp(inside: mountPoint)
+            progress?(.verifyingApp)
             try await verifySignature(path: app, label: "업데이트할 앱")
             try await verifyStructure(appPath: app)
             try verify(appPath: app, matches: update.version)
@@ -284,7 +327,11 @@ public actor AppUpdater {
 
     /// Hands the swap to a detached helper, because the app cannot replace its
     /// own bundle and relaunch itself. The caller terminates once this returns.
-    public func apply(_ staged: StagedUpdate) async throws -> OperationResult {
+    public func apply(
+        _ staged: StagedUpdate,
+        progress: AppUpdateProgress? = nil
+    ) async throws -> OperationResult {
+        progress?(.preparing)
         let target = bundleURL.path
         guard fileManager.fileExists(atPath: target) else {
             throw ManagerError.missingResource(target)
@@ -314,6 +361,7 @@ public actor AppUpdater {
             staged.mountPoint,
         ]
         try process.run()
+        progress?(.relaunching)
 
         return OperationResult(
             summary: "Byori \(staged.version) 업데이트를 적용합니다. 앱이 종료된 뒤 자동으로 다시 열립니다.",
@@ -324,16 +372,26 @@ public actor AppUpdater {
     /// Waits for the app to exit, then swaps the bundle. The old bundle is moved
     /// aside rather than deleted first, so a failed move can be put back instead
     /// of leaving no app at all.
-    private static let applyScript = """
+    static let applyScript = """
     #!/bin/sh
     set -e
     pid="$1"
     source="$2"
     target="$3"
     mount_point="$4"
+    # Iterations of 0.2s to wait for the app; overridable so the bound itself
+    # can be tested without a three-minute test.
+    max_wait="${5:-900}"
 
+    # Bounded: if the app refuses to quit, clean up rather than waiting forever.
+    waited=0
     while /bin/kill -0 "$pid" 2>/dev/null; do
       /bin/sleep 0.2
+      waited=$((waited + 1))
+      if [ "$waited" -gt "$max_wait" ]; then
+        /usr/bin/hdiutil detach "$mount_point" -quiet || true
+        exit 1
+      fi
     done
 
     /usr/bin/ditto "$source" "$target.byori-new"
