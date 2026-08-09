@@ -69,6 +69,11 @@ jobs:
           security find-identity -v -p codesigning "$KEYCHAIN_PATH" | tee "$RUNNER_TEMP/identities"
           grep -q "1 valid identities found" "$RUNNER_TEMP/identities" \
             || { echo "::error::expected exactly one codesigning identity in the temporary keychain"; exit 1; }
+          # MACOS_SIGN_IDENTITY is hand-entered, and a mismatch otherwise surfaces
+          # minutes later as codesign's "no identity found". Note that a correct
+          # secret also masks the identity name in the diagnostic above.
+          grep -qF "$SIGN_IDENTITY" "$RUNNER_TEMP/identities" \
+            || { echo "::error::MACOS_SIGN_IDENTITY does not name the identity in the certificate"; exit 1; }
 
       - name: Test Byori Swift core
         run: |
