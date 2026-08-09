@@ -49,6 +49,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
     private let checkoutVisibilityStore: WorkspaceCheckoutVisibilityStore
     private let taskStore: WorkspaceTaskStore
     private let git: WorkspaceGitService
+    private let workspaceHome: URL
     private let files: LocalWorkspaceFileTreeService
     private let managerService: ManagerService
     private let launchFactory: TerminalLaunchDescriptorFactory
@@ -87,6 +88,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         self.checkoutVisibilityStore = checkoutVisibilityStore
         self.taskStore = WorkspaceTaskStore(home: workspaceHome)
         self.git = git
+        self.workspaceHome = workspaceHome
         self.files = LocalWorkspaceFileTreeService()
         self.managerService = managerService
         self.launchFactory = TerminalLaunchDescriptorFactory(paths: managerService.paths)
@@ -252,6 +254,74 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
             try await requireNoActiveWritingSession(projectID: id, checkout: nil)
             _ = try await projectRegistry.removeProject(id: id)
         }
+    }
+
+    func branches(projectID: String) async throws -> [WorkspaceGitBranch] {
+        try await operationGate.perform { [self] in
+            guard let project = coreProjects[projectID] else {
+                throw WorkspaceAdapterError.invalidState(
+                    "Refresh the workspace before listing this project's branches."
+                )
+            }
+            return try await git.branches(at: URL(fileURLWithPath: project.rootPath))
+        }
+    }
+
+    /// Creates the checkout and lets the ordinary project load discover it, so
+    /// there is one code path that decides what a source tree is.
+    func createSourceTree(
+        projectID: String,
+        branch: String,
+        startPoint: String?
+    ) async throws -> URL {
+        try await operationGate.perform { [self] in
+            guard let project = coreProjects[projectID] else {
+                throw WorkspaceAdapterError.invalidState(
+                    "Refresh the workspace before adding a source tree."
+                )
+            }
+            let destination = Self.worktreeDestination(
+                home: workspaceHome,
+                projectID: projectID,
+                branch: branch
+            )
+            try FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            _ = try await git.addWorktree(
+                repositoryRoot: URL(fileURLWithPath: project.rootPath),
+                at: destination,
+                branch: branch,
+                creatingFrom: startPoint
+            )
+            return destination
+        }
+    }
+
+    /// Worktrees live under Byori's own directory rather than beside the
+    /// repository, so creating one never drops an untracked sibling into a
+    /// folder the user is working in.
+    static func worktreeDestination(home: URL, projectID: String, branch: String) -> URL {
+        home
+            .appendingPathComponent("worktrees", isDirectory: true)
+            .appendingPathComponent(projectID, isDirectory: true)
+            .appendingPathComponent(slug(branch), isDirectory: true)
+    }
+
+    /// A branch name may contain slashes and characters that are awkward in a
+    /// path; the directory only has to be stable, unique, and readable.
+    static func slug(_ branch: String) -> String {
+        let mapped = branch.unicodeScalars.map { scalar -> Character in
+            CharacterSet.alphanumerics.contains(scalar) || scalar == "-" || scalar == "_"
+                ? Character(scalar)
+                : "-"
+        }
+        let collapsed = String(mapped)
+            .split(separator: "-", omittingEmptySubsequences: true)
+            .joined(separator: "-")
+        let trimmed = collapsed.isEmpty ? "branch" : collapsed
+        return String(trimmed.prefix(60))
     }
 
     func hideSourceTree(projectID: String, sourceTreeID: String) async throws {
