@@ -165,6 +165,47 @@ public actor ManagerService {
         return OperationResult(summary: "ByoriDB 업데이트 완료", detail: result.output)
     }
 
+    /// Reports whether a newer signed release exists, without downloading it.
+    public func checkForAppUpdate() async throws -> AppUpdateStatus {
+        try await makeAppUpdater().check()
+    }
+
+    /// Verifies a newer release and hands the swap to a detached helper. The
+    /// caller must quit the app once this returns; the helper waits for the
+    /// process to exit before replacing the bundle and reopening it.
+    public func updateApp() async throws -> OperationResult {
+        let updater = try makeAppUpdater()
+        guard case let .available(update) = try await updater.check() else {
+            throw ManagerError.prerequisite("이미 최신 버전입니다.")
+        }
+        let staged = try await updater.stage(update)
+        do {
+            return try await updater.apply(staged)
+        } catch {
+            await updater.discard(staged)
+            throw error
+        }
+    }
+
+    private func makeAppUpdater() throws -> AppUpdater {
+        // Running from `swift run` there is no bundle to replace, and an ad hoc
+        // signature would fail verification anyway. Say so instead of failing
+        // later inside codesign.
+        let bundle = Bundle.main
+        guard bundle.bundleURL.pathExtension == "app" else {
+            throw ManagerError.prerequisite(
+                "앱 번들로 실행 중일 때만 자동 업데이트를 사용할 수 있습니다."
+            )
+        }
+        guard
+            let text = bundle.infoDictionary?["CFBundleShortVersionString"] as? String,
+            let version = AppVersion(text)
+        else {
+            throw ManagerError.prerequisite("현재 앱 버전을 읽을 수 없습니다.")
+        }
+        return AppUpdater(bundleURL: bundle.bundleURL, currentVersion: version, runner: runner)
+    }
+
     public func connectMCP(_ kind: AgentKind) async throws -> OperationResult {
         let cli = try requireCLI(kind)
         guard fileManager.isExecutableFile(atPath: paths.mcpRunner.path) else {

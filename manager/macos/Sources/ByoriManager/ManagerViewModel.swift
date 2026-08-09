@@ -27,6 +27,7 @@ enum ManagerAction: String, Identifiable {
     case installCodex
     case installByori
     case updateByori
+    case updateApp
     case startByori
     case stopByori
     case restartByori
@@ -47,6 +48,7 @@ enum ManagerAction: String, Identifiable {
         case .installCodex: return "Codex를 설치하거나 업데이트할까요?"
         case .installByori: return "번들 자산으로 ByoriDB를 설치할까요?"
         case .updateByori: return "최신 ByoriDB 설치기를 내려받아 업데이트할까요?"
+        case .updateApp: return "Byori 앱을 최신 버전으로 업데이트할까요?"
         case .stopByori: return "ByoriDB 서비스를 중지할까요?"
         case .disconnectClaude: return "Claude Code에서 Byori MCP 연결을 해제할까요?"
         case .disconnectCodex: return "Codex에서 Byori MCP 연결을 해제할까요?"
@@ -64,6 +66,8 @@ enum ManagerAction: String, Identifiable {
             return "OpenAI의 공식 설치 스크립트를 다운로드해 실행합니다. 로그인 정보는 Byori가 다루지 않습니다."
         case .updateByori:
             return "GitHub의 최신 Byori 릴리스 설치기를 실행합니다. 기존 데이터와 root 비밀번호는 보존됩니다."
+        case .updateApp:
+            return "최신 릴리스의 디스크 이미지를 내려받아 Apple 공증과 개발자 서명을 확인한 뒤 교체합니다. 확인에 실패하면 설치하지 않습니다. 교체를 위해 앱이 한 번 종료되었다가 다시 열립니다."
         case .installByori:
             return "앱에 포함된 MCP·Skill·서비스 자산을 사용하고, 호환되는 ByoriDB 엔진은 GitHub 릴리스에서 다운로드합니다. 기존 runtime은 먼저 백업합니다."
         case .removeClaudeSkill, .removeCodexSkill:
@@ -89,6 +93,7 @@ enum ManagerAction: String, Identifiable {
         case .installCodex: return "Codex 설치·업데이트 중…"
         case .installByori: return "ByoriDB 설치·복구 중…"
         case .updateByori: return "ByoriDB 업데이트 중…"
+        case .updateApp: return "앱 업데이트 확인·검증 중…"
         case .startByori: return "ByoriDB 시작 중…"
         case .stopByori: return "ByoriDB 중지 중…"
         case .restartByori: return "ByoriDB 재시작 중…"
@@ -204,6 +209,10 @@ final class ManagerViewModel: ObservableObject {
     @Published private(set) var activities: [ActivityEntry] = []
     @Published private(set) var integrationInventories: [AgentIntegrationInventory] = []
     @Published private(set) var isRefreshingIntegrations = false
+
+    /// Absent when running outside an app bundle, which is also when the
+    /// updater refuses to replace anything.
+    let appVersion: String? = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
 
     let service: ManagerService
     private var operationTask: Task<Void, Never>?
@@ -382,6 +391,8 @@ final class ManagerViewModel: ObservableObject {
                 result = try await service.installByoriBundled()
             case .updateByori:
                 result = try await service.updateByoriOnline()
+            case .updateApp:
+                result = try await service.updateApp()
             case .startByori:
                 result = try await service.startService()
             case .stopByori:
@@ -414,6 +425,12 @@ final class ManagerViewModel: ObservableObject {
                 detail: result.detail,
                 level: .success
             )
+            if action == .updateApp {
+                // The helper is already waiting on this process: it cannot
+                // replace the bundle until the app it belongs to has exited.
+                NSApplication.shared.terminate(nil)
+                return
+            }
         } catch {
             let rollbackFailed = isRollbackFailure(error)
             if rollbackFailed {
