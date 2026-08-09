@@ -170,21 +170,25 @@ public actor ManagerService {
         try await makeAppUpdater().check()
     }
 
-    /// Verifies a newer release and hands the swap to a detached helper. The
-    /// caller must quit the app once this returns; the helper waits for the
-    /// process to exit before replacing the bundle and reopening it.
-    public func updateApp(progress: AppUpdateProgress? = nil) async throws -> OperationResult {
+    /// Verifies a newer release and hands the swap to a detached helper. Only
+    /// `.installed` obliges the caller to quit: the helper waits for the process
+    /// to exit before replacing the bundle and reopening it. Running this while
+    /// already current is a no-op, not a failure, so it reports `.alreadyCurrent`
+    /// rather than throwing — the caller renders thrown errors as failures.
+    public func updateApp(progress: AppUpdateProgress? = nil) async throws -> AppUpdateOutcome {
         let updater = try makeAppUpdater()
         progress?(.checking)
-        guard case let .available(update) = try await updater.check() else {
-            throw ManagerError.prerequisite("이미 최신 버전입니다.")
-        }
-        let staged = try await updater.stage(update, progress: progress)
-        do {
-            return try await updater.apply(staged, progress: progress)
-        } catch {
-            await updater.discard(staged)
-            throw error
+        switch try await updater.check() {
+        case let .upToDate(version):
+            return .alreadyCurrent(version)
+        case let .available(update):
+            let staged = try await updater.stage(update, progress: progress)
+            do {
+                return .installed(try await updater.apply(staged, progress: progress))
+            } catch {
+                await updater.discard(staged)
+                throw error
+            }
         }
     }
 

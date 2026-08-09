@@ -185,6 +185,30 @@ final class AppUpdaterCheckTests: XCTestCase {
     }
 }
 
+/// Finding nothing to install used to be thrown as `ManagerError.prerequisite`,
+/// and the view model renders every thrown error as "작업 실패" — so an app that
+/// was simply current reported a failure. It is a normal outcome now.
+final class AppUpdateOutcomeTests: XCTestCase {
+    func testBeingCurrentIsReportedAsAResultNotAFailure() {
+        let outcome = AppUpdateOutcome.alreadyCurrent(AppVersion("0.3.0")!)
+        XCTAssertEqual(outcome.result.summary, "이미 최신 버전입니다")
+        XCTAssertTrue(outcome.result.detail.contains("0.3.0"), outcome.result.detail)
+    }
+
+    /// The relaunch is what makes the two cases non-interchangeable: quitting
+    /// with no staged bundle behind it just closes the app for nothing, taking
+    /// every live agent session with it.
+    func testOnlyAnInstalledUpdateAsksForARelaunch() {
+        XCTAssertFalse(AppUpdateOutcome.alreadyCurrent(AppVersion("0.3.0")!).requiresRelaunch)
+        XCTAssertTrue(AppUpdateOutcome.installed(OperationResult(summary: "업데이트 완료")).requiresRelaunch)
+    }
+
+    func testAnInstalledUpdateKeepsTheServiceReport() {
+        let result = OperationResult(summary: "업데이트 준비 완료", detail: "0.4.0으로 교체합니다.")
+        XCTAssertEqual(AppUpdateOutcome.installed(result).result, result)
+    }
+}
+
 /// The helper waits for the app to exit before swapping the bundle. A quit that
 /// never happens must not strand it: the first version waited forever, and when
 /// the app deadlocked instead of quitting, the helper sat there holding a
