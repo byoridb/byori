@@ -362,6 +362,34 @@ struct PageHeader: View {
     }
 }
 
+/// Says what the last check found, not just what the click will do. Being
+/// current used to be indistinguishable from never having checked, and running
+/// the update anyway reported it as a failed operation.
+private struct AppUpdateButton: View {
+    let availability: AppUpdateAvailability
+    let action: () -> Void
+
+    var body: some View {
+        switch availability {
+        case .unknown:
+            Button("업데이트 확인 후 설치", action: action)
+        case .upToDate:
+            Button(action: action) {
+                Label("이미 최신 버전", systemImage: "checkmark.circle.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.green)
+            .help("다시 확인하려면 누르세요.")
+        case let .available(update):
+            // The version goes in parentheses rather than into the sentence:
+            // Korean particles change with the preceding sound, and this one is
+            // interpolated.
+            Button("업데이트 설치 (\(update.version.description))", action: action)
+                .buttonStyle(.borderedProminent)
+        }
+    }
+}
+
 private struct OverviewView: View {
     @EnvironmentObject private var model: ManagerViewModel
 
@@ -390,13 +418,7 @@ private struct OverviewView: View {
                         }
                         Divider()
                         HStack {
-                            // The version goes in parentheses rather than into
-                            // the sentence: Korean particles change with the
-                            // preceding sound, and this one is interpolated.
-                            Button(
-                                model.availableUpdate.map { "업데이트 설치 (\($0.version.description))" }
-                                    ?? "업데이트 확인 후 설치"
-                            ) {
+                            AppUpdateButton(availability: model.updateAvailability) {
                                 model.request(.updateApp, confirmation: true)
                             }
                             Spacer()

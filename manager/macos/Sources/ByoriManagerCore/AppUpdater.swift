@@ -81,6 +81,36 @@ public enum AppUpdateStatus: Sendable, Equatable {
     case available(AvailableUpdate)
 }
 
+/// What an update run actually did. Finding nothing to install is a normal
+/// outcome, so it is a case here rather than a thrown error — and the two cases
+/// are not interchangeable to the caller: only `.installed` leaves a staged
+/// bundle behind a helper that is waiting for this process to quit.
+public enum AppUpdateOutcome: Sendable, Equatable {
+    case alreadyCurrent(AppVersion)
+    case installed(OperationResult)
+
+    /// True when the swap still has to happen after the app exits.
+    public var requiresRelaunch: Bool {
+        if case .installed = self { return true }
+        return false
+    }
+
+    public var result: OperationResult {
+        switch self {
+        case let .alreadyCurrent(version):
+            // The version goes in parentheses rather than into the sentence:
+            // Korean particles change with the preceding sound, and the digit
+            // this one would follow varies with the release.
+            return OperationResult(
+                summary: "이미 최신 버전입니다",
+                detail: "설치된 버전(\(version))이 가장 최신 릴리스입니다."
+            )
+        case let .installed(result):
+            return result
+        }
+    }
+}
+
 /// Steps an update passes through. Verification runs several external tools and
 /// Gatekeeper may reach the network, so a single spinner leaves the user unable
 /// to tell slow from stuck.

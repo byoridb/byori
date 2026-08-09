@@ -22,6 +22,15 @@ enum ManagerSection: String, CaseIterable, Identifiable {
     }
 }
 
+/// The three states the update button has to tell apart. `AvailableUpdate?`
+/// could not: it collapsed "no check has succeeded yet" and "this is the newest
+/// release" into the same `nil`, so a current app looked unchecked.
+enum AppUpdateAvailability: Equatable {
+    case unknown
+    case upToDate(AppVersion)
+    case available(AvailableUpdate)
+}
+
 enum ManagerAction: String, Identifiable {
     case installClaude
     case installCodex
@@ -217,10 +226,18 @@ final class ManagerViewModel: ObservableObject {
     /// updater refuses to replace anything.
     let appVersion: String? = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
 
-    /// Set when a newer signed release exists. Byori only reports it — nothing
-    /// is downloaded or installed until the user asks, because this app owns
-    /// live agent sessions that a surprise relaunch would cut off.
-    @Published private(set) var availableUpdate: AvailableUpdate?
+    /// What the last release check found. Byori only reports it — nothing is
+    /// downloaded or installed until the user asks, because this app owns live
+    /// agent sessions that a surprise relaunch would cut off.
+    ///
+    /// `unknown` and `upToDate` are kept apart because the button says different
+    /// things: having failed to reach GitHub is not the same as being current.
+    @Published private(set) var updateAvailability: AppUpdateAvailability = .unknown
+
+    var availableUpdate: AvailableUpdate? {
+        if case let .available(update) = updateAvailability { return update }
+        return nil
+    }
 
     let service: ManagerService
     private var operationTask: Task<Void, Never>?
@@ -260,10 +277,10 @@ final class ManagerViewModel: ObservableObject {
     private func checkForUpdateQuietly() async {
         guard let status = try? await service.checkForAppUpdate() else { return }
         switch status {
-        case .upToDate:
-            availableUpdate = nil
+        case let .upToDate(version):
+            updateAvailability = .upToDate(version)
         case let .available(update):
-            availableUpdate = update
+            updateAvailability = .available(update)
         }
     }
 
@@ -430,6 +447,8 @@ final class ManagerViewModel: ObservableObject {
 
         do {
             let result: OperationResult
+            // Only an update that actually staged a new bundle may quit the app.
+            var relaunchForUpdate = false
             switch action {
             case .installClaude:
                 result = try await service.installOrUpdateCLI(.claude)
@@ -440,11 +459,16 @@ final class ManagerViewModel: ObservableObject {
             case .updateByori:
                 result = try await service.updateByoriOnline()
             case .updateApp:
-                result = try await service.updateApp { [weak self] stage in
+                let outcome = try await service.updateApp { [weak self] stage in
                     Task { @MainActor in
                         self?.currentOperation = stage.message
                         self?.operationProgress = stage.fraction
                     }
+                }
+                result = outcome.result
+                relaunchForUpdate = outcome.requiresRelaunch
+                if case let .alreadyCurrent(version) = outcome {
+                    updateAvailability = .upToDate(version)
                 }
             case .startByori:
                 result = try await service.startService()
@@ -478,7 +502,7 @@ final class ManagerViewModel: ObservableObject {
                 detail: result.detail,
                 level: .success
             )
-            if action == .updateApp {
+            if relaunchForUpdate {
                 // The helper is already waiting on this process: it cannot
                 // replace the bundle until the app it belongs to has exited.
                 //
