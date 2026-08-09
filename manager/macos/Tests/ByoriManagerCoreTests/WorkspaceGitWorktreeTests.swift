@@ -122,3 +122,30 @@ final class WorkspaceGitWorktreeTests: XCTestCase {
         XCTAssertNoThrow(try WorkspaceGitService.validateBranchName("feature/one"))
     }
 }
+
+/// Branch names become directory names, and they may contain slashes and
+/// characters that are awkward or unsafe in a path.
+final class WorkspaceWorktreeSlugTests: XCTestCase {
+    private func slug(_ branch: String) -> String {
+        // Mirrors LiveWorkspaceDataSource.slug, which lives in the app target.
+        let mapped = branch.unicodeScalars.map { scalar -> Character in
+            CharacterSet.alphanumerics.contains(scalar) || scalar == "-" || scalar == "_"
+                ? Character(scalar)
+                : "-"
+        }
+        let collapsed = String(mapped)
+            .split(separator: "-", omittingEmptySubsequences: true)
+            .joined(separator: "-")
+        let trimmed = collapsed.isEmpty ? "branch" : collapsed
+        return String(trimmed.prefix(60))
+    }
+
+    func testFlattensPathSeparatorsAndTraversal() {
+        XCTAssertEqual(slug("feature/one"), "feature-one")
+        XCTAssertEqual(slug("../../etc/passwd"), "etc-passwd")
+        XCTAssertEqual(slug("release/2026.08"), "release-2026-08")
+        XCTAssertEqual(slug("///"), "branch")
+        XCTAssertEqual(slug("keeps_underscores-and-dashes"), "keeps_underscores-and-dashes")
+        XCTAssertLessThanOrEqual(slug(String(repeating: "a", count: 200)).count, 60)
+    }
+}

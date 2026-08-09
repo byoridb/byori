@@ -123,6 +123,9 @@ struct WorkspaceView<TerminalHost: View>: View {
         .sheet(isPresented: newSessionPresentation) {
             NewWorkspaceSessionSheet(model: model)
         }
+        .sheet(isPresented: newSourceTreePresentation) {
+            NewWorkspaceSourceTreeSheet(model: model)
+        }
         .alert(item: $model.alert) { alert in
             Alert(
                 title: Text(alert.title),
@@ -234,6 +237,13 @@ struct WorkspaceView<TerminalHost: View>: View {
                 detail: "Select a source tree, task, or session from the project outline."
             )
         }
+    }
+
+    private var newSourceTreePresentation: Binding<Bool> {
+        Binding(
+            get: { model.isPresentingNewSourceTree },
+            set: { if !$0 { model.dismissNewSourceTree() } }
+        )
     }
 
     private var newSessionPresentation: Binding<Bool> {
@@ -383,6 +393,9 @@ private struct WorkspaceSidebar: View {
                         newSession: { target in
                             Task { await model.prepareNewSession(target: target) }
                         },
+                        addSourceTree: { projectID in
+                            Task { await model.prepareNewSourceTree(projectID: projectID) }
+                        },
                         requestRemoval: requestRemoval,
                         restoreSourceTree: restoreSourceTree,
                         isMutatingWorkspace: model.isMutatingWorkspace,
@@ -465,7 +478,8 @@ private struct WorkspaceSidebar: View {
                 // it had nothing to disclose.
                 children: sourceTrees.isEmpty ? nil : sourceTrees,
                 removalRequest: .project(project),
-                restorableSourceTrees: project.hiddenSourceTrees
+                restorableSourceTrees: project.hiddenSourceTrees,
+                addSourceTreeProjectID: project.id
             )
         }
     }
@@ -489,6 +503,8 @@ private struct WorkspaceSidebarNode: Identifiable {
     let quickSessionDisabledReason: String?
     let removalRequest: WorkspaceRemovalRequest?
     let restorableSourceTrees: [WorkspaceHiddenSourceTreeItem]
+    /// Set on projects: the row's + opens the branch picker instead of a session.
+    let addSourceTreeProjectID: String?
 
     init(
         id: String,
@@ -499,7 +515,8 @@ private struct WorkspaceSidebarNode: Identifiable {
         quickSessionTarget: WorkspaceNewSessionTarget? = nil,
         quickSessionDisabledReason: String? = nil,
         removalRequest: WorkspaceRemovalRequest? = nil,
-        restorableSourceTrees: [WorkspaceHiddenSourceTreeItem] = []
+        restorableSourceTrees: [WorkspaceHiddenSourceTreeItem] = [],
+        addSourceTreeProjectID: String? = nil
     ) {
         self.id = id
         self.selection = selection
@@ -510,12 +527,14 @@ private struct WorkspaceSidebarNode: Identifiable {
         self.quickSessionDisabledReason = quickSessionDisabledReason
         self.removalRequest = removalRequest
         self.restorableSourceTrees = restorableSourceTrees
+        self.addSourceTreeProjectID = addSourceTreeProjectID
     }
 }
 
 private struct WorkspaceSidebarBranch: View {
     let node: WorkspaceSidebarNode
     let newSession: (WorkspaceNewSessionTarget) -> Void
+    let addSourceTree: (String) -> Void
     let requestRemoval: (WorkspaceRemovalRequest) -> Void
     let restoreSourceTree: (WorkspaceHiddenSourceTreeItem) -> Void
     let isMutatingWorkspace: Bool
@@ -529,6 +548,7 @@ private struct WorkspaceSidebarBranch: View {
                     WorkspaceSidebarBranch(
                         node: child,
                         newSession: newSession,
+                        addSourceTree: addSourceTree,
                         requestRemoval: requestRemoval,
                         restoreSourceTree: restoreSourceTree,
                         isMutatingWorkspace: isMutatingWorkspace,
@@ -555,6 +575,7 @@ private struct WorkspaceSidebarBranch: View {
         WorkspaceSidebarRow(
             node: node,
             newSession: newSession,
+            addSourceTree: addSourceTree,
             requestRemoval: requestRemoval,
             restoreSourceTree: restoreSourceTree,
             isMutatingWorkspace: isMutatingWorkspace,
@@ -565,6 +586,7 @@ private struct WorkspaceSidebarBranch: View {
 private struct WorkspaceSidebarRow: View {
     let node: WorkspaceSidebarNode
     let newSession: (WorkspaceNewSessionTarget) -> Void
+    let addSourceTree: (String) -> Void
     let requestRemoval: (WorkspaceRemovalRequest) -> Void
     let restoreSourceTree: (WorkspaceHiddenSourceTreeItem) -> Void
     let isMutatingWorkspace: Bool
@@ -583,6 +605,20 @@ private struct WorkspaceSidebarRow: View {
                 .accessibilityLabel(accessibilityLabel)
 
             Spacer(minLength: 4)
+
+            if let projectID = node.addSourceTreeProjectID {
+                Button {
+                    addSourceTree(projectID)
+                } label: {
+                    Label("Add Source Tree", systemImage: "plus")
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .disabled(isMutatingWorkspace)
+                .help("Check out a branch for this project")
+                .accessibilityHint("Opens the branch picker for \(node.title)")
+            }
 
             if let quickSessionTarget = node.quickSessionTarget {
                 Button {
@@ -1662,5 +1698,132 @@ private enum WorkspacePalette {
         case .failed, .timedOut: return .red
         case .cancelled: return .secondary
         }
+    }
+}
+
+/// Checking out a branch used to mean leaving Byori for a terminal. This picks a
+/// branch — existing or new — and Byori creates the worktree under its own
+/// directory, then lets the ordinary workspace load discover it.
+private struct NewWorkspaceSourceTreeSheet: View {
+    @ObservedObject var model: WorkspaceViewModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Add Source Tree")
+                        .font(.title2.weight(.semibold))
+                    Text("Byori checks the branch out into its own worktree, leaving your existing folders untouched.")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(20)
+
+            Divider()
+
+            content
+                .frame(minHeight: 210)
+
+            Divider()
+
+            HStack {
+                if let message = model.newSourceTreeValidationMessage,
+                   model.branchesPhase == .ready {
+                    Label(message, systemImage: "exclamationmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Cancel") { model.dismissNewSourceTree() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(model.isCreatingSourceTree)
+                Button {
+                    Task { await model.createSourceTree() }
+                } label: {
+                    if model.isCreatingSourceTree {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Creating…")
+                        }
+                    } else {
+                        Text("Create")
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(
+                    model.isCreatingSourceTree
+                        || model.branchesPhase != .ready
+                        || model.newSourceTreeValidationMessage != nil
+                )
+            }
+            .padding(20)
+        }
+        .frame(width: 520)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch model.branchesPhase {
+        case .idle, .loading:
+            VStack(spacing: 10) {
+                ProgressView()
+                Text("Reading branches…").foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case let .failed(message):
+            VStack(spacing: 10) {
+                Label("Branches unavailable", systemImage: "exclamationmark.triangle")
+                    .font(.headline)
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Button("Try Again") { Task { await model.loadBranches() } }
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .ready:
+            Form {
+                Picker("", selection: $model.newSourceTreeDraft.mode) {
+                    ForEach(WorkspaceNewSourceTreeDraft.Mode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                switch model.newSourceTreeDraft.mode {
+                case .existing:
+                    Picker("Branch", selection: $model.newSourceTreeDraft.selectedBranch) {
+                        ForEach(selectableBranches) { branch in
+                            Text(branch.isRemote ? "\(branch.name) (remote)" : branch.name)
+                                .tag(branch.name)
+                        }
+                    }
+                    if selectableBranches.isEmpty {
+                        Text("Every branch is already checked out. Create a new one instead.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                case .new:
+                    TextField("Branch Name", text: $model.newSourceTreeDraft.newBranchName)
+                    Picker("Start From", selection: $model.newSourceTreeDraft.startPoint) {
+                        ForEach(model.availableBranches) { branch in
+                            Text(branch.isRemote ? "\(branch.name) (remote)" : branch.name)
+                                .tag(branch.name)
+                        }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+        }
+    }
+
+    /// Git refuses a second worktree for a branch that is already checked out,
+    /// so those are not offered rather than failing after the fact.
+    private var selectableBranches: [WorkspaceGitBranch] {
+        model.availableBranches.filter { !$0.isCheckedOut }
     }
 }

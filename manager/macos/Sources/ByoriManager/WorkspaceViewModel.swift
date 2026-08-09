@@ -15,6 +15,8 @@ protocol WorkspaceDataSource: AnyObject {
     func loadContext(_ request: WorkspaceInspectorRequest) async throws -> WorkspaceContextSnapshot
     func registerProject(at repositoryURL: URL) async throws
     func removeProject(id: String) async throws
+    func branches(projectID: String) async throws -> [WorkspaceGitBranch]
+    func createSourceTree(projectID: String, branch: String, startPoint: String?) async throws -> URL
     func hideSourceTree(projectID: String, sourceTreeID: String) async throws
     func restoreSourceTree(projectID: String, at url: URL) async throws
     func startSession(_ request: WorkspaceSessionLaunchRequest) async throws -> WorkspaceSessionLaunchResult
@@ -36,6 +38,18 @@ extension WorkspaceDataSource {
 
     func removeProject(id: String) async throws {
         throw WorkspaceAdapterError.unsupported("Project removal is not connected yet.")
+    }
+
+    func branches(projectID: String) async throws -> [WorkspaceGitBranch] {
+        throw WorkspaceAdapterError.unsupported("Branch listing is not connected yet.")
+    }
+
+    func createSourceTree(
+        projectID: String,
+        branch: String,
+        startPoint: String?
+    ) async throws -> URL {
+        throw WorkspaceAdapterError.unsupported("Source tree creation is not connected yet.")
     }
 
     func hideSourceTree(projectID: String, sourceTreeID: String) async throws {
@@ -456,6 +470,24 @@ enum WorkspaceInspectorPhase: Equatable {
     case failed(String)
 }
 
+/// What the user is choosing when adding a source tree: an existing branch, or
+/// a new one cut from a start point.
+struct WorkspaceNewSourceTreeDraft: Equatable {
+    var projectID: String = ""
+    var mode: Mode = .existing
+    var selectedBranch: String = ""
+    var newBranchName: String = ""
+    var startPoint: String = ""
+
+    enum Mode: String, CaseIterable, Identifiable, Equatable {
+        case existing
+        case new
+
+        var id: String { rawValue }
+        var label: String { self == .existing ? "Existing Branch" : "New Branch" }
+    }
+}
+
 enum WorkspaceSessionOptionsPhase: Equatable {
     case idle
     case loading
@@ -532,6 +564,11 @@ final class WorkspaceViewModel: ObservableObject {
     @Published private(set) var contextSnapshot: WorkspaceContextSnapshot?
     @Published private(set) var isRefreshing = false
     @Published private(set) var isRegisteringProject = false
+    @Published var newSourceTreeDraft = WorkspaceNewSourceTreeDraft()
+    @Published private(set) var isPresentingNewSourceTree = false
+    @Published private(set) var availableBranches: [WorkspaceGitBranch] = []
+    @Published private(set) var branchesPhase: WorkspaceSessionOptionsPhase = .idle
+    @Published private(set) var isCreatingSourceTree = false
     @Published private(set) var isMutatingWorkspace = false
     @Published private(set) var stoppingSessionIDs: Set<String> = []
 
@@ -827,6 +864,91 @@ final class WorkspaceViewModel: ObservableObject {
     }
 
 
+
+    func prepareNewSourceTree(projectID: String) async {
+        guard !isPresentingNewSourceTree, !isCreatingSourceTree else { return }
+        newSourceTreeDraft = WorkspaceNewSourceTreeDraft(projectID: projectID)
+        availableBranches = []
+        branchesPhase = .loading
+        isPresentingNewSourceTree = true
+        await loadBranches()
+    }
+
+    func loadBranches() async {
+        let projectID = newSourceTreeDraft.projectID
+        guard !projectID.isEmpty else { return }
+        branchesPhase = .loading
+        do {
+            let branches = try await dataSource.branches(projectID: projectID)
+            guard newSourceTreeDraft.projectID == projectID else { return }
+            availableBranches = branches
+            // Default to something the user can actually act on.
+            if newSourceTreeDraft.selectedBranch.isEmpty {
+                newSourceTreeDraft.selectedBranch = branches.first { !$0.isCheckedOut }?.name ?? ""
+            }
+            if newSourceTreeDraft.startPoint.isEmpty {
+                newSourceTreeDraft.startPoint = branches.first { $0.isCheckedOut }?.name
+                    ?? branches.first?.name ?? ""
+            }
+            branchesPhase = .ready
+        } catch {
+            branchesPhase = .failed(error.localizedDescription)
+        }
+    }
+
+    func dismissNewSourceTree() {
+        guard !isCreatingSourceTree else { return }
+        isPresentingNewSourceTree = false
+    }
+
+    var newSourceTreeValidationMessage: String? {
+        switch newSourceTreeDraft.mode {
+        case .existing:
+            if newSourceTreeDraft.selectedBranch.isEmpty {
+                return "Choose a branch that is not already checked out."
+            }
+        case .new:
+            let name = newSourceTreeDraft.newBranchName.trimmingCharacters(in: .whitespaces)
+            if name.isEmpty { return "Name the new branch." }
+            if availableBranches.contains(where: { !$0.isRemote && $0.name == name }) {
+                return "A branch named \(name) already exists."
+            }
+            if newSourceTreeDraft.startPoint.isEmpty { return "Choose where the branch starts." }
+        }
+        return nil
+    }
+
+    func createSourceTree() async {
+        guard !isCreatingSourceTree, newSourceTreeValidationMessage == nil else { return }
+        let draft = newSourceTreeDraft
+        isCreatingSourceTree = true
+        defer { isCreatingSourceTree = false }
+        do {
+            let branch: String
+            let startPoint: String?
+            switch draft.mode {
+            case .existing:
+                branch = draft.selectedBranch
+                startPoint = nil
+            case .new:
+                branch = draft.newBranchName.trimmingCharacters(in: .whitespaces)
+                startPoint = draft.startPoint
+            }
+            _ = try await dataSource.createSourceTree(
+                projectID: draft.projectID,
+                branch: branch,
+                startPoint: startPoint
+            )
+            isPresentingNewSourceTree = false
+            // The new checkout is discovered by the ordinary load.
+            await load(force: true)
+        } catch {
+            alert = WorkspaceAlert(
+                title: "Source tree could not be created",
+                message: error.localizedDescription
+            )
+        }
+    }
 
     private func presentNewSession(for target: (
         project: WorkspaceProjectItem,
