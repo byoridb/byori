@@ -126,6 +126,9 @@ struct WorkspaceView<TerminalHost: View>: View {
         .sheet(isPresented: newSourceTreePresentation) {
             NewWorkspaceSourceTreeSheet(model: model)
         }
+        .sheet(isPresented: fileEditorPresentation) {
+            WorkspaceFileEditorSheet(model: model)
+        }
         .alert(item: $model.alert) { alert in
             Alert(
                 title: Text(alert.title),
@@ -251,6 +254,15 @@ struct WorkspaceView<TerminalHost: View>: View {
             get: { model.isPresentingNewSession },
             set: { isPresented in
                 if !isPresented { model.dismissNewSession() }
+            }
+        )
+    }
+
+    private var fileEditorPresentation: Binding<Bool> {
+        Binding(
+            get: { model.fileEditor != nil },
+            set: { isPresented in
+                if !isPresented { model.closeFileEditor() }
             }
         )
     }
@@ -1054,7 +1066,7 @@ private struct WorkspaceInspector: View {
                 if let snapshot = model.inspectorSnapshot {
                     switch model.inspectorTab {
                     case .files:
-                        WorkspaceFilesInspector(files: snapshot.files)
+                        WorkspaceFilesInspector(files: snapshot.files) { model.openFile($0) }
                     case .git:
                         WorkspaceGitInspector(summary: snapshot.git)
                     case .context:
@@ -1118,6 +1130,7 @@ private struct WorkspaceInspector: View {
 
 private struct WorkspaceFilesInspector: View {
     let files: [WorkspaceFileItem]
+    let open: (WorkspaceFileItem) -> Void
 
     var body: some View {
         if files.isEmpty {
@@ -1129,13 +1142,32 @@ private struct WorkspaceFilesInspector: View {
         } else {
             List {
                 OutlineGroup(files, children: \.children) { item in
-                    Label(item.name, systemImage: icon(item.kind))
-                        .lineLimit(1)
-                        .accessibilityLabel("\(item.kind.rawValue.capitalized) \(item.name)")
+                    row(item)
                 }
             }
             .listStyle(.sidebar)
             .accessibilityLabel("Files in selected source tree")
+        }
+    }
+
+    /// Only regular files open. Folders keep the outline's own disclosure
+    /// behaviour, and symlinks are not followed here for the same reason the
+    /// tree walker does not follow them.
+    @ViewBuilder
+    private func row(_ item: WorkspaceFileItem) -> some View {
+        let label = Label(item.name, systemImage: icon(item.kind))
+            .lineLimit(1)
+            .accessibilityLabel("\(item.kind.rawValue.capitalized) \(item.name)")
+        if item.kind == .file {
+            Button { open(item) } label: {
+                label.frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Open \(item.name)")
+            .accessibilityHint("Opens the file for editing")
+        } else {
+            label
         }
     }
 
@@ -1825,5 +1857,178 @@ private struct NewWorkspaceSourceTreeSheet: View {
     /// so those are not offered rather than failing after the fact.
     private var selectableBranches: [WorkspaceGitBranch] {
         model.availableBranches.filter { !$0.isCheckedOut }
+    }
+}
+
+/// A single-file editor for the small corrections that do not deserve a context
+/// switch into another app.
+///
+/// It runs as a sheet rather than inside the inspector column because the
+/// inspector is narrow enough that editing code in it would be worse than not
+/// offering the feature at all.
+private struct WorkspaceFileEditorSheet: View {
+    @ObservedObject var model: WorkspaceViewModel
+    @State private var pendingDiscard: DiscardIntent?
+
+    /// Both ways of losing a draft, so the confirmation can say which one it is.
+    private enum DiscardIntent: String, Identifiable {
+        case close
+        case reload
+
+        var id: String { rawValue }
+
+        var actionTitle: String { self == .close ? "Discard and Close" : "Discard and Reload" }
+        var message: String {
+            self == .close
+                ? "The edits in this file have not been saved."
+                : "Reloading replaces your unsaved edits with the file on disk."
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            content
+                .frame(minHeight: 320)
+            Divider()
+            footer
+        }
+        .frame(minWidth: 720, idealWidth: 820, minHeight: 480, idealHeight: 560)
+        .confirmationDialog(
+            "Discard unsaved edits?",
+            isPresented: discardPresentation,
+            titleVisibility: .visible
+        ) {
+            if let intent = pendingDiscard {
+                Button(intent.actionTitle, role: .destructive) {
+                    pendingDiscard = nil
+                    switch intent {
+                    case .close: model.closeFileEditor()
+                    case .reload: Task { await model.reloadOpenFile() }
+                    }
+                }
+            }
+            Button("Keep Editing", role: .cancel) { pendingDiscard = nil }
+        } message: {
+            Text(pendingDiscard?.message ?? "")
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(model.fileEditor?.name ?? "File")
+                    .font(.title3.weight(.semibold))
+                Text(model.fileEditor?.relativePath ?? "")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(2)
+            }
+            Spacer()
+            if let editor = model.fileEditor, editor.phase == .ready {
+                Text(editor.isDirty ? "Unsaved" : "\(editor.byteSize) bytes")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(editor.isDirty ? .orange : .secondary)
+                    .accessibilityLabel(editor.isDirty ? "Unsaved changes" : "\(editor.byteSize) bytes")
+            }
+        }
+        .padding(20)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch model.fileEditor?.phase {
+        case .loading, nil:
+            WorkspaceUnavailableView(
+                icon: "doc.text",
+                title: "Opening file",
+                detail: "Reading the file from the source tree.",
+                showsProgress: true
+            )
+        case let .failed(message):
+            WorkspaceUnavailableView(
+                icon: "exclamationmark.triangle",
+                title: "File cannot be opened",
+                detail: message,
+                primaryTitle: "Try Again",
+                primaryAction: { Task { await model.reloadOpenFile() } }
+            )
+        case .ready:
+            TextEditor(text: draft)
+                .font(.system(.body, design: .monospaced))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .disabled(model.fileEditor?.isSaving == true)
+                .accessibilityLabel("File contents")
+        }
+    }
+
+    private var footer: some View {
+        HStack {
+            if let notice = model.fileEditor?.notice {
+                Label(notice, systemImage: noticeIcon)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer()
+            Button("Reload") {
+                if model.fileEditor?.isDirty == true {
+                    pendingDiscard = .reload
+                } else {
+                    Task { await model.reloadOpenFile() }
+                }
+            }
+            .disabled(model.fileEditor?.isSaving == true)
+            Button("Close") { closeRequested() }
+                .keyboardShortcut(.cancelAction)
+                .disabled(model.fileEditor?.isSaving == true)
+            Button {
+                Task { await model.saveOpenFile() }
+            } label: {
+                if model.fileEditor?.isSaving == true {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Saving…")
+                    }
+                } else {
+                    Text("Save")
+                }
+            }
+            .keyboardShortcut("s", modifiers: .command)
+            .buttonStyle(.borderedProminent)
+            .disabled(model.fileEditor?.isDirty != true || model.fileEditor?.isSaving == true)
+        }
+        .padding(20)
+    }
+
+    /// A conflict is the one notice worth an alarming icon: the save did not
+    /// happen and the user has to decide what to keep.
+    private var noticeIcon: String {
+        model.fileEditor?.notice == "Saved." ? "checkmark.circle" : "exclamationmark.circle"
+    }
+
+    private func closeRequested() {
+        if model.fileEditor?.isDirty == true {
+            pendingDiscard = .close
+        } else {
+            model.closeFileEditor()
+        }
+    }
+
+    private var draft: Binding<String> {
+        Binding(
+            get: { model.fileEditor?.draft ?? "" },
+            set: { model.fileEditor?.draft = $0 }
+        )
+    }
+
+    private var discardPresentation: Binding<Bool> {
+        Binding(
+            get: { pendingDiscard != nil },
+            set: { if !$0 { pendingDiscard = nil } }
+        )
     }
 }

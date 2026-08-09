@@ -51,6 +51,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
     private let git: WorkspaceGitService
     private let workspaceHome: URL
     private let files: LocalWorkspaceFileTreeService
+    private let documents: LocalWorkspaceFileDocumentService
     private let managerService: ManagerService
     private let launchFactory: TerminalLaunchDescriptorFactory
     private let terminalController: TerminalSessionController
@@ -90,6 +91,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         self.git = git
         self.workspaceHome = workspaceHome
         self.files = LocalWorkspaceFileTreeService()
+        self.documents = LocalWorkspaceFileDocumentService()
         self.managerService = managerService
         self.launchFactory = TerminalLaunchDescriptorFactory(paths: managerService.paths)
         self.terminalController = terminalController
@@ -565,6 +567,33 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
             files: makeFileItems(loadedFiles.nodes),
             git: makeGitItem(loadedGit)
         )
+    }
+
+    func readFile(_ request: WorkspaceFileReadRequest) async throws -> WorkspaceFileDocument {
+        try await documents.read(
+            at: checkoutURL(projectID: request.projectID, sourceTreeID: request.sourceTreeID),
+            relativePath: request.relativePath
+        )
+    }
+
+    func writeFile(_ request: WorkspaceFileWriteRequest) async throws -> WorkspaceFileDocument {
+        try await documents.write(
+            at: checkoutURL(projectID: request.projectID, sourceTreeID: request.sourceTreeID),
+            relativePath: request.relativePath,
+            text: request.text,
+            expectedRevision: request.expectedRevision
+        )
+    }
+
+    /// The source tree's root is the containment boundary every file operation is
+    /// resolved against, so it is looked up from the registry rather than passed
+    /// in from the view.
+    private func checkoutURL(projectID: String, sourceTreeID: String) throws -> URL {
+        let key = CheckoutKey(projectID: projectID, checkoutID: sourceTreeID)
+        guard coreProjects[projectID] != nil, let checkout = checkouts[key] else {
+            throw WorkspaceAdapterError.invalidState("Refresh the workspace before opening files.")
+        }
+        return checkout.url
     }
 
     func loadContext(_ request: WorkspaceInspectorRequest) async throws -> WorkspaceContextSnapshot {
