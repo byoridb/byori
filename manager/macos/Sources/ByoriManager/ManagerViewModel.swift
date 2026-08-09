@@ -214,10 +214,18 @@ final class ManagerViewModel: ObservableObject {
     /// updater refuses to replace anything.
     let appVersion: String? = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
 
+    /// Set when a newer signed release exists. Byori only reports it — nothing
+    /// is downloaded or installed until the user asks, because this app owns
+    /// live agent sessions that a surprise relaunch would cut off.
+    @Published private(set) var availableUpdate: AvailableUpdate?
+
     let service: ManagerService
     private var operationTask: Task<Void, Never>?
     private var activeActivityID: UUID?
     private var lastOperationHadRollbackFailure = false
+    private var updateCheckTask: Task<Void, Never>?
+
+    private static let updateCheckInterval: Duration = .seconds(6 * 60 * 60)
 
     var hasActiveOperation: Bool { operationTask != nil }
 
@@ -225,6 +233,33 @@ final class ManagerViewModel: ObservableObject {
         self.service = service
         Task { [weak self] in
             await self?.refresh()
+        }
+        startUpdateChecks()
+    }
+
+    deinit {
+        updateCheckTask?.cancel()
+    }
+
+    private func startUpdateChecks() {
+        updateCheckTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.checkForUpdateQuietly()
+                try? await Task.sleep(for: Self.updateCheckInterval)
+            }
+        }
+    }
+
+    /// Being offline, rate-limited, or run from a dev build are all ordinary and
+    /// none of them are worth an activity entry; the check simply reports
+    /// nothing until it next succeeds.
+    private func checkForUpdateQuietly() async {
+        guard let status = try? await service.checkForAppUpdate() else { return }
+        switch status {
+        case .upToDate:
+            availableUpdate = nil
+        case let .available(update):
+            availableUpdate = update
         }
     }
 
