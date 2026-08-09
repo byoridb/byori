@@ -456,19 +456,16 @@ private struct WorkspaceSidebar: View {
                         : .sourceTree(sourceTree)
                 )
             }
-            let sourceTreeGroup = WorkspaceSidebarNode(
-                id: "source-trees:\(project.id)",
-                selection: nil,
-                kind: .group,
-                title: "Source Trees",
-                children: sourceTrees.isEmpty ? nil : sourceTrees
-            )
             return WorkspaceSidebarNode(
                 id: "project:\(project.id)",
                 selection: .project(project.id),
                 kind: .project(project),
                 title: project.name,
-                children: [sourceTreeGroup],
+                // Source trees hang directly off the project. The old "Source
+                // Trees" group added a level that named a category rather than
+                // a thing, and gave every project a disclosure arrow even when
+                // it had nothing to disclose.
+                children: sourceTrees.isEmpty ? nil : sourceTrees,
                 removalRequest: .project(project),
                 restorableSourceTrees: project.hiddenSourceTrees
             )
@@ -480,7 +477,6 @@ private struct WorkspaceSidebar: View {
 private struct WorkspaceSidebarNode: Identifiable {
     enum Kind {
         case project(WorkspaceProjectItem)
-        case group
         case sourceTree(WorkspaceSourceTreeItem)
         case task(WorkspaceTaskItem)
         case session(WorkspaceSessionItem)
@@ -720,7 +716,6 @@ private struct WorkspaceSidebarRow: View {
     private var icon: String {
         switch node.kind {
         case .project: return "folder"
-        case .group: return "square.stack.3d.up"
         case .sourceTree: return "arrow.triangle.branch"
         case .task: return "scope"
         case let .session(session): return session.providerSystemImage
@@ -744,17 +739,14 @@ private struct WorkspaceSidebarRow: View {
     }
 
     private var iconColor: Color {
-        if case .group = node.kind { return .secondary }
         return .primary
     }
 
     private var rowFont: Font {
-        if case .group = node.kind { return .caption }
         return .body
     }
 
     private var textColor: Color {
-        if case .group = node.kind { return .secondary }
         return .primary
     }
 
@@ -762,7 +754,7 @@ private struct WorkspaceSidebarRow: View {
         switch node.kind {
         case let .project(project):
             return project.registration == .trusted ? nil : project.registration.label
-        case .sourceTree, .group, .task, .session:
+        case .sourceTree, .task, .session:
             return nil
         }
     }
@@ -796,8 +788,6 @@ private struct WorkspaceSidebarRow: View {
         switch node.kind {
         case let .project(project):
             return "Project \(project.name), \(project.registration.label)"
-        case .group:
-            return node.title
         case let .sourceTree(sourceTree):
             return "\(sourceTree.kind.label) \(sourceTree.name), branch \(sourceTree.branch), \(sourceTree.workingState.accessibilityLabel)"
         case let .task(task):
