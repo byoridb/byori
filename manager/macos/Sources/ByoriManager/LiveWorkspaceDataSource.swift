@@ -538,7 +538,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
             )
             didActivateSession = true
             lastTerminalStatus[session.id] = .starting
-            try terminalController.start(
+            try await terminalController.start(
                 descriptor,
                 callbacks: TerminalSessionCallbacks(statusChanged: { [weak self] snapshot in
                     self?.terminalStatusChanged(
