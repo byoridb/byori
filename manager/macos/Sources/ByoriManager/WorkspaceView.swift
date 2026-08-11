@@ -126,6 +126,9 @@ struct WorkspaceView<TerminalHost: View>: View {
         .sheet(isPresented: newSourceTreePresentation) {
             NewWorkspaceSourceTreeSheet(model: model)
         }
+        .sheet(isPresented: historyPresentation) {
+            WorkspaceHistorySheet(model: model)
+        }
         .sheet(isPresented: fileEditorPresentation) {
             WorkspaceFileEditorSheet(model: model)
         }
@@ -257,6 +260,13 @@ struct WorkspaceView<TerminalHost: View>: View {
             set: { isPresented in
                 if !isPresented { model.dismissNewSession() }
             }
+        )
+    }
+
+    private var historyPresentation: Binding<Bool> {
+        Binding(
+            get: { model.history != nil },
+            set: { if !$0 { model.dismissHistory() } }
         )
     }
 
@@ -1135,7 +1145,7 @@ private struct WorkspaceInspector: View {
                     case .files:
                         WorkspaceFilesInspector(files: snapshot.files) { model.openFile($0) }
                     case .git:
-                        WorkspaceGitInspector(summary: snapshot.git)
+                        WorkspaceGitInspector(summary: snapshot.git) { model.showHistory() }
                     case .context:
                         EmptyView()
                     }
@@ -1249,6 +1259,7 @@ private struct WorkspaceFilesInspector: View {
 
 private struct WorkspaceGitInspector: View {
     let summary: WorkspaceGitSummaryItem
+    let showHistory: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1269,6 +1280,11 @@ private struct WorkspaceGitInspector: View {
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
+                Button(action: showHistory) {
+                    Label("Show History", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                }
+                .controlSize(.small)
+                .accessibilityHint("Opens the commit graph for this source tree")
             }
             .padding(14)
 
@@ -2115,5 +2131,324 @@ private struct WorkspaceFileEditorSheet: View {
             get: { pendingDiscard != nil },
             set: { if !$0 { pendingDiscard = nil } }
         )
+    }
+}
+
+// MARK: - History
+
+/// The commit graph, with checkout.
+///
+/// It is a sheet rather than a panel in the inspector because the inspector is
+/// under 380pt wide: lanes plus a subject plus refs do not fit there without
+/// truncating the one thing people read.
+private struct WorkspaceHistorySheet: View {
+    @ObservedObject var model: WorkspaceViewModel
+
+    private static let rowHeight: CGFloat = 30
+    private static let laneWidth: CGFloat = 15
+    private static let maxDrawnLanes = 8
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            content
+            Divider()
+            footer
+        }
+        .frame(minWidth: 860, idealWidth: 980, minHeight: 520, idealHeight: 640)
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("History")
+                    .font(.title3.weight(.semibold))
+                Text(model.history?.sourceTreeName ?? "")
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if model.history?.graph.isTruncated == true {
+                Text("Showing the most recent commits")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(20)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch model.history?.phase {
+        case .loading, nil:
+            WorkspaceUnavailableView(
+                icon: "clock.arrow.circlepath",
+                title: "Reading history",
+                detail: "Walking commits in this source tree.",
+                showsProgress: true
+            )
+        case let .failed(message):
+            WorkspaceUnavailableView(
+                icon: "exclamationmark.triangle",
+                title: "History unavailable",
+                detail: message,
+                primaryTitle: "Try Again",
+                primaryAction: { Task { await model.reloadHistory() } }
+            )
+        case .ready:
+            if let history = model.history, history.graph.rows.isEmpty {
+                WorkspaceUnavailableView(
+                    icon: "tray",
+                    title: "No commits yet",
+                    detail: "This repository has no history to show."
+                )
+            } else {
+                graph
+            }
+        }
+    }
+
+    private var graph: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(model.history?.graph.rows ?? [], id: \.commit.sha) { row in
+                    WorkspaceHistoryRow(
+                        row: row,
+                        laneCount: drawnLaneCount,
+                        rowHeight: Self.rowHeight,
+                        laneWidth: Self.laneWidth,
+                        isSelected: model.history?.selectedSHA == row.commit.sha,
+                        canCheckOut: model.history?.canCheckOut == true,
+                        checkingOutRef: model.history?.checkingOutRef,
+                        select: { model.selectCommit(row.commit.sha) },
+                        checkout: { ref in Task { await model.checkout(ref) } }
+                    )
+                }
+            }
+            .padding(.vertical, 6)
+        }
+    }
+
+    /// Very wide graphs are clamped: beyond a handful of lanes the lines stop
+    /// carrying information and start eating the subject column.
+    private var drawnLaneCount: Int {
+        min(model.history?.graph.laneCount ?? 0, Self.maxDrawnLanes)
+    }
+
+    private var footer: some View {
+        HStack {
+            if let notice = model.history?.notice {
+                Label(notice, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            } else if let reason = model.history?.activeSessionBlockReason {
+                // Said up front, not after a click: the buttons are already
+                // disabled and an unexplained disabled control is worse than no
+                // control.
+                Label(reason, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            Spacer()
+            Button("Reload") { Task { await model.reloadHistory() } }
+                .disabled(model.history?.checkingOutRef != nil)
+            Button("Done") { model.dismissHistory() }
+                .keyboardShortcut(.cancelAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(model.history?.checkingOutRef != nil)
+        }
+        .padding(20)
+    }
+}
+
+private struct WorkspaceHistoryRow: View {
+    let row: WorkspaceGitGraphRow
+    let laneCount: Int
+    let rowHeight: CGFloat
+    let laneWidth: CGFloat
+    let isSelected: Bool
+    let canCheckOut: Bool
+    let checkingOutRef: String?
+    let select: () -> Void
+    let checkout: (WorkspaceGitRef) -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            WorkspaceGitLaneStrip(row: row, laneCount: laneCount, laneWidth: laneWidth)
+                .frame(width: CGFloat(max(laneCount, 1)) * laneWidth, height: rowHeight)
+
+            Text(row.commit.subject)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            ForEach(row.commit.refs) { ref in
+                WorkspaceGitRefBadge(ref: ref)
+            }
+
+            Spacer(minLength: 8)
+
+            if let ref = checkoutTarget {
+                Button {
+                    checkout(ref)
+                } label: {
+                    if checkingOutRef == ref.name {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text("Check Out")
+                    }
+                }
+                .controlSize(.small)
+                .disabled(!canCheckOut)
+                .help(canCheckOut ? "Check out \(ref.name)" : "Checkout is unavailable right now")
+            }
+
+            Text(row.commit.authorName)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(width: 110, alignment: .trailing)
+
+            Text(relativeDate)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 92, alignment: .trailing)
+
+            Text(row.commit.shortSHA)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .frame(height: rowHeight)
+        .background(isSelected ? Color.accentColor.opacity(0.14) : .clear)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: select)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(row.commit.subject), \(row.commit.authorName), \(row.commit.shortSHA)")
+    }
+
+    /// A commit carries at most one sensible checkout target: a local branch
+    /// sitting on it. Tags and remote-tracking refs would detach HEAD.
+    ///
+    /// The branch HEAD is already attached to gets no button, but a detached
+    /// HEAD does — reattaching is exactly what someone wants there.
+    private var checkoutTarget: WorkspaceGitRef? {
+        guard !row.commit.refs.contains(where: { $0.kind == .head }) else { return nil }
+        return row.commit.refs.first(where: \.isCheckoutable)
+    }
+
+    private var relativeDate: String {
+        guard let date = row.commit.authorDate else { return "—" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+private struct WorkspaceGitRefBadge: View {
+    let ref: WorkspaceGitRef
+
+    var body: some View {
+        Text(ref.name)
+            .font(.caption2.weight(.medium))
+            .lineLimit(1)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.18), in: Capsule())
+            .foregroundStyle(color)
+            .accessibilityLabel("\(kindLabel) \(ref.name)")
+    }
+
+    private var color: Color {
+        switch ref.kind {
+        case .head, .detachedHead: return .accentColor
+        case .localBranch: return .green
+        case .remoteBranch: return .blue
+        case .tag: return .orange
+        }
+    }
+
+    private var kindLabel: String {
+        switch ref.kind {
+        case .head: return "HEAD"
+        case .detachedHead: return "Detached HEAD"
+        case .localBranch: return "Branch"
+        case .remoteBranch: return "Remote branch"
+        case .tag: return "Tag"
+        }
+    }
+}
+
+/// Draws one row of the commit graph: the lines passing through it, the lines
+/// leaving it toward its parents, and its own node.
+private struct WorkspaceGitLaneStrip: View {
+    let row: WorkspaceGitGraphRow
+    let laneCount: Int
+    let laneWidth: CGFloat
+
+    var body: some View {
+        Canvas { context, size in
+            let midY = size.height / 2
+
+            // Lanes that only pass by are drawn first so a commit's own node and
+            // its outgoing edges sit on top of them.
+            for lane in row.passingLanes where lane < laneCount {
+                var line = Path()
+                line.move(to: CGPoint(x: x(lane), y: 0))
+                line.addLine(to: CGPoint(x: x(lane), y: size.height))
+                context.stroke(line, with: .color(color(lane).opacity(0.55)), lineWidth: 1.5)
+            }
+
+            for edge in row.outgoing where edge.fromLane < laneCount && edge.toLane < laneCount {
+                var line = Path()
+                line.move(to: CGPoint(x: x(edge.fromLane), y: midY))
+                if edge.fromLane == edge.toLane {
+                    line.addLine(to: CGPoint(x: x(edge.toLane), y: size.height))
+                } else {
+                    // A curve rather than a diagonal, so a branch reads as
+                    // leaving its lane instead of cutting across the column.
+                    line.addCurve(
+                        to: CGPoint(x: x(edge.toLane), y: size.height),
+                        control1: CGPoint(x: x(edge.fromLane), y: size.height * 0.75),
+                        control2: CGPoint(x: x(edge.toLane), y: midY + 2)
+                    )
+                }
+                context.stroke(line, with: .color(color(edge.toLane)), lineWidth: 1.5)
+            }
+
+            // The incoming half of this commit's own lane.
+            var incoming = Path()
+            incoming.move(to: CGPoint(x: x(row.lane), y: 0))
+            incoming.addLine(to: CGPoint(x: x(row.lane), y: midY))
+            context.stroke(incoming, with: .color(color(row.lane).opacity(0.55)), lineWidth: 1.5)
+
+            guard row.lane < laneCount else { return }
+            let radius: CGFloat = row.commit.isMerge ? 3.5 : 4.5
+            let node = Path(ellipseIn: CGRect(
+                x: x(row.lane) - radius,
+                y: midY - radius,
+                width: radius * 2,
+                height: radius * 2
+            ))
+            // A merge is drawn hollow so the two shapes are distinguishable
+            // without relying on colour alone.
+            if row.commit.isMerge {
+                context.stroke(node, with: .color(color(row.lane)), lineWidth: 2)
+            } else {
+                context.fill(node, with: .color(color(row.lane)))
+            }
+        }
+        .accessibilityHidden(true)
+    }
+
+    private func x(_ lane: Int) -> CGFloat {
+        CGFloat(lane) * laneWidth + laneWidth / 2
+    }
+
+    /// Lane colour is positional, which is what makes a line followable down the
+    /// page even though the same branch may change lanes.
+    private func color(_ lane: Int) -> Color {
+        let palette: [Color] = [.accentColor, .orange, .purple, .teal, .pink, .yellow, .mint, .indigo]
+        return palette[lane % palette.count]
     }
 }

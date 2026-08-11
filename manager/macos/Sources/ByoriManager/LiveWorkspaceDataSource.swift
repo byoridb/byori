@@ -756,6 +756,19 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         )
     }
 
+    func loadHistory(projectID: String, sourceTreeID: String) async throws -> WorkspaceGitGraph {
+        let url = try checkoutURL(projectID: projectID, sourceTreeID: sourceTreeID)
+        let history = try await git.log(at: url, limit: 300)
+        return WorkspaceGitGraph.layout(commits: history.commits, isTruncated: history.isTruncated)
+    }
+
+    func checkout(projectID: String, sourceTreeID: String, ref: String) async throws {
+        let url = try checkoutURL(projectID: projectID, sourceTreeID: sourceTreeID)
+        try await operationGate.perform {
+            try await git.checkout(at: url, ref: ref)
+        }
+    }
+
     func readFile(_ request: WorkspaceFileReadRequest) async throws -> WorkspaceFileDocument {
         try await documents.read(
             at: checkoutURL(projectID: request.projectID, sourceTreeID: request.sourceTreeID),
@@ -772,13 +785,15 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         )
     }
 
-    /// The source tree's root is the containment boundary every file operation is
-    /// resolved against, so it is looked up from the registry rather than passed
-    /// in from the view.
+    /// The source tree's root is the containment boundary every file and Git
+    /// operation is resolved against, so it is looked up from the registry
+    /// rather than passed in from the view.
     private func checkoutURL(projectID: String, sourceTreeID: String) throws -> URL {
         let key = CheckoutKey(projectID: projectID, checkoutID: sourceTreeID)
         guard coreProjects[projectID] != nil, let checkout = checkouts[key] else {
-            throw WorkspaceAdapterError.invalidState("Refresh the workspace before opening files.")
+            throw WorkspaceAdapterError.invalidState(
+                "Refresh the workspace before reading this source tree."
+            )
         }
         return checkout.url
     }
