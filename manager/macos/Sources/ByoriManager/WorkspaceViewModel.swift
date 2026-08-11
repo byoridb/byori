@@ -23,6 +23,10 @@ protocol WorkspaceDataSource: AnyObject {
     func restoreSourceTree(projectID: String, at url: URL) async throws
     func startSession(_ request: WorkspaceSessionLaunchRequest) async throws -> WorkspaceSessionLaunchResult
     func stopSession(id: String) async throws -> WorkspaceSessionItem
+    /// Reopens a terminal onto a session the CLI is still running in.
+    func reattachSession(id: String) async throws -> WorkspaceSessionLaunchResult
+    /// Why sessions started now will not outlive the app, or nil when they will.
+    func sessionPersistenceWarning() async -> String?
 }
 
 extension WorkspaceDataSource {
@@ -73,6 +77,12 @@ extension WorkspaceDataSource {
     func stopSession(id: String) async throws -> WorkspaceSessionItem {
         throw WorkspaceAdapterError.unsupported("Session stopping is not connected yet.")
     }
+
+    func reattachSession(id: String) async throws -> WorkspaceSessionLaunchResult {
+        throw WorkspaceAdapterError.unsupported("Session reattach is not connected yet.")
+    }
+
+    func sessionPersistenceWarning() async -> String? { nil }
 
 
 }
@@ -241,6 +251,9 @@ struct WorkspaceSessionItem: Identifiable, Hashable {
     var startedAt: Date?
     var endedAt: Date?
     var nativeSessionID: String?
+    /// The CLI is still running under tmux but this app holds no terminal for
+    /// it — the state a session is in after Byori was quit and reopened.
+    var isDetached: Bool = false
 
     var displayName: String {
         guard let normalizedName = name?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -629,6 +642,10 @@ final class WorkspaceViewModel: ObservableObject {
     @Published private(set) var isCreatingSourceTree = false
     @Published private(set) var isMutatingWorkspace = false
     @Published private(set) var stoppingSessionIDs: Set<String> = []
+    @Published private(set) var reattachingSessionIDs: Set<String> = []
+    /// Set when a session started now would die with the app. Shown before the
+    /// user commits to a session, not after the work is already lost.
+    @Published private(set) var sessionPersistenceWarning: String?
 
     @Published var fileEditor: WorkspaceFileEditor?
 
@@ -1112,6 +1129,7 @@ final class WorkspaceViewModel: ObservableObject {
         sessionOptionsPhase = .loading
         newSessionError = nil
         isPresentingNewSession = true
+        sessionPersistenceWarning = await dataSource.sessionPersistenceWarning()
         await loadSessionOptions(projectID: target.project.id)
     }
 
@@ -1188,6 +1206,28 @@ final class WorkspaceViewModel: ObservableObject {
         } catch {
             isStartingSession = false
             newSessionError = error.localizedDescription
+        }
+    }
+
+    /// Reopens a terminal onto a session still running under tmux.
+    func reattachSession(_ session: WorkspaceSessionItem) async {
+        guard session.isDetached, !reattachingSessionIDs.contains(session.id) else { return }
+        reattachingSessionIDs.insert(session.id)
+        defer { reattachingSessionIDs.remove(session.id) }
+
+        do {
+            let result = try await dataSource.reattachSession(id: session.id)
+            upsert(result)
+            selection = .session(result.session.id)
+            await loadInspector()
+        } catch {
+            // A session that ended while Byori was closed lands here. Reload so
+            // the row stops offering a reattach that cannot succeed.
+            alert = WorkspaceAlert(
+                title: "세션에 다시 연결하지 못했습니다",
+                message: error.localizedDescription
+            )
+            await load()
         }
     }
 

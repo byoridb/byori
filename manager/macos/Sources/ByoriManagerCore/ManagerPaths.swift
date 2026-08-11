@@ -24,6 +24,8 @@ public struct ManagerPaths: Sendable {
         home.appendingPathComponent("Library/LaunchAgents/\(serviceLabel).plist")
     }
     public var installer: URL { runtimeRoot.appendingPathComponent("install.sh") }
+    /// Byori's own tmux configuration, kept out of the user's `~/.tmux.conf`.
+    public var tmuxConfig: URL { managerHome.appendingPathComponent("tmux.conf") }
     public var skillSource: URL {
         skillSource(.byoridbMemory)
     }
