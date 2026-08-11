@@ -91,6 +91,13 @@ final class TerminalSessionController: ObservableObject {
         snapshots.values.filter(\.status.isActive).count
     }
 
+    /// Active sessions that a quit would end. A tmux-backed session is released
+    /// rather than stopped and reattaches on the next launch, so it does not
+    /// stand in the way of replacing the app.
+    var sessionsLostOnQuitCount: Int {
+        retainedSessions.values.filter { $0.snapshot.status.isActive && !$0.isTmuxBacked }.count
+    }
+
     /// Includes a process group whose leader has exited but whose children are
     /// still draining. AppKit must delay application termination while this is
     /// true, even when every visible session already says `stopped`.

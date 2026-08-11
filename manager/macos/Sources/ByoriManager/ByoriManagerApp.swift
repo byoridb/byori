@@ -106,6 +106,7 @@ private final class ByoriApplicationDelegate: NSObject, NSApplicationDelegate {
     var openSettingsWindow: (@MainActor () -> Void)?
     weak var managerModel: ManagerViewModel?
     private var terminationTask: Task<Void, Never>?
+    private var hasDrainedForTermination = false
 
     func applicationShouldHandleReopen(
         _ sender: NSApplication,
@@ -115,14 +116,28 @@ private final class ByoriApplicationDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    /// Drains, then asks again — it never answers `.terminateLater`.
+    ///
+    /// `.terminateLater` parks the main thread in a nested AppKit event loop
+    /// until `reply(toApplicationShouldTerminate:)` arrives. That reply came
+    /// from a `@MainActor` task, which cannot be scheduled while the main actor
+    /// is the thing being blocked, so quitting with anything left to drain hung
+    /// the app against itself: no reply, no drain, and the two sessions it was
+    /// meant to stop still running half an hour later.
+    ///
+    /// Cancelling instead keeps the main thread free to run the drain, and the
+    /// second pass finds nothing left and terminates immediately.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if hasDrainedForTermination {
+            return .terminateNow
+        }
         let terminalController = TerminalSessionController.shared
         let needsManagerDrain = managerModel?.hasActiveOperation == true
         guard needsManagerDrain || terminalController.needsTerminationDrain else {
             return .terminateNow
         }
         guard terminationTask == nil else {
-            return .terminateLater
+            return .terminateCancel
         }
 
         terminationTask = Task { @MainActor in
@@ -131,13 +146,16 @@ private final class ByoriApplicationDelegate: NSObject, NSApplicationDelegate {
                 managerModel?.selectedSection = .activity
                 openSettingsWindow?()
                 terminationTask = nil
-                sender.reply(toApplicationShouldTerminate: false)
                 return
             }
             await terminalController.stopAllAndWaitForApplicationTermination()
-            sender.reply(toApplicationShouldTerminate: true)
+            terminationTask = nil
+            // Latched so a process that survives even SIGKILL cannot keep
+            // reporting work to drain and turn this into a loop.
+            hasDrainedForTermination = true
+            NSApplication.shared.terminate(nil)
         }
-        return .terminateLater
+        return .terminateCancel
     }
 
     func applicationWillTerminate(_ notification: Notification) {
