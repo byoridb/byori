@@ -585,9 +585,39 @@ struct WorkspaceNewSessionDraft: Hashable {
     var customModelID = ""
     var contextDepth: WorkspaceContextDepth = .related
     var acceptsModifiedWorkingTree = false
-    /// Free-form flags appended to the CLI invocation, e.g.
-    /// `--dangerously-skip-permissions`. Byori does not interpret them.
+    /// Free-form flags appended to the CLI invocation. Byori does not interpret
+    /// them; it is the escape hatch for anything the option controls do not cover.
     var additionalArguments = ""
+    /// Chosen launch options, keyed by `AgentLaunchOption.id`. A flag stores its
+    /// own flag string; a choice stores the selected value. Absent means
+    /// untouched, which contributes no argument at all.
+    var launchOptionSelections: [String: String] = [:]
+}
+
+extension WorkspaceViewModel {
+    func composedLaunchArguments() -> [String] {
+        AgentLaunchArgumentComposer.arguments(
+            options: launchOptions,
+            selections: newSessionDraft.launchOptionSelections,
+            typed: TerminalLaunchDescriptorFactory
+                .splitArguments(newSessionDraft.additionalArguments)
+        )
+    }
+
+    /// Named in the confirmation and in the row so a loosened permission is
+    /// never something the user has to infer from a flag string.
+    /// Empty until a provider is chosen, and for custom providers, whose flags
+    /// Byori does not know.
+    var launchOptions: [AgentLaunchOption] {
+        guard let providerID = newSessionDraft.providerID else { return [] }
+        return AgentLaunchOptionCatalog.options(for: providerID)
+    }
+
+    var selectedDangerousLaunchOptions: [AgentLaunchOption] {
+        launchOptions.filter {
+            $0.isDangerous && newSessionDraft.launchOptionSelections[$0.id] != nil
+        }
+    }
 }
 
 struct WorkspaceAlert: Identifiable, Equatable {
@@ -1304,8 +1334,7 @@ final class WorkspaceViewModel: ObservableObject {
             providerID: providerID,
             modelChoice: modelChoice,
             contextDepth: newSessionDraft.contextDepth,
-            additionalArguments: TerminalLaunchDescriptorFactory
-                .splitArguments(newSessionDraft.additionalArguments)
+            additionalArguments: composedLaunchArguments()
         )
 
         isStartingSession = true
