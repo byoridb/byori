@@ -1575,9 +1575,18 @@ private struct NewWorkspaceSessionSheet: View {
             Divider()
 
             HStack {
-                Text("Byori does not alter the launch provider or model. Provider-side terminal commands remain outside Byori's control.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                // Said at the point of no return, in words rather than as a
+                // flag: a loosened permission should not be something the user
+                // has to recognise from argv.
+                if let danger = dangerNotice {
+                    Label(danger, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                } else {
+                    Text("Byori does not alter the launch provider or model. Provider-side terminal commands remain outside Byori's control.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button("Cancel") { model.dismissNewSession() }
                     .keyboardShortcut(.cancelAction)
@@ -1660,6 +1669,14 @@ private struct NewWorkspaceSessionSheet: View {
                     .foregroundStyle(.secondary)
             }
 
+            if !model.launchOptions.isEmpty {
+                Divider()
+
+                ForEach(model.launchOptions) { option in
+                    launchOptionControl(option)
+                }
+            }
+
             TextField(
                 "Additional CLI arguments (optional)",
                 text: $model.newSessionDraft.additionalArguments
@@ -1677,6 +1694,78 @@ private struct NewWorkspaceSessionSheet: View {
                     .foregroundStyle(.orange)
             }
         }
+    }
+
+    /// One control per option, driven by the catalogue rather than by a
+    /// hard-coded list, so a CLI's options appear here as soon as they are
+    /// described once.
+    @ViewBuilder
+    private func launchOptionControl(_ option: AgentLaunchOption) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            switch option.kind {
+            case .flag:
+                Toggle(isOn: flagBinding(option)) {
+                    HStack(spacing: 5) {
+                        Text(option.title)
+                        if option.isDangerous {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                                .accessibilityLabel("Dangerous option")
+                        }
+                    }
+                }
+            case let .choice(values):
+                Picker(option.title, selection: choiceBinding(option)) {
+                    // The CLI's own default is a real choice, and it is not
+                    // Byori's to guess, so "unset" means "pass nothing".
+                    Text("CLI default").tag(String?.none)
+                    ForEach(values, id: \.self) { value in
+                        Text(value).tag(String?.some(value))
+                    }
+                }
+            }
+
+            Text(option.detail)
+                .font(.caption)
+                .foregroundStyle(option.isDangerous ? .orange : .secondary)
+
+            Text(option.flag)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func flagBinding(_ option: AgentLaunchOption) -> Binding<Bool> {
+        Binding(
+            get: { model.newSessionDraft.launchOptionSelections[option.id] != nil },
+            set: { isOn in
+                if isOn {
+                    model.newSessionDraft.launchOptionSelections[option.id] = option.flag
+                } else {
+                    model.newSessionDraft.launchOptionSelections.removeValue(forKey: option.id)
+                }
+            }
+        )
+    }
+
+    private func choiceBinding(_ option: AgentLaunchOption) -> Binding<String?> {
+        Binding(
+            get: { model.newSessionDraft.launchOptionSelections[option.id] },
+            set: { value in
+                if let value {
+                    model.newSessionDraft.launchOptionSelections[option.id] = value
+                } else {
+                    model.newSessionDraft.launchOptionSelections.removeValue(forKey: option.id)
+                }
+            }
+        )
+    }
+
+    private var dangerNotice: String? {
+        let selected = model.selectedDangerousLaunchOptions
+        guard !selected.isEmpty else { return nil }
+        let titles = selected.map(\.title).joined(separator: ", ")
+        return "This session runs without its usual confirmations: \(titles)."
     }
 
     private var projectName: String {
