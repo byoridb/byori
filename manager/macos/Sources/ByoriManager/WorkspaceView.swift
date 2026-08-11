@@ -423,6 +423,8 @@ private struct WorkspaceSidebar: View {
                         requestRemoval: requestRemoval,
                         restoreSourceTree: restoreSourceTree,
                         isMutatingWorkspace: model.isMutatingWorkspace,
+                        depth: 0,
+                        selection: model.selection,
                     )
                 }
             }
@@ -449,9 +451,30 @@ private struct WorkspaceSidebar: View {
                     // and no transcript is kept, so its row would only ever open
                     // an "ended" placeholder. Keep the selected one so the pane
                     // the user is reading does not vanish under them.
-                    let sessions = task.sessions.filter {
+                    let visibleSessions = task.sessions.filter {
                         $0.state.isActive || model.selection == .session($0.id)
-                    }.map { session in
+                    }
+                    // A source tree runs one session at a time, so a task can
+                    // hold at most one live one. Nesting it under its own row
+                    // spent a level of the outline on a container that could
+                    // never gain a sibling; the pair shares a line instead.
+                    if visibleSessions.count == 1, let session = visibleSessions.first {
+                        return WorkspaceSidebarNode(
+                            id: "task-session:\(task.id)",
+                            selection: .session(session.id),
+                            kind: .session(session),
+                            title: task.title,
+                            subtitle: session.displayName,
+                            children: nil,
+                            quickSessionTarget: WorkspaceNewSessionTarget(
+                                projectID: project.id,
+                                sourceTreeID: sourceTree.id,
+                                existingTaskID: task.id
+                            ),
+                            quickSessionDisabledReason: taskDisabledReason
+                        )
+                    }
+                    let sessions = visibleSessions.map { session in
                         WorkspaceSidebarNode(
                             id: "session:\(session.id)",
                             selection: .session(session.id),
@@ -522,6 +545,9 @@ private struct WorkspaceSidebarNode: Identifiable {
     let selection: WorkspaceSelection?
     let kind: Kind
     let title: String
+    /// Set only on a merged row: the task holds exactly one session, so the two
+    /// share a line rather than nesting a level that can hold nothing else.
+    let subtitle: String?
     let children: [WorkspaceSidebarNode]?
     let quickSessionTarget: WorkspaceNewSessionTarget?
     let quickSessionDisabledReason: String?
@@ -530,11 +556,21 @@ private struct WorkspaceSidebarNode: Identifiable {
     /// Set on projects: the row's + opens the branch picker instead of a session.
     let addSourceTreeProjectID: String?
 
+    /// Whether the selected row is this one or somewhere beneath it. Drives which
+    /// branches open on their own, so the outline shows the path being worked in
+    /// rather than every path at once.
+    func contains(_ selection: WorkspaceSelection?) -> Bool {
+        guard let selection else { return false }
+        if self.selection == selection { return true }
+        return children?.contains { $0.contains(selection) } ?? false
+    }
+
     init(
         id: String,
         selection: WorkspaceSelection?,
         kind: Kind,
         title: String,
+        subtitle: String? = nil,
         children: [WorkspaceSidebarNode]?,
         quickSessionTarget: WorkspaceNewSessionTarget? = nil,
         quickSessionDisabledReason: String? = nil,
@@ -546,6 +582,7 @@ private struct WorkspaceSidebarNode: Identifiable {
         self.selection = selection
         self.kind = kind
         self.title = title
+        self.subtitle = subtitle
         self.children = children
         self.quickSessionTarget = quickSessionTarget
         self.quickSessionDisabledReason = quickSessionDisabledReason
@@ -562,12 +599,17 @@ private struct WorkspaceSidebarBranch: View {
     let requestRemoval: (WorkspaceRemovalRequest) -> Void
     let restoreSourceTree: (WorkspaceHiddenSourceTreeItem) -> Void
     let isMutatingWorkspace: Bool
+    let depth: Int
+    let selection: WorkspaceSelection?
 
-    @State private var isExpanded = true
+    /// Nil until the user opens or closes this branch themselves, after which
+    /// their choice is kept. Everything was expanded to the leaves before, so a
+    /// few projects filled the pane with sessions nobody was looking at.
+    @State private var manualExpansion: Bool?
 
     var body: some View {
         if let children = node.children, !children.isEmpty {
-            DisclosureGroup(isExpanded: $isExpanded) {
+            DisclosureGroup(isExpanded: expansion) {
                 ForEach(children) { child in
                     WorkspaceSidebarBranch(
                         node: child,
@@ -576,6 +618,8 @@ private struct WorkspaceSidebarBranch: View {
                         requestRemoval: requestRemoval,
                         restoreSourceTree: restoreSourceTree,
                         isMutatingWorkspace: isMutatingWorkspace,
+                        depth: depth + 1,
+                        selection: selection,
                     )
                 }
             } label: {
@@ -584,6 +628,13 @@ private struct WorkspaceSidebarBranch: View {
         } else {
             taggedRow
         }
+    }
+
+    private var expansion: Binding<Bool> {
+        Binding(
+            get: { manualExpansion ?? (depth == 0 || node.contains(selection)) },
+            set: { manualExpansion = $0 }
+        )
     }
 
     @ViewBuilder
@@ -603,6 +654,7 @@ private struct WorkspaceSidebarBranch: View {
             requestRemoval: requestRemoval,
             restoreSourceTree: restoreSourceTree,
             isMutatingWorkspace: isMutatingWorkspace,
+            isSelected: node.selection != nil && node.selection == selection,
         )
     }
 }
@@ -614,6 +666,16 @@ private struct WorkspaceSidebarRow: View {
     let requestRemoval: (WorkspaceRemovalRequest) -> Void
     let restoreSourceTree: (WorkspaceHiddenSourceTreeItem) -> Void
     let isMutatingWorkspace: Bool
+    let isSelected: Bool
+
+    /// Row actions are revealed rather than resident. Four levels of always-on
+    /// buttons turned the trailing edge into a column of repeated glyphs, and
+    /// the state dot — the one thing worth scanning — landed at a different
+    /// offset on every row.
+    @State private var isHovered = false
+
+    private static let actionSlotWidth: CGFloat = 42
+    private static let statusSlotWidth: CGFloat = 8
 
     var body: some View {
         HStack(spacing: 7) {
@@ -626,71 +688,122 @@ private struct WorkspaceSidebarRow: View {
                 .font(rowFont)
                 .foregroundStyle(textColor)
                 .lineLimit(1)
+                .truncationMode(.middle)
                 .accessibilityLabel(accessibilityLabel)
+
+            if let subtitle = node.subtitle {
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .accessibilityHidden(true)
+            }
 
             Spacer(minLength: 4)
 
-            if let projectID = node.addSourceTreeProjectID {
-                Button {
-                    addSourceTree(projectID)
-                } label: {
-                    Label("Add Source Tree", systemImage: "plus")
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .controlSize(.small)
-                .disabled(isMutatingWorkspace)
-                .help("Check out a branch for this project")
-                .accessibilityHint("Opens the branch picker for \(node.title)")
-            }
-
-            if let quickSessionTarget = node.quickSessionTarget {
-                Button {
-                    newSession(quickSessionTarget)
-                } label: {
-                    Label(quickActionLabel, systemImage: "plus")
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .controlSize(.small)
-                .disabled(node.quickSessionDisabledReason != nil)
-                .help(node.quickSessionDisabledReason ?? quickActionHelp)
-                .accessibilityHint(node.quickSessionDisabledReason ?? quickActionHelp)
-            }
-
-            if hasRowActions {
-                Menu {
-                    rowActions
-                } label: {
-                    Label("More Actions", systemImage: "ellipsis")
-                }
-                .labelStyle(.iconOnly)
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .disabled(isMutatingWorkspace)
-                .help("Actions for \(node.title)")
-                .accessibilityLabel("More actions for \(node.title)")
-            }
-
             if let metadata {
                 Text(metadata)
-                    .font(.caption2.monospaced())
+                    .font(.caption2)
                     .foregroundStyle(metadataColor)
                     .lineLimit(1)
                     .accessibilityHidden(true)
             }
 
-            if let statusColor {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 7, height: 7)
-                    .accessibilityHidden(true)
+            // Held open whether or not anything is showing, so the status column
+            // below stays put as the pointer moves down the outline.
+            HStack(spacing: 2) {
+                if showsActions {
+                    actions
+                }
             }
+            .frame(width: Self.actionSlotWidth, alignment: .trailing)
+
+            Circle()
+                .fill(statusColor ?? .clear)
+                .frame(width: Self.statusSlotWidth, height: Self.statusSlotWidth)
+                .accessibilityHidden(true)
         }
+        .onHover { isHovered = $0 }
         .contextMenu {
+            if node.quickSessionTarget != nil || node.addSourceTreeProjectID != nil {
+                primaryActionMenuItems
+                if hasRowActions {
+                    Divider()
+                }
+            }
             if hasRowActions {
                 rowActions
             }
+        }
+    }
+
+    /// Hover reaches the row under the pointer; selection covers the row being
+    /// worked in, which is the one the keyboard is on.
+    private var showsActions: Bool { isHovered || isSelected }
+
+    @ViewBuilder
+    private var actions: some View {
+        if let projectID = node.addSourceTreeProjectID {
+            Button {
+                addSourceTree(projectID)
+            } label: {
+                // Not another bare plus: on a project this checks out a branch
+                // into a new source tree, which is a different act from starting
+                // a session, and the same glyph for both taught neither.
+                Label("Add Source Tree", systemImage: "folder.badge.plus")
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .disabled(isMutatingWorkspace)
+            .help("Check out a branch as a new source tree")
+            .accessibilityHint("Opens the branch picker for \(node.title)")
+        }
+
+        if let quickSessionTarget = node.quickSessionTarget {
+            Button {
+                newSession(quickSessionTarget)
+            } label: {
+                Label(quickActionLabel, systemImage: "plus")
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .disabled(node.quickSessionDisabledReason != nil)
+            .help(node.quickSessionDisabledReason ?? quickActionHelp)
+            .accessibilityHint(node.quickSessionDisabledReason ?? quickActionHelp)
+        }
+
+        if hasRowActions {
+            Menu {
+                rowActions
+            } label: {
+                Label("More Actions", systemImage: "ellipsis")
+            }
+            .labelStyle(.iconOnly)
+            .menuStyle(.borderlessButton)
+            // Without this the ellipsis renders as "···⌄": the style draws its
+            // own indicator, so the row gained a glyph next to the one control
+            // that is supposed to stand for all the others.
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .disabled(isMutatingWorkspace)
+            .help("Actions for \(node.title)")
+            .accessibilityLabel("More actions for \(node.title)")
+        }
+    }
+
+    /// The revealed buttons are the fast path, not the only one: right-clicking
+    /// a row reaches the same actions without hunting for the moment they appear.
+    @ViewBuilder
+    private var primaryActionMenuItems: some View {
+        if let projectID = node.addSourceTreeProjectID {
+            Button("Add Source Tree…") { addSourceTree(projectID) }
+                .disabled(isMutatingWorkspace)
+        }
+        if let quickSessionTarget = node.quickSessionTarget {
+            Button(quickActionLabel) { newSession(quickSessionTarget) }
+                .disabled(node.quickSessionDisabledReason != nil)
         }
     }
 
@@ -743,7 +856,9 @@ private struct WorkspaceSidebarRow: View {
         switch node.kind {
         case .project: return "folder"
         case .sourceTree: return "arrow.triangle.branch"
-        case .task: return "scope"
+        // A task is a piece of work with sessions under it; the crosshair read as
+        // a target or a locator, neither of which a task is.
+        case .task: return "checklist"
         case let .session(session): return session.providerSystemImage
         }
     }
@@ -764,16 +879,43 @@ private struct WorkspaceSidebarRow: View {
         }
     }
 
+    /// The four levels were one weight, one colour and one size, so the outline
+    /// read as a flat list and "where am I" had to be answered by counting
+    /// indents. Structure now comes from weight and tone, which is what this
+    /// world uses instead of badges.
     private var iconColor: Color {
-        return .primary
+        switch node.kind {
+        case .project: return .primary
+        case .sourceTree: return .secondary
+        case .task: return .secondary
+        // The provider mark is identity, not decoration: it says which agent
+        // owns this session, so it keeps full contrast at the smallest level.
+        case .session: return .primary
+        }
     }
 
+    /// A merged row is a task, so it reads at task prominence even though it
+    /// carries the session's icon, state and selection.
+    private var isMergedTaskRow: Bool { node.subtitle != nil }
+
     private var rowFont: Font {
-        return .body
+        if isMergedTaskRow { return .body }
+        switch node.kind {
+        case .project: return .headline
+        case .sourceTree: return .body.weight(.medium)
+        case .task: return .body
+        case .session: return .callout
+        }
     }
 
     private var textColor: Color {
-        return .primary
+        if isMergedTaskRow { return .primary }
+        switch node.kind {
+        // Sessions are the most numerous rows and the ones already named by the
+        // row above them, so they recede until selected.
+        case .session: return isSelected ? .primary : .secondary
+        default: return .primary
+        }
     }
 
     private var metadata: String? {
@@ -819,6 +961,9 @@ private struct WorkspaceSidebarRow: View {
         case let .task(task):
             return "Task \(task.title)"
         case let .session(session):
+            if let subtitle = node.subtitle {
+                return "Task \(node.title), session \(subtitle), \(session.state.label)"
+            }
             if session.hasCustomName {
                 return "Session \(session.displayName), launched with \(session.launchSelectionDisplayName), \(session.state.label)"
             }
