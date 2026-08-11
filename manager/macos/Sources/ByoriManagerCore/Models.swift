@@ -118,6 +118,24 @@ public struct ByoriStatus: Equatable, Sendable {
     }
 }
 
+/// Whether Byori should bring ByoriDB back up on its own.
+///
+/// Kept as a rule rather than a chain of `if`s in the view model because the
+/// wrong answer is quiet in both directions: starting a service the user
+/// deliberately stopped, or leaving agents running against no memory.
+public enum ByoriAutostart {
+    public static func shouldStart(_ status: ByoriStatus, userStoppedThisLaunch: Bool) -> Bool {
+        // An explicit stop that undoes itself is worse than one that sticks.
+        guard !userStoppedThisLaunch else { return false }
+        // Installing is a larger operation with its own confirmation, and the
+        // UI already asks for it. Autostart only ever restarts.
+        guard status.isInstalled else { return false }
+        // Loaded but unhealthy still needs a start: the launch agent is
+        // registered and the server behind it is not answering.
+        return !status.serviceLoaded || !status.isHealthy
+    }
+}
+
 public struct ManagerSnapshot: Equatable, Sendable {
     public let byori: ByoriStatus
     public let agents: [AgentStatus]
