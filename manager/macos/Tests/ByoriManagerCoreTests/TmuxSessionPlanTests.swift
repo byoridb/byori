@@ -118,6 +118,8 @@ final class TmuxSessionPlanTests: XCTestCase {
     }
 
     func testVersionParsingAcceptsTheShapesTmuxActuallyPrints() {
+        // Verified against a real `tmux -V` on 3.7b.
+        XCTAssertEqual(TmuxSupport.version(fromVersionOutput: "tmux 3.7b\n"), "3.7b")
         XCTAssertEqual(TmuxSupport.version(fromVersionOutput: "tmux 3.5a\n"), "3.5a")
         XCTAssertEqual(TmuxSupport.version(fromVersionOutput: "tmux next-3.6"), "next-3.6")
         XCTAssertNil(TmuxSupport.version(fromVersionOutput: "command not found"))
@@ -130,6 +132,7 @@ final class TmuxSessionPlanTests: XCTestCase {
         XCTAssertTrue(TmuxSupport.isAtLeast("3.2"))
         XCTAssertTrue(TmuxSupport.isAtLeast("3.2a"))
         XCTAssertTrue(TmuxSupport.isAtLeast("3.5a"))
+        XCTAssertTrue(TmuxSupport.isAtLeast("3.7b"))
         XCTAssertTrue(TmuxSupport.isAtLeast("next-3.6"))
         XCTAssertTrue(TmuxSupport.isAtLeast("10.0"))
 
@@ -177,33 +180,56 @@ final class TmuxSessionPlanTests: XCTestCase {
         )
     }
 
-    /// With no tmux on the machine every entry point has to degrade quietly,
-    /// because a session must still start — it just will not outlive the app.
-    func testMissingTmuxDegradesInsteadOfFailing() async throws {
-        let service = TmuxSessionService(
-            paths: ManagerPaths(
-                home: temporaryRoot,
-                runtimeRoot: temporaryRoot
-            ),
-            runner: StubRunner(result: CommandResult(exitCode: 127, output: "")),
-            fileManager: .default
-        )
+    /// Unusable tmux has to degrade quietly at every entry point: a session must
+    /// still start, it just will not outlive the app.
+    ///
+    /// Driven through a stubbed runner rather than the machine's real tmux, so
+    /// the result does not depend on whether the developer happens to have it
+    /// installed — the bug this guards against is a *broken* command being
+    /// built, which only shows up when tmux is present but unusable.
+    func testUnusableTmuxDegradesInsteadOfFailing() async throws {
         let descriptor = try makeDescriptor()
 
-        // The stub never runs, because tmux is resolved from PATH first; on a
-        // machine that does have tmux this simply exercises the other branch.
-        let availability = await service.availability()
-        if case .unavailable(.notInstalled) = availability {
+        for stub in [
+            CommandResult(exitCode: 127, output: ""),
+            CommandResult(exitCode: 0, output: "not tmux at all"),
+            CommandResult(exitCode: 0, output: "tmux 2.9"),
+        ] {
+            let service = TmuxSessionService(
+                paths: paths,
+                runner: StubRunner(result: stub),
+                fileManager: .default
+            )
+
+            let availability = await service.availability()
+            XCTAssertFalse(availability.isAvailable, "\(stub.output) was treated as usable")
             let plan = await service.launchPlan(for: descriptor)
-            XCTAssertNil(plan, "no tmux must mean no plan, not a broken command")
+            XCTAssertNil(plan, "unusable tmux must mean no plan, not a broken command")
             let live = await service.liveSessionIDs()
             XCTAssertTrue(live.isEmpty)
             let killed = await service.killSession(id: descriptor.id)
             XCTAssertFalse(killed)
-        } else {
-            let plan = await service.launchPlan(for: descriptor)
-            XCTAssertNotNil(plan)
         }
+    }
+
+    /// The version gate has to let a usable tmux through, or the backend is
+    /// dead code that silently never engages.
+    func testUsableTmuxProducesAPlan() async throws {
+        let service = TmuxSessionService(
+            paths: paths,
+            runner: StubRunner(result: CommandResult(exitCode: 0, output: "tmux 3.7b")),
+            fileManager: .default
+        )
+        // Resolved from PATH, so this only runs where tmux is actually present.
+        try XCTSkipIf(
+            paths.executable(named: "tmux") == nil,
+            "tmux is not installed on this machine"
+        )
+
+        let availability = await service.availability()
+        XCTAssertTrue(availability.isAvailable)
+        let plan = await service.launchPlan(for: try makeDescriptor())
+        XCTAssertEqual(plan?.executable, paths.executable(named: "tmux"))
     }
 
     private func makeDescriptor(
