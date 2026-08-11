@@ -108,18 +108,23 @@ final class TerminalSessionController: ObservableObject {
         let terminalView: LocalProcessTerminalView
         let processDelegate: ProcessDelegate
         let callbacks: TerminalSessionCallbacks
+        /// True when the retained process is a tmux client rather than the CLI
+        /// itself. Killing it detaches; ending the session takes a tmux command.
+        let isTmuxBacked: Bool
         var snapshot: TerminalSessionSnapshot
 
         init(
             descriptor: TerminalLaunchDescriptor,
             terminalView: LocalProcessTerminalView,
             processDelegate: ProcessDelegate,
-            callbacks: TerminalSessionCallbacks
+            callbacks: TerminalSessionCallbacks,
+            isTmuxBacked: Bool
         ) {
             self.descriptor = descriptor
             self.terminalView = terminalView
             self.processDelegate = processDelegate
             self.callbacks = callbacks
+            self.isTmuxBacked = isTmuxBacked
             self.snapshot = TerminalSessionSnapshot(
                 descriptor: descriptor,
                 status: .starting,
@@ -159,12 +164,24 @@ final class TerminalSessionController: ObservableObject {
     private var escalationTasks: [UUID: Task<Void, Never>] = [:]
     private var applicationShutdownTask: Task<Void, Never>?
     private var isApplicationShuttingDown = false
+    private let tmuxService: TmuxSessionService
 
+    init(tmuxService: TmuxSessionService = TmuxSessionService(paths: .applicationDefault())) {
+        self.tmuxService = tmuxService
+    }
+
+    /// Starts a session, or reattaches to the one tmux is already running for
+    /// this id.
+    ///
+    /// Under tmux the retained process is the *client*: the CLI is a child of
+    /// the tmux server, so it survives this app exiting. Without tmux the CLI is
+    /// this app's own child and dies with it — the same behaviour Byori had
+    /// before, kept as the fallback rather than refusing to start.
     @discardableResult
     func start(
         _ descriptor: TerminalLaunchDescriptor,
         callbacks: TerminalSessionCallbacks = .init()
-    ) throws -> UUID {
+    ) async throws -> UUID {
         guard !isApplicationShuttingDown else {
             throw TerminalSessionControllerError.applicationIsTerminating
         }
@@ -172,13 +189,15 @@ final class TerminalSessionController: ObservableObject {
             throw TerminalSessionControllerError.duplicateSession(descriptor.id)
         }
 
+        let plan = await tmuxService.launchPlan(for: descriptor)
         let terminalView = makeTerminalView(descriptor: descriptor)
         let processDelegate = ProcessDelegate(sessionID: descriptor.id)
         let retained = RetainedSession(
             descriptor: descriptor,
             terminalView: terminalView,
             processDelegate: processDelegate,
-            callbacks: callbacks
+            callbacks: callbacks,
+            isTmuxBacked: plan != nil
         )
 
         processDelegate.onTermination = { [weak self] sessionID, status in
@@ -201,9 +220,11 @@ final class TerminalSessionController: ObservableObject {
         retainedSessions[descriptor.id] = retained
         publish(retained)
 
+        // tmux passes the session's environment with `-e`, so the client itself
+        // only needs a PATH to find the server.
         terminalView.startProcess(
-            executable: descriptor.executable.path,
-            args: descriptor.arguments,
+            executable: (plan?.executable ?? descriptor.executable).path,
+            args: plan?.arguments ?? descriptor.arguments,
             environment: descriptor.environmentArray,
             currentDirectory: descriptor.workingDirectory.path
         )
@@ -217,6 +238,19 @@ final class TerminalSessionController: ObservableObject {
             )
         }
         return descriptor.id
+    }
+
+    /// Session ids tmux still holds, whether or not this app has them retained.
+    ///
+    /// Used after a relaunch to tell a session that is still running from one
+    /// that ended while Byori was closed.
+    func liveDetachedSessionIDs() async -> Set<UUID> {
+        await tmuxService.liveSessionIDs()
+    }
+
+    /// Whether sessions started from now on will outlive the app, and why not.
+    func sessionPersistence() async -> TmuxAvailability {
+        await tmuxService.availability()
     }
 
     func terminalView(for sessionID: UUID) -> LocalProcessTerminalView? {
@@ -252,6 +286,11 @@ final class TerminalSessionController: ObservableObject {
         retained.terminalView.process.send(data: interruptByte[...])
     }
 
+    /// Ends the session for good, as the user asked.
+    ///
+    /// Killing a tmux client would only detach it, leaving the CLI running
+    /// while Byori reported the session as stopped. The tmux session is ended
+    /// first so "stop" means the same thing on both backends.
     func stop(_ sessionID: UUID) throws {
         guard let retained = retainedSessions[sessionID] else {
             throw TerminalSessionControllerError.missingSession(sessionID)
@@ -259,7 +298,23 @@ final class TerminalSessionController: ObservableObject {
         guard retained.snapshot.status.isActive else { return }
         guard retained.snapshot.status != .stopping else { return }
 
-        updateStatus(.stopping, for: retained)
+        if retained.isTmuxBacked {
+            Task { await tmuxService.killSession(id: sessionID) }
+        }
+        releaseTerminal(for: retained)
+    }
+
+    /// Drops this app's hold on the session without ending it.
+    ///
+    /// On tmux this is a detach: the CLI keeps running under the tmux server
+    /// and is reattachable after a relaunch. Without tmux the process is this
+    /// app's child, so releasing it does end it — nothing can be done about
+    /// that beyond installing tmux.
+    private func releaseTerminal(for retained: RetainedSession) {
+        let sessionID = retained.descriptor.id
+        if retained.snapshot.status != .stopping {
+            updateStatus(.stopping, for: retained)
+        }
         let processID = retained.terminalView.process.shellPid
         // Keep SwiftTerm's process monitor alive so `.stopping` is not changed
         // to `.stopped` until the real process-exit callback arrives.
@@ -274,12 +329,15 @@ final class TerminalSessionController: ObservableObject {
         }
     }
 
-    func stopAll() {
-        let activeIDs = retainedSessions.values
-            .filter { $0.snapshot.status.isActive }
-            .map(\.descriptor.id)
-        for sessionID in activeIDs {
-            try? stop(sessionID)
+    /// Releases every session because the app is going away — not because the
+    /// user ended them.
+    ///
+    /// This must not kill tmux sessions: quitting Byori is precisely when a
+    /// tmux-backed session has to keep running so it can be reattached later.
+    func releaseAllForApplicationExit() {
+        let active = retainedSessions.values.filter { $0.snapshot.status.isActive }
+        for retained in active {
+            releaseTerminal(for: retained)
         }
     }
 
@@ -502,6 +560,10 @@ final class TerminalSessionController: ObservableObject {
         case let .codingAgent(provider):
             let model = descriptor.model ?? "CLI default model"
             return "\(provider.displayName) terminal, \(model)"
+        case let .customAgent(id):
+            // The id is what a session records; the display name lives in the
+            // provider store, which this layer has no reason to read.
+            return "Registered CLI terminal, \(id)"
         case .systemShellDemo:
             return "System shell demo terminal"
         }

@@ -22,55 +22,74 @@ enum ManagerSection: String, CaseIterable, Identifiable {
     }
 }
 
-enum ManagerAction: String, Identifiable {
-    case installClaude
-    case installCodex
+/// The three states the update button has to tell apart. `AvailableUpdate?`
+/// could not: it collapsed "no check has succeeded yet" and "this is the newest
+/// release" into the same `nil`, so a current app looked unchecked.
+enum AppUpdateAvailability: Equatable {
+    case unknown
+    case upToDate(AppVersion)
+    case available(AvailableUpdate)
+}
+
+/// A manager operation. The per-agent cases carry their `AgentKind`, and the
+/// skill cases their `ManagedSkill`, instead of existing once per combination:
+/// with five providers and more than one skill, a flat list meant every new CLI
+/// or skill silently had no way to be installed, connected or synced from
+/// Settings.
+enum ManagerAction: Identifiable, Equatable {
+    case installCLI(AgentKind)
+    case connectMCP(AgentKind)
+    case disconnectMCP(AgentKind)
+    case syncSkill(AgentKind, ManagedSkill)
+    case removeSkill(AgentKind, ManagedSkill)
     case installByori
     case updateByori
     case updateApp
     case startByori
     case stopByori
     case restartByori
-    case connectClaude
-    case connectCodex
-    case disconnectClaude
-    case disconnectCodex
-    case syncClaudeSkill
-    case syncCodexSkill
-    case removeClaudeSkill
-    case removeCodexSkill
 
-    var id: String { rawValue }
+    var id: String {
+        switch self {
+        case let .installCLI(kind): return "install-cli:\(kind.rawValue)"
+        case let .connectMCP(kind): return "connect-mcp:\(kind.rawValue)"
+        case let .disconnectMCP(kind): return "disconnect-mcp:\(kind.rawValue)"
+        case let .syncSkill(kind, skill): return "sync-skill:\(kind.rawValue):\(skill.rawValue)"
+        case let .removeSkill(kind, skill): return "remove-skill:\(kind.rawValue):\(skill.rawValue)"
+        case .installByori: return "install-byori"
+        case .updateByori: return "update-byori"
+        case .updateApp: return "update-app"
+        case .startByori: return "start-byori"
+        case .stopByori: return "stop-byori"
+        case .restartByori: return "restart-byori"
+        }
+    }
 
     var confirmationTitle: String {
         switch self {
-        case .installClaude: return "Claude Code를 설치하거나 업데이트할까요?"
-        case .installCodex: return "Codex를 설치하거나 업데이트할까요?"
+        case let .installCLI(kind): return "\(kind.displayName)를 설치하거나 업데이트할까요?"
+        case let .disconnectMCP(kind): return "\(kind.displayName)에서 Byori MCP 연결을 해제할까요?"
+        case let .removeSkill(kind, skill):
+            return "\(kind.displayName)에서 \(skill.rawValue) Skill을 제거할까요?"
         case .installByori: return "번들 자산으로 ByoriDB를 설치할까요?"
         case .updateByori: return "최신 ByoriDB 설치기를 내려받아 업데이트할까요?"
         case .updateApp: return "Byori 앱을 최신 버전으로 업데이트할까요?"
         case .stopByori: return "ByoriDB 서비스를 중지할까요?"
-        case .disconnectClaude: return "Claude Code에서 Byori MCP 연결을 해제할까요?"
-        case .disconnectCodex: return "Codex에서 Byori MCP 연결을 해제할까요?"
-        case .removeClaudeSkill: return "Claude Code에서 Byori Skill을 제거할까요?"
-        case .removeCodexSkill: return "Codex에서 Byori Skill을 제거할까요?"
         default: return "이 작업을 실행할까요?"
         }
     }
 
     var confirmationDetail: String {
         switch self {
-        case .installClaude:
-            return "Anthropic의 공식 설치 스크립트를 다운로드해 실행합니다. 로그인 정보는 Byori가 다루지 않습니다."
-        case .installCodex:
-            return "OpenAI의 공식 설치 스크립트를 다운로드해 실행합니다. 로그인 정보는 Byori가 다루지 않습니다."
+        case let .installCLI(kind):
+            return "\(kind.displayName)의 공식 설치 스크립트를 다운로드해 실행합니다. 로그인 정보는 Byori가 다루지 않습니다."
         case .updateByori:
             return "GitHub의 최신 Byori 릴리스 설치기를 실행합니다. 기존 데이터와 root 비밀번호는 보존됩니다."
         case .updateApp:
             return "최신 릴리스의 디스크 이미지를 내려받아 Apple 공증과 개발자 서명을 확인한 뒤 교체합니다. 확인에 실패하면 설치하지 않습니다. 교체를 위해 앱이 한 번 종료되었다가 다시 열립니다."
         case .installByori:
             return "앱에 포함된 MCP·Skill·서비스 자산을 사용하고, 호환되는 ByoriDB 엔진은 GitHub 릴리스에서 다운로드합니다. 기존 runtime은 먼저 백업합니다."
-        case .removeClaudeSkill, .removeCodexSkill:
+        case .removeSkill:
             return "기존 파일은 ~/.byori-manager/backups에 백업한 뒤 제거합니다."
         default:
             return "완료 후 상태를 다시 검사합니다."
@@ -79,8 +98,7 @@ enum ManagerAction: String, Identifiable {
 
     var isDestructive: Bool {
         switch self {
-        case .stopByori, .disconnectClaude, .disconnectCodex,
-             .removeClaudeSkill, .removeCodexSkill:
+        case .stopByori, .disconnectMCP, .removeSkill:
             return true
         default:
             return false
@@ -89,22 +107,19 @@ enum ManagerAction: String, Identifiable {
 
     var progressTitle: String {
         switch self {
-        case .installClaude: return "Claude Code 설치·업데이트 중…"
-        case .installCodex: return "Codex 설치·업데이트 중…"
+        case let .installCLI(kind): return "\(kind.displayName) 설치·업데이트 중…"
+        case let .connectMCP(kind): return "\(kind.displayName) MCP 연결 중…"
+        case let .disconnectMCP(kind): return "\(kind.displayName) MCP 연결 해제 중…"
+        case let .syncSkill(kind, skill):
+            return "\(kind.displayName) \(skill.displayName) Skill 동기화 중…"
+        case let .removeSkill(kind, skill):
+            return "\(kind.displayName) \(skill.displayName) Skill 제거 중…"
         case .installByori: return "ByoriDB 설치·복구 중…"
         case .updateByori: return "ByoriDB 업데이트 중…"
         case .updateApp: return "앱 업데이트 확인·검증 중…"
         case .startByori: return "ByoriDB 시작 중…"
         case .stopByori: return "ByoriDB 중지 중…"
         case .restartByori: return "ByoriDB 재시작 중…"
-        case .connectClaude: return "Claude Code MCP 연결 중…"
-        case .connectCodex: return "Codex MCP 연결 중…"
-        case .disconnectClaude: return "Claude Code MCP 연결 해제 중…"
-        case .disconnectCodex: return "Codex MCP 연결 해제 중…"
-        case .syncClaudeSkill: return "Claude Code Memory Skill 동기화 중…"
-        case .syncCodexSkill: return "Codex Memory Skill 동기화 중…"
-        case .removeClaudeSkill: return "Claude Code Memory Skill 제거 중…"
-        case .removeCodexSkill: return "Codex Memory Skill 제거 중…"
         }
     }
 
@@ -217,10 +232,18 @@ final class ManagerViewModel: ObservableObject {
     /// updater refuses to replace anything.
     let appVersion: String? = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
 
-    /// Set when a newer signed release exists. Byori only reports it — nothing
-    /// is downloaded or installed until the user asks, because this app owns
-    /// live agent sessions that a surprise relaunch would cut off.
-    @Published private(set) var availableUpdate: AvailableUpdate?
+    /// What the last release check found. Byori only reports it — nothing is
+    /// downloaded or installed until the user asks, because this app owns live
+    /// agent sessions that a surprise relaunch would cut off.
+    ///
+    /// `unknown` and `upToDate` are kept apart because the button says different
+    /// things: having failed to reach GitHub is not the same as being current.
+    @Published private(set) var updateAvailability: AppUpdateAvailability = .unknown
+
+    var availableUpdate: AvailableUpdate? {
+        if case let .available(update) = updateAvailability { return update }
+        return nil
+    }
 
     let service: ManagerService
     private var operationTask: Task<Void, Never>?
@@ -228,6 +251,9 @@ final class ManagerViewModel: ObservableObject {
     private var lastOperationHadRollbackFailure = false
     private var updateCheckTask: Task<Void, Never>?
     private var terminateAfterCurrentOperation = false
+    /// Set when the user stops ByoriDB in this launch, so autostart leaves it
+    /// down. Starting it again from the UI clears it.
+    private var didUserStopByori = false
 
     private static let updateCheckInterval: Duration = .seconds(6 * 60 * 60)
 
@@ -237,8 +263,28 @@ final class ManagerViewModel: ObservableObject {
         self.service = service
         Task { [weak self] in
             await self?.refresh()
+            await self?.startByoriIfStopped()
         }
         startUpdateChecks()
+    }
+
+    /// Brings ByoriDB back up when it is installed but not running.
+    ///
+    /// Every agent session reads and writes memory through ByoriDB. A stopped
+    /// service does not fail loudly — the agents simply run without memory —
+    /// so leaving it down is a silent downgrade the user has to notice on
+    /// their own. The launch agent already has `RunAtLoad`/`KeepAlive`, which
+    /// means a service that is down was booted out rather than crashed, and
+    /// only a bootstrap brings it back.
+    ///
+    /// Skipped when the user stopped it themselves in this launch: an explicit
+    /// stop that undoes itself is worse than one that sticks.
+    private func startByoriIfStopped() async {
+        guard !isBusy, let byori = snapshot?.byori else { return }
+        guard ByoriAutostart.shouldStart(byori, userStoppedThisLaunch: didUserStopByori) else {
+            return
+        }
+        execute(.startByori)
     }
 
     deinit {
@@ -260,10 +306,10 @@ final class ManagerViewModel: ObservableObject {
     private func checkForUpdateQuietly() async {
         guard let status = try? await service.checkForAppUpdate() else { return }
         switch status {
-        case .upToDate:
-            availableUpdate = nil
+        case let .upToDate(version):
+            updateAvailability = .upToDate(version)
         case let .available(update):
-            availableUpdate = update
+            updateAvailability = .available(update)
         }
     }
 
@@ -301,6 +347,13 @@ final class ManagerViewModel: ObservableObject {
     func execute(_ action: ManagerAction) {
         pendingAction = nil
         guard !isBusy else { return }
+        // Remembered so autostart cannot immediately undo a deliberate stop,
+        // and cleared as soon as the user asks for it to run again.
+        switch action {
+        case .stopByori: didUserStopByori = true
+        case .startByori, .restartByori, .installByori: didUserStopByori = false
+        default: break
+        }
         isBusy = true
         canCancelCurrentOperation = action.supportsSafeCancellation
         lastOperationHadRollbackFailure = false
@@ -430,21 +483,26 @@ final class ManagerViewModel: ObservableObject {
 
         do {
             let result: OperationResult
+            // Only an update that actually staged a new bundle may quit the app.
+            var relaunchForUpdate = false
             switch action {
-            case .installClaude:
-                result = try await service.installOrUpdateCLI(.claude)
-            case .installCodex:
-                result = try await service.installOrUpdateCLI(.codex)
+            case let .installCLI(kind):
+                result = try await service.installOrUpdateCLI(kind)
             case .installByori:
                 result = try await service.installByoriBundled()
             case .updateByori:
                 result = try await service.updateByoriOnline()
             case .updateApp:
-                result = try await service.updateApp { [weak self] stage in
+                let outcome = try await service.updateApp { [weak self] stage in
                     Task { @MainActor in
                         self?.currentOperation = stage.message
                         self?.operationProgress = stage.fraction
                     }
+                }
+                result = outcome.result
+                relaunchForUpdate = outcome.requiresRelaunch
+                if case let .alreadyCurrent(version) = outcome {
+                    updateAvailability = .upToDate(version)
                 }
             case .startByori:
                 result = try await service.startService()
@@ -452,22 +510,14 @@ final class ManagerViewModel: ObservableObject {
                 result = try await service.stopService()
             case .restartByori:
                 result = try await service.restartService()
-            case .connectClaude:
-                result = try await service.connectMCP(.claude)
-            case .connectCodex:
-                result = try await service.connectMCP(.codex)
-            case .disconnectClaude:
-                result = try await service.disconnectMCP(.claude)
-            case .disconnectCodex:
-                result = try await service.disconnectMCP(.codex)
-            case .syncClaudeSkill:
-                result = try await service.syncSkill(.claude)
-            case .syncCodexSkill:
-                result = try await service.syncSkill(.codex)
-            case .removeClaudeSkill:
-                result = try await service.removeSkill(.claude)
-            case .removeCodexSkill:
-                result = try await service.removeSkill(.codex)
+            case let .connectMCP(kind):
+                result = try await service.connectMCP(kind)
+            case let .disconnectMCP(kind):
+                result = try await service.disconnectMCP(kind)
+            case let .syncSkill(kind, skill):
+                result = try await service.syncSkill(kind, skill: skill)
+            case let .removeSkill(kind, skill):
+                result = try await service.removeSkill(kind, skill: skill)
             }
             // A returned OperationResult is the service's commit boundary.
             // Do not reinterpret a late Cancel as though the mutation failed.
@@ -478,7 +528,7 @@ final class ManagerViewModel: ObservableObject {
                 detail: result.detail,
                 level: .success
             )
-            if action == .updateApp {
+            if relaunchForUpdate {
                 // The helper is already waiting on this process: it cannot
                 // replace the bundle until the app it belongs to has exited.
                 //

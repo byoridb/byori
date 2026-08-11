@@ -120,6 +120,31 @@ public enum MCPInventoryParser {
         }
     }
 
+    /// Lists the servers named in a CLI settings file shaped like
+    /// `{"<serversKey>": {"<name>": {…}}}`.
+    ///
+    /// Only the names are taken. A settings file carries commands, arguments,
+    /// environment and headers, and none of that belongs in a Settings list.
+    ///
+    /// Status is `configured`, not `connected`: the file says the server is
+    /// registered, which is not the same as the CLI having reached it.
+    public static func settingsServers(
+        in file: URL,
+        serversKey: String,
+        limit: Int = 200
+    ) -> [ParsedServer] {
+        let boundedLimit = max(0, min(limit, 500))
+        guard boundedLimit > 0,
+              let data = try? Data(contentsOf: file),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let servers = root[serversKey] as? [String: Any] else {
+            return []
+        }
+        return servers.keys.sorted().prefix(boundedLimit).map {
+            ParsedServer(name: $0, status: .configured)
+        }
+    }
+
     /// Parses only the non-sensitive fields needed by Settings. Values such as
     /// command, args, env, headers, URLs and tokens are deliberately ignored.
     public static func codexServers(fromJSON output: String, limit: Int = 200) -> [ParsedServer]? {
@@ -308,7 +333,7 @@ public struct UserSkillScanner: @unchecked Sendable {
     private struct Root {
         let url: URL
         let origin: UserSkillOrigin
-        let managedSkillFile: URL?
+        let managedSkillFiles: Set<URL>
     }
 
     private let home: URL
@@ -385,7 +410,9 @@ public struct UserSkillScanner: @unchecked Sendable {
             return [Root(
                 url: root,
                 origin: .claudeUser,
-                managedSkillFile: root.appendingPathComponent("byoridb-memory/SKILL.md")
+                managedSkillFiles: Set(ManagedSkill.allCases.map {
+                    root.appendingPathComponent("\($0.rawValue)/SKILL.md").standardizedFileURL
+                })
             )]
         case .codex:
             let shared = home.appendingPathComponent(".agents/skills", isDirectory: true)
@@ -394,10 +421,23 @@ public struct UserSkillScanner: @unchecked Sendable {
                 Root(
                     url: shared,
                     origin: .codexShared,
-                    managedSkillFile: shared.appendingPathComponent("byoridb-memory/SKILL.md")
+                    managedSkillFiles: Set(ManagedSkill.allCases.map {
+                        shared.appendingPathComponent("\($0.rawValue)/SKILL.md").standardizedFileURL
+                    })
                 ),
-                Root(url: legacy, origin: .codexLegacy, managedSkillFile: nil),
+                Root(
+                    url: legacy,
+                    origin: .codexLegacy,
+                    managedSkillFiles: Set(ManagedSkill.allCases.map {
+                        legacy.appendingPathComponent("\($0.rawValue)/SKILL.md").standardizedFileURL
+                    })
+                ),
             ]
+        case .gemini, .cursorAgent, .opencode:
+            // These CLIs do not read a Byori-managed skills directory, so there
+            // is nothing to scan. Pointing the scanner at a plausible-looking
+            // path would list files Byori has no business managing.
+            return []
         }
     }
 
@@ -423,7 +463,7 @@ public struct UserSkillScanner: @unchecked Sendable {
             directoryPath: directory.path,
             skillFilePath: skillFile.path,
             origin: root.origin,
-            isByoriManaged: root.managedSkillFile?.standardizedFileURL == skillFile.standardizedFileURL
+            isByoriManaged: root.managedSkillFiles.contains(skillFile.standardizedFileURL)
         )
     }
 

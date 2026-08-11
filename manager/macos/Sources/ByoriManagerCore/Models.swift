@@ -1,19 +1,18 @@
 import Foundation
 
+/// The coding CLIs Byori ships knowledge of.
+///
+/// What each one supports lives in `AgentProviderCatalog`, not here: being in
+/// this list means Byori can detect and launch the CLI, not that every
+/// integration applies to it.
 public enum AgentKind: String, CaseIterable, Identifiable, Sendable {
     case claude
     case codex
+    case gemini
+    case cursorAgent = "cursor-agent"
+    case opencode
 
     public var id: String { rawValue }
-
-    public var displayName: String {
-        switch self {
-        case .claude: return "Claude Code"
-        case .codex: return "Codex"
-        }
-    }
-
-    public var executableName: String { rawValue }
 }
 
 public enum ManagedFileState: String, Equatable, Sendable {
@@ -23,15 +22,55 @@ public enum ManagedFileState: String, Equatable, Sendable {
     case legacy
 }
 
+public enum ManagedSkill: String, CaseIterable, Identifiable, Sendable {
+    case byoridbMemory = "byoridb-memory"
+    case byoriDesign = "byori-design"
+
+    public var id: String { rawValue }
+
+    /// Names the skill in the UI. Kept short because it always appears next to
+    /// the CLI's own name.
+    public var displayName: String {
+        switch self {
+        case .byoridbMemory: return "Memory"
+        case .byoriDesign: return "Design"
+        }
+    }
+
+    public var assetPaths: [String] {
+        switch self {
+        case .byoridbMemory:
+            return ["SKILL.md"]
+        case .byoriDesign:
+            return ["SKILL.md", "agents/openai.yaml"]
+        }
+    }
+}
+
 public struct AgentStatus: Identifiable, Equatable, Sendable {
     public let kind: AgentKind
     public let executablePath: String?
     public let version: String?
     public let mcpConnected: Bool
-    public let skillState: ManagedFileState
+    public let skillStates: [ManagedSkill: ManagedFileState]
 
     public var id: String { kind.id }
     public var isInstalled: Bool { executablePath != nil }
+    public var skillState: ManagedFileState { state(for: .byoridbMemory) }
+
+    public init(
+        kind: AgentKind,
+        executablePath: String?,
+        version: String?,
+        mcpConnected: Bool,
+        skillStates: [ManagedSkill: ManagedFileState]
+    ) {
+        self.kind = kind
+        self.executablePath = executablePath
+        self.version = version
+        self.mcpConnected = mcpConnected
+        self.skillStates = skillStates
+    }
 
     public init(
         kind: AgentKind,
@@ -40,11 +79,17 @@ public struct AgentStatus: Identifiable, Equatable, Sendable {
         mcpConnected: Bool,
         skillState: ManagedFileState
     ) {
-        self.kind = kind
-        self.executablePath = executablePath
-        self.version = version
-        self.mcpConnected = mcpConnected
-        self.skillState = skillState
+        self.init(
+            kind: kind,
+            executablePath: executablePath,
+            version: version,
+            mcpConnected: mcpConnected,
+            skillStates: [.byoridbMemory: skillState]
+        )
+    }
+
+    public func state(for skill: ManagedSkill) -> ManagedFileState {
+        skillStates[skill] ?? .missing
     }
 }
 
@@ -70,6 +115,24 @@ public struct ByoriStatus: Equatable, Sendable {
         self.serverVersion = serverVersion
         self.homePath = homePath
         self.pythonAvailable = pythonAvailable
+    }
+}
+
+/// Whether Byori should bring ByoriDB back up on its own.
+///
+/// Kept as a rule rather than a chain of `if`s in the view model because the
+/// wrong answer is quiet in both directions: starting a service the user
+/// deliberately stopped, or leaving agents running against no memory.
+public enum ByoriAutostart {
+    public static func shouldStart(_ status: ByoriStatus, userStoppedThisLaunch: Bool) -> Bool {
+        // An explicit stop that undoes itself is worse than one that sticks.
+        guard !userStoppedThisLaunch else { return false }
+        // Installing is a larger operation with its own confirmation, and the
+        // UI already asks for it. Autostart only ever restarts.
+        guard status.isInstalled else { return false }
+        // Loaded but unhealthy still needs a start: the launch agent is
+        // registered and the server behind it is not answering.
+        return !status.serviceLoaded || !status.isHealthy
     }
 }
 

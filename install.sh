@@ -23,8 +23,10 @@ GRAPH_PORT="${BYORIDB_GRAPH_PORT:-9669}"
 LABEL="${BYORIDB_LABEL:-com.byoridb.local}"
 HTTP_ADDR="127.0.0.1:${HTTP_PORT}"
 GRAPH_ADDR="127.0.0.1:${GRAPH_PORT}"
-SKILL_DIR="${HOME}/.claude/skills/byoridb-memory"
-CODEX_SKILL_DIR="${HOME}/.agents/skills/byoridb-memory"
+CLAUDE_SKILLS_ROOT="${HOME}/.claude/skills"
+CODEX_SKILLS_ROOT="${HOME}/.agents/skills"
+MEMORY_SKILL_NAME="byoridb-memory"
+DESIGN_SKILL_NAME="byori-design"
 
 TAG=""; ENGINE_TAG="${BYORI_ENGINE_TAG:-$ENGINE_TAG_DEFAULT}"
 WITH_HOOKS=0; UNINSTALL=0; BINARY=""; ASSETS=""; NO_SERVICE=0; NO_CLAUDE=0; NO_CODEX=0
@@ -68,7 +70,11 @@ uninstall() {
   fi
   command -v claude >/dev/null 2>&1 && claude mcp remove byoridb -s user 2>/dev/null || true
   command -v codex >/dev/null 2>&1 && codex mcp remove byoridb 2>/dev/null || true
-  rm -rf "$SKILL_DIR" "$CODEX_SKILL_DIR"
+  rm -rf \
+    "$CLAUDE_SKILLS_ROOT/$MEMORY_SKILL_NAME" \
+    "$CLAUDE_SKILLS_ROOT/$DESIGN_SKILL_NAME" \
+    "$CODEX_SKILLS_ROOT/$MEMORY_SKILL_NAME" \
+    "$CODEX_SKILLS_ROOT/$DESIGN_SKILL_NAME"
   if [ -d "$BYORIDB_HOME/data" ]; then
     printf 'delete data at %s? [y/N] ' "$BYORIDB_HOME/data"; read -r ans </dev/tty || ans=n
     case "$ans" in y|Y) rm -rf "$BYORIDB_HOME";; *) warn "kept data; removed only bin/scripts"; rm -rf "$BYORIDB_HOME/bin" "$BYORIDB_HOME/byoridb_mcp.py";; esac
@@ -128,6 +134,8 @@ get "templates/run-server.sh" "$WORK/run-server.sh"
 get "templates/run-mcp.sh" "$WORK/run-mcp.sh"
 get "templates/run-byori.sh" "$WORK/run-byori.sh"
 get "adapters/claude/skills/byoridb-memory/SKILL.md" "$WORK/byoridb-memory.SKILL.md"
+get "adapters/claude/skills/byori-design/SKILL.md" "$WORK/byori-design.SKILL.md"
+get "adapters/claude/skills/byori-design/agents/openai.yaml" "$WORK/byori-design.openai.yaml"
 if [ "$SERVICE" = launchd ]; then
   get "templates/com.byoridb.local.plist" "$WORK/service.template"
 else
@@ -274,7 +282,7 @@ log "server credential verified"
 
 # 6) register MCP server with Claude Code
 if [ "$NO_CLAUDE" = 1 ]; then
-  warn "skipping Claude Code wiring (--no-claude): MCP registration + skill install"
+  warn "skipping Claude Code wiring (--no-claude): MCP registration + skills install"
 elif command -v claude >/dev/null 2>&1; then
   claude mcp remove byoridb -s user >/dev/null 2>&1 || true
   claude mcp add byoridb -s user -- "$BYORIDB_HOME/bin/run-mcp.sh" && log "registered MCP server 'byoridb' (user scope)"
@@ -282,14 +290,21 @@ else
   warn "claude CLI not found — register manually: claude mcp add byoridb -s user -- $BYORIDB_HOME/bin/run-mcp.sh"
 fi
 
-# 7) skill
+# 7) skills
 if [ "$NO_CLAUDE" != 1 ]; then
-  log "installing skill -> $SKILL_DIR"
-  mkdir -p "$SKILL_DIR"
-  cp "$WORK/byoridb-memory.SKILL.md" "$SKILL_DIR/SKILL.md"
+  log "installing skills -> $CLAUDE_SKILLS_ROOT"
+  mkdir -p \
+    "$CLAUDE_SKILLS_ROOT/$MEMORY_SKILL_NAME" \
+    "$CLAUDE_SKILLS_ROOT/$DESIGN_SKILL_NAME/agents"
+  cp "$WORK/byoridb-memory.SKILL.md" \
+    "$CLAUDE_SKILLS_ROOT/$MEMORY_SKILL_NAME/SKILL.md"
+  cp "$WORK/byori-design.SKILL.md" \
+    "$CLAUDE_SKILLS_ROOT/$DESIGN_SKILL_NAME/SKILL.md"
+  cp "$WORK/byori-design.openai.yaml" \
+    "$CLAUDE_SKILLS_ROOT/$DESIGN_SKILL_NAME/agents/openai.yaml"
 fi
 
-# 8) Codex wiring (MCP + skill; non-fatal — the base install works without it)
+# 8) Codex wiring (MCP + skills; non-fatal — the base install works without it)
 if [ "$NO_CODEX" = 1 ]; then
   warn "skipping Codex wiring (--no-codex)"
 elif command -v codex >/dev/null 2>&1; then
@@ -299,9 +314,16 @@ elif command -v codex >/dev/null 2>&1; then
   else
     warn "codex mcp add failed — register manually: codex mcp add byoridb -- $BYORIDB_HOME/bin/run-mcp.sh"
   fi
-  mkdir -p "$CODEX_SKILL_DIR"
-  cp "$WORK/byoridb-memory.SKILL.md" "$CODEX_SKILL_DIR/SKILL.md"
-  log "installing skill -> $CODEX_SKILL_DIR"
+  mkdir -p \
+    "$CODEX_SKILLS_ROOT/$MEMORY_SKILL_NAME" \
+    "$CODEX_SKILLS_ROOT/$DESIGN_SKILL_NAME/agents"
+  cp "$WORK/byoridb-memory.SKILL.md" \
+    "$CODEX_SKILLS_ROOT/$MEMORY_SKILL_NAME/SKILL.md"
+  cp "$WORK/byori-design.SKILL.md" \
+    "$CODEX_SKILLS_ROOT/$DESIGN_SKILL_NAME/SKILL.md"
+  cp "$WORK/byori-design.openai.yaml" \
+    "$CODEX_SKILLS_ROOT/$DESIGN_SKILL_NAME/agents/openai.yaml"
+  log "installing skills -> $CODEX_SKILLS_ROOT"
 else
   warn "codex CLI not found — skipped Codex wiring (connect later: codex mcp add byoridb -- $BYORIDB_HOME/bin/run-mcp.sh)"
 fi
@@ -338,9 +360,11 @@ case ":${PATH}:" in
   *) printf '  path     : export PATH="%s/bin:$PATH"\n' "$BYORIDB_HOME" ;;
 esac
 if [ "$NO_CLAUDE" != 1 ]; then
-  printf '  skill    : %s/SKILL.md   (claude mcp list -> byoridb)\n' "$SKILL_DIR"
+  printf '  skills   : %s/{%s,%s}/   (claude mcp list -> byoridb)\n' \
+    "$CLAUDE_SKILLS_ROOT" "$MEMORY_SKILL_NAME" "$DESIGN_SKILL_NAME"
 fi
 if [ "$NO_CODEX" != 1 ] && command -v codex >/dev/null 2>&1; then
-  printf '  codex    : %s/SKILL.md   (codex mcp list -> byoridb)\n' "$CODEX_SKILL_DIR"
+  printf '  codex    : %s/{%s,%s}/   (codex mcp list -> byoridb)\n' \
+    "$CODEX_SKILLS_ROOT" "$MEMORY_SKILL_NAME" "$DESIGN_SKILL_NAME"
 fi
-printf 'Restart your agent CLI so it picks up the MCP server and skill.\n'
+printf 'Restart your agent CLI so it picks up the MCP server and skills.\n'

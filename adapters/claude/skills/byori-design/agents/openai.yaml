@@ -1,0 +1,4 @@
+interface:
+  display_name: "Byori Design"
+  short_description: "Carry product and UI decisions across sessions"
+  default_prompt: "Use $byori-design to continue this product design task with Byori context."

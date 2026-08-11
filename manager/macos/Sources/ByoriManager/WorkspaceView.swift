@@ -129,6 +129,9 @@ struct WorkspaceView<TerminalHost: View>: View {
         .sheet(isPresented: historyPresentation) {
             WorkspaceHistorySheet(model: model)
         }
+        .sheet(isPresented: fileEditorPresentation) {
+            WorkspaceFileEditorSheet(model: model)
+        }
         .alert(item: $model.alert) { alert in
             Alert(
                 title: Text(alert.title),
@@ -202,7 +205,9 @@ struct WorkspaceView<TerminalHost: View>: View {
                 task: task,
                 session: session,
                 isStopping: model.stoppingSessionIDs.contains(session.id),
+                isReattaching: model.reattachingSessionIDs.contains(session.id),
                 stop: { Task { await model.stopSession(session) } },
+                reattach: { Task { await model.reattachSession(session) } },
                 newSession: { Task { await model.prepareNewSession(after: session) } },
                 terminalHost: terminalHost
             )
@@ -262,6 +267,15 @@ struct WorkspaceView<TerminalHost: View>: View {
         Binding(
             get: { model.history != nil },
             set: { if !$0 { model.dismissHistory() } }
+        )
+    }
+
+    private var fileEditorPresentation: Binding<Bool> {
+        Binding(
+            get: { model.fileEditor != nil },
+            set: { isPresented in
+                if !isPresented { model.closeFileEditor() }
+            }
         )
     }
 
@@ -821,7 +835,9 @@ private struct WorkspaceTerminalPane<TerminalHost: View>: View {
     let task: WorkspaceTaskItem
     let session: WorkspaceSessionItem
     let isStopping: Bool
+    let isReattaching: Bool
     let stop: () -> Void
+    let reattach: () -> Void
     let newSession: () -> Void
     let terminalHost: (WorkspaceSessionItem) -> TerminalHost
 
@@ -835,7 +851,32 @@ private struct WorkspaceTerminalPane<TerminalHost: View>: View {
                     .lineLimit(1)
                 Spacer(minLength: 12)
                 sessionStatus
-                if session.state.isActive {
+                if session.isDetached {
+                    Divider().frame(height: 18)
+                    Button(action: reattach) {
+                        if isReattaching {
+                            ProgressView()
+                                .controlSize(.small)
+                                .accessibilityLabel("Reattaching session")
+                        } else {
+                            Label("다시 연결", systemImage: "arrow.uturn.backward.circle")
+                        }
+                    }
+                    .disabled(isReattaching)
+                    .help("tmux에서 실행 중인 세션에 다시 연결")
+                    Button(action: stop) {
+                        if isStopping {
+                            ProgressView()
+                                .controlSize(.small)
+                                .accessibilityLabel("Stopping session")
+                        } else {
+                            Label("Stop", systemImage: "stop.circle")
+                        }
+                    }
+                    .keyboardShortcut(".", modifiers: .command)
+                    .disabled(isStopping)
+                    .help("Stop Session")
+                } else if session.state.isActive {
                     Divider().frame(height: 18)
                     Button(action: stop) {
                         if isStopping {
@@ -905,7 +946,11 @@ private struct WorkspaceTerminalPane<TerminalHost: View>: View {
 
     @ViewBuilder
     private var terminalContent: some View {
-        if session.state.isActive {
+        if session.isDetached {
+            // The CLI is running, but under the tmux server rather than this
+            // app, so there is no terminal view to mount until it reattaches.
+            detachedSessionView
+        } else if session.state.isActive {
             terminalHost(session)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(WorkspacePalette.terminalBackground)
@@ -915,6 +960,40 @@ private struct WorkspaceTerminalPane<TerminalHost: View>: View {
         } else {
             endedSessionView
         }
+    }
+
+    private var detachedSessionView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "bolt.horizontal.circle")
+                .font(.system(size: 32))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Text("세션이 계속 실행 중입니다")
+                .font(.title3.weight(.semibold))
+            Text("Byori를 닫는 동안에도 이 CLI는 tmux에서 실행되고 있었습니다. 다시 연결하면 중단된 지점 그대로 이어집니다.")
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 460)
+
+            Button(action: reattach) {
+                if isReattaching {
+                    HStack(spacing: 7) {
+                        ProgressView().controlSize(.small)
+                        Text("연결 중…")
+                    }
+                } else {
+                    Label("세션에 다시 연결", systemImage: "arrow.uturn.backward.circle")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isReattaching)
+            .padding(.top, 4)
+            .accessibilityLabel("Reattach to session \(session.displayName)")
+            .accessibilityHint("Reopens the terminal for the CLI still running in tmux")
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(WorkspacePalette.terminalBackground)
     }
 
     private var endedSessionView: some View {
@@ -1064,7 +1143,7 @@ private struct WorkspaceInspector: View {
                 if let snapshot = model.inspectorSnapshot {
                     switch model.inspectorTab {
                     case .files:
-                        WorkspaceFilesInspector(files: snapshot.files)
+                        WorkspaceFilesInspector(files: snapshot.files) { model.openFile($0) }
                     case .git:
                         WorkspaceGitInspector(summary: snapshot.git) { model.showHistory() }
                     case .context:
@@ -1128,6 +1207,7 @@ private struct WorkspaceInspector: View {
 
 private struct WorkspaceFilesInspector: View {
     let files: [WorkspaceFileItem]
+    let open: (WorkspaceFileItem) -> Void
 
     var body: some View {
         if files.isEmpty {
@@ -1139,13 +1219,32 @@ private struct WorkspaceFilesInspector: View {
         } else {
             List {
                 OutlineGroup(files, children: \.children) { item in
-                    Label(item.name, systemImage: icon(item.kind))
-                        .lineLimit(1)
-                        .accessibilityLabel("\(item.kind.rawValue.capitalized) \(item.name)")
+                    row(item)
                 }
             }
             .listStyle(.sidebar)
             .accessibilityLabel("Files in selected source tree")
+        }
+    }
+
+    /// Only regular files open. Folders keep the outline's own disclosure
+    /// behaviour, and symlinks are not followed here for the same reason the
+    /// tree walker does not follow them.
+    @ViewBuilder
+    private func row(_ item: WorkspaceFileItem) -> some View {
+        let label = Label(item.name, systemImage: icon(item.kind))
+            .lineLimit(1)
+            .accessibilityLabel("\(item.kind.rawValue.capitalized) \(item.name)")
+        if item.kind == .file {
+            Button { open(item) } label: {
+                label.frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Open \(item.name)")
+            .accessibilityHint("Opens the file for editing")
+        } else {
+            label
         }
     }
 
@@ -1429,6 +1528,13 @@ private struct NewWorkspaceSessionSheet: View {
 
                     Section("Agent") {
                         sessionOptions
+
+                        if let warning = model.sessionPersistenceWarning {
+                            Label(warning, systemImage: "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                                .accessibilityHint("Sessions started now will end when Byori quits")
+                        }
                     }
 
                     Section("ByoriDB Context") {
@@ -1553,6 +1659,17 @@ private struct NewWorkspaceSessionSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            TextField(
+                "Additional CLI arguments (optional)",
+                text: $model.newSessionDraft.additionalArguments
+            )
+            .accessibilityLabel("Additional CLI arguments")
+            .accessibilityHint("Passed to the CLI as written, for example --dangerously-skip-permissions")
+
+            Text("Appended to the CLI invocation exactly as typed, after Byori's own arguments. Quote values containing spaces; no shell expansion is performed.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             if let availabilityMessage {
                 Label(availabilityMessage, systemImage: "exclamationmark.circle")
@@ -1841,6 +1958,179 @@ private struct NewWorkspaceSourceTreeSheet: View {
     /// so those are not offered rather than failing after the fact.
     private var selectableBranches: [WorkspaceGitBranch] {
         model.availableBranches.filter { !$0.isCheckedOut }
+    }
+}
+
+/// A single-file editor for the small corrections that do not deserve a context
+/// switch into another app.
+///
+/// It runs as a sheet rather than inside the inspector column because the
+/// inspector is narrow enough that editing code in it would be worse than not
+/// offering the feature at all.
+private struct WorkspaceFileEditorSheet: View {
+    @ObservedObject var model: WorkspaceViewModel
+    @State private var pendingDiscard: DiscardIntent?
+
+    /// Both ways of losing a draft, so the confirmation can say which one it is.
+    private enum DiscardIntent: String, Identifiable {
+        case close
+        case reload
+
+        var id: String { rawValue }
+
+        var actionTitle: String { self == .close ? "Discard and Close" : "Discard and Reload" }
+        var message: String {
+            self == .close
+                ? "The edits in this file have not been saved."
+                : "Reloading replaces your unsaved edits with the file on disk."
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            content
+                .frame(minHeight: 320)
+            Divider()
+            footer
+        }
+        .frame(minWidth: 720, idealWidth: 820, minHeight: 480, idealHeight: 560)
+        .confirmationDialog(
+            "Discard unsaved edits?",
+            isPresented: discardPresentation,
+            titleVisibility: .visible
+        ) {
+            if let intent = pendingDiscard {
+                Button(intent.actionTitle, role: .destructive) {
+                    pendingDiscard = nil
+                    switch intent {
+                    case .close: model.closeFileEditor()
+                    case .reload: Task { await model.reloadOpenFile() }
+                    }
+                }
+            }
+            Button("Keep Editing", role: .cancel) { pendingDiscard = nil }
+        } message: {
+            Text(pendingDiscard?.message ?? "")
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(model.fileEditor?.name ?? "File")
+                    .font(.title3.weight(.semibold))
+                Text(model.fileEditor?.relativePath ?? "")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(2)
+            }
+            Spacer()
+            if let editor = model.fileEditor, editor.phase == .ready {
+                Text(editor.isDirty ? "Unsaved" : "\(editor.byteSize) bytes")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(editor.isDirty ? .orange : .secondary)
+                    .accessibilityLabel(editor.isDirty ? "Unsaved changes" : "\(editor.byteSize) bytes")
+            }
+        }
+        .padding(20)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch model.fileEditor?.phase {
+        case .loading, nil:
+            WorkspaceUnavailableView(
+                icon: "doc.text",
+                title: "Opening file",
+                detail: "Reading the file from the source tree.",
+                showsProgress: true
+            )
+        case let .failed(message):
+            WorkspaceUnavailableView(
+                icon: "exclamationmark.triangle",
+                title: "File cannot be opened",
+                detail: message,
+                primaryTitle: "Try Again",
+                primaryAction: { Task { await model.reloadOpenFile() } }
+            )
+        case .ready:
+            TextEditor(text: draft)
+                .font(.system(.body, design: .monospaced))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .disabled(model.fileEditor?.isSaving == true)
+                .accessibilityLabel("File contents")
+        }
+    }
+
+    private var footer: some View {
+        HStack {
+            if let notice = model.fileEditor?.notice {
+                Label(notice, systemImage: noticeIcon)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer()
+            Button("Reload") {
+                if model.fileEditor?.isDirty == true {
+                    pendingDiscard = .reload
+                } else {
+                    Task { await model.reloadOpenFile() }
+                }
+            }
+            .disabled(model.fileEditor?.isSaving == true)
+            Button("Close") { closeRequested() }
+                .keyboardShortcut(.cancelAction)
+                .disabled(model.fileEditor?.isSaving == true)
+            Button {
+                Task { await model.saveOpenFile() }
+            } label: {
+                if model.fileEditor?.isSaving == true {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Saving…")
+                    }
+                } else {
+                    Text("Save")
+                }
+            }
+            .keyboardShortcut("s", modifiers: .command)
+            .buttonStyle(.borderedProminent)
+            .disabled(model.fileEditor?.isDirty != true || model.fileEditor?.isSaving == true)
+        }
+        .padding(20)
+    }
+
+    /// A conflict is the one notice worth an alarming icon: the save did not
+    /// happen and the user has to decide what to keep.
+    private var noticeIcon: String {
+        model.fileEditor?.notice == "Saved." ? "checkmark.circle" : "exclamationmark.circle"
+    }
+
+    private func closeRequested() {
+        if model.fileEditor?.isDirty == true {
+            pendingDiscard = .close
+        } else {
+            model.closeFileEditor()
+        }
+    }
+
+    private var draft: Binding<String> {
+        Binding(
+            get: { model.fileEditor?.draft ?? "" },
+            set: { model.fileEditor?.draft = $0 }
+        )
+    }
+
+    private var discardPresentation: Binding<Bool> {
+        Binding(
+            get: { pendingDiscard != nil },
+            set: { if !$0 { pendingDiscard = nil } }
+        )
     }
 }
 

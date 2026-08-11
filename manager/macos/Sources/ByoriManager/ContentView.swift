@@ -362,6 +362,34 @@ struct PageHeader: View {
     }
 }
 
+/// Says what the last check found, not just what the click will do. Being
+/// current used to be indistinguishable from never having checked, and running
+/// the update anyway reported it as a failed operation.
+private struct AppUpdateButton: View {
+    let availability: AppUpdateAvailability
+    let action: () -> Void
+
+    var body: some View {
+        switch availability {
+        case .unknown:
+            Button("업데이트 확인 후 설치", action: action)
+        case .upToDate:
+            Button(action: action) {
+                Label("이미 최신 버전", systemImage: "checkmark.circle.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.green)
+            .help("다시 확인하려면 누르세요.")
+        case let .available(update):
+            // The version goes in parentheses rather than into the sentence:
+            // Korean particles change with the preceding sound, and this one is
+            // interpolated.
+            Button("업데이트 설치 (\(update.version.description))", action: action)
+                .buttonStyle(.borderedProminent)
+        }
+    }
+}
+
 private struct OverviewView: View {
     @EnvironmentObject private var model: ManagerViewModel
 
@@ -390,13 +418,7 @@ private struct OverviewView: View {
                         }
                         Divider()
                         HStack {
-                            // The version goes in parentheses rather than into
-                            // the sentence: Korean particles change with the
-                            // preceding sound, and this one is interpolated.
-                            Button(
-                                model.availableUpdate.map { "업데이트 설치 (\($0.version.description))" }
-                                    ?? "업데이트 확인 후 설치"
-                            ) {
+                            AppUpdateButton(availability: model.updateAvailability) {
                                 model.request(.updateApp, confirmation: true)
                             }
                             Spacer()
@@ -569,21 +591,20 @@ private struct AgentInventoryPane: View {
     let status: AgentStatus?
     let inventory: AgentIntegrationInventory?
 
-    private var installAction: ManagerAction { kind == .claude ? .installClaude : .installCodex }
-    private var connectAction: ManagerAction { kind == .claude ? .connectClaude : .connectCodex }
-    private var disconnectAction: ManagerAction { kind == .claude ? .disconnectClaude : .disconnectCodex }
-    private var syncAction: ManagerAction { kind == .claude ? .syncClaudeSkill : .syncCodexSkill }
-    private var removeAction: ManagerAction { kind == .claude ? .removeClaudeSkill : .removeCodexSkill }
+    private var descriptor: AgentProviderDescriptor { kind.descriptor }
+    private var installAction: ManagerAction { .installCLI(kind) }
+    private var connectAction: ManagerAction { .connectMCP(kind) }
+    private var disconnectAction: ManagerAction { .disconnectMCP(kind) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 12) {
-                Image(systemName: kind == .claude ? "sparkles" : "terminal")
+                Image(systemName: descriptor.systemImage)
                     .font(.title2)
                     .frame(width: 28)
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 7) {
-                        Text(kind.displayName)
+                        Text(descriptor.displayName)
                             .font(.title3.weight(.semibold))
                         Label(
                             status?.isInstalled == true ? "설치됨" : "설치 필요",
@@ -601,13 +622,25 @@ private struct AgentInventoryPane: View {
                         .truncationMode(.middle)
                 }
                 Spacer(minLength: 16)
-                Button(status?.isInstalled == true ? "공식 설치기로 업데이트" : "CLI 설치") {
-                    model.request(installAction, confirmation: true)
+                // Byori has no install command for every CLI it can launch.
+                // Showing a button that can only report a refusal would be worse
+                // than saying so plainly.
+                if descriptor.canInstall {
+                    Button(status?.isInstalled == true ? "공식 설치기로 업데이트" : "CLI 설치") {
+                        model.request(installAction, confirmation: true)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.isBusy || model.isRefreshingIntegrations)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(model.isBusy || model.isRefreshingIntegrations)
             }
             .padding(.vertical, 12)
+
+            if let limitations = descriptor.limitations {
+                Label(limitations, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 10)
+            }
 
             Divider()
 
@@ -671,25 +704,17 @@ private struct AgentInventoryPane: View {
                 action: {}
             )
 
-            if managedSkills.isEmpty {
+            ForEach(Array(ManagedSkill.allCases.enumerated()), id: \.element.id) { index, definition in
+                if index > 0 { Divider().padding(.leading, 36) }
+                let installedSkill = managedSkills.first { $0.name == definition.rawValue }
                 ManagedSkillInventoryRow(
                     kind: kind,
-                    skill: nil,
-                    state: status?.skillState,
-                    sync: { model.request(syncAction) },
-                    remove: { model.request(removeAction, confirmation: true) }
+                    definition: definition,
+                    skill: installedSkill,
+                    state: status?.state(for: definition),
+                    sync: { model.request(syncAction(for: definition)) },
+                    remove: { model.request(removeAction(for: definition), confirmation: true) }
                 )
-            } else {
-                ForEach(Array(managedSkills.enumerated()), id: \.element.id) { index, skill in
-                    if index > 0 { Divider().padding(.leading, 36) }
-                    ManagedSkillInventoryRow(
-                        kind: kind,
-                        skill: skill,
-                        state: status?.skillState,
-                        sync: { model.request(syncAction) },
-                        remove: { model.request(removeAction, confirmation: true) }
-                    )
-                }
             }
 
             ForEach(otherSkills) { skill in
@@ -697,15 +722,6 @@ private struct AgentInventoryPane: View {
                 UserSkillInventoryRow(skill: skill)
             }
 
-            if managedSkills.isEmpty, otherSkills.isEmpty,
-               status?.skillState == .missing, inventory != nil {
-                Divider().padding(.leading, 36)
-                InventoryMessageRow(
-                    icon: "tray",
-                    title: "설치된 사용자 Skill이 없습니다.",
-                    detail: nil
-                )
-            }
             if inventory?.skillsWereTruncated == true {
                 Divider().padding(.leading, 36)
                 InventoryMessageRow(
@@ -731,11 +747,19 @@ private struct AgentInventoryPane: View {
     }
 
     private var managedSkills: [UserSkillSummary] {
-        inventory?.skills.filter { $0.name == "byoridb-memory" } ?? []
+        inventory?.skills.filter(\.isByoriManaged) ?? []
     }
 
     private var otherSkills: [UserSkillSummary] {
-        inventory?.skills.filter { $0.name != "byoridb-memory" } ?? []
+        inventory?.skills.filter { !$0.isByoriManaged } ?? []
+    }
+
+    private func syncAction(for skill: ManagedSkill) -> ManagerAction {
+        .syncSkill(kind, skill)
+    }
+
+    private func removeAction(for skill: ManagedSkill) -> ManagerAction {
+        .removeSkill(kind, skill)
     }
 }
 
@@ -874,6 +898,7 @@ private struct MCPInventoryRow: View {
 private struct ManagedSkillInventoryRow: View {
     @EnvironmentObject private var model: ManagerViewModel
     let kind: AgentKind
+    let definition: ManagedSkill
     let skill: UserSkillSummary?
     let state: ManagedFileState?
     let sync: () -> Void
@@ -881,12 +906,12 @@ private struct ManagedSkillInventoryRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: state == .current ? "checkmark.circle.fill" : "puzzlepiece.extension")
-                .foregroundStyle(state == .current ? .green : .orange)
+            Image(systemName: stateIcon)
+                .foregroundStyle(stateColor)
                 .frame(width: 26)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 7) {
-                    Text("byoridb-memory").font(.body.weight(.medium))
+                    Text(definition.rawValue).font(.body.weight(.medium))
                     Text(managedSkillMetadata)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -923,8 +948,25 @@ private struct ManagedSkillInventoryRow: View {
     }
 
     private var skillDetail: String {
-        kind == .claude ? "~/.claude/skills/byoridb-memory/SKILL.md"
-            : "~/.agents/skills/byoridb-memory/SKILL.md"
+        kind == .claude ? "~/.claude/skills/\(definition.rawValue)/SKILL.md"
+            : "~/.agents/skills/\(definition.rawValue)/SKILL.md"
+    }
+
+    private var stateIcon: String {
+        switch state {
+        case .current: return "checkmark.circle.fill"
+        case .outdated: return "arrow.triangle.2.circlepath.circle.fill"
+        case .legacy: return "clock.arrow.circlepath"
+        default: return "puzzlepiece.extension"
+        }
+    }
+
+    private var stateColor: Color {
+        switch state {
+        case .current: return .green
+        case .outdated, .legacy: return .orange
+        default: return .secondary
+        }
     }
 
     private var managedSkillMetadata: String {

@@ -51,10 +51,12 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
     private let git: WorkspaceGitService
     private let workspaceHome: URL
     private let files: LocalWorkspaceFileTreeService
+    private let documents: LocalWorkspaceFileDocumentService
     private let managerService: ManagerService
     private let launchFactory: TerminalLaunchDescriptorFactory
     private let terminalController: TerminalSessionController
     private let operationGate = WorkspaceOperationGate()
+    private let customProviders: CustomAgentProviderStore
 
     private struct CheckoutKey: Hashable {
         let projectID: String
@@ -66,11 +68,20 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         let kind: WorkspaceCheckoutKind
     }
 
+    /// One of the two ways a session can be started, resolved once so the launch
+    /// path never has to re-derive it from a raw string.
+    private enum ResolvedProvider {
+        case builtIn(AgentKind)
+        case custom(CustomAgentProvider)
+    }
+
     private var coreProjects: [String: ByoriManagerCore.WorkspaceProject] = [:]
     private var coreTasks: [String: ByoriManagerCore.WorkspaceTask] = [:]
     private var checkouts: [CheckoutKey: RegisteredCheckout] = [:]
     private var taskIDBySessionID: [String: String] = [:]
     private var lastTerminalStatus: [String: TerminalSessionStatus] = [:]
+    /// Terminal ids tmux still holds, as of the last workspace load.
+    private var detachedSessionIDs: Set<UUID> = []
 
     init(
         managerService: ManagerService,
@@ -90,8 +101,10 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         self.git = git
         self.workspaceHome = workspaceHome
         self.files = LocalWorkspaceFileTreeService()
+        self.documents = LocalWorkspaceFileDocumentService()
         self.managerService = managerService
         self.launchFactory = TerminalLaunchDescriptorFactory(paths: managerService.paths)
+        self.customProviders = CustomAgentProviderStore(paths: managerService.paths)
         self.terminalController = terminalController
     }
 
@@ -108,13 +121,20 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         var nextTasks: [String: ByoriManagerCore.WorkspaceTask] = [:]
         var nextCheckouts: [CheckoutKey: RegisteredCheckout] = [:]
         var nextTaskBySession: [String: String] = [:]
+        // Asked once per load: it spawns a tmux process, and the answer applies
+        // to every session in the snapshot.
+        let liveDetachedIDs = await terminalController.liveDetachedSessionIDs()
+        detachedSessionIDs = liveDetachedIDs
 
         for project in projects {
             nextProjects[project.id] = project
             let loadedTasks = try await taskStore.tasks(projectID: project.id, limit: 500).tasks
             var reconciledTasks: [ByoriManagerCore.WorkspaceTask] = []
             for task in loadedTasks {
-                let reconciled = try await reconcileStaleSessions(in: task)
+                let reconciled = try await reconcileStaleSessions(
+                    in: task,
+                    liveDetachedIDs: liveDetachedIDs
+                )
                 reconciledTasks.append(reconciled)
                 nextTasks[reconciled.id] = reconciled
                 for session in reconciled.sessions {
@@ -204,34 +224,69 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
             throw WorkspaceAdapterError.invalidState("The selected project is no longer registered.")
         }
         let snapshot = await managerService.snapshot()
-        return AgentKind.allCases.map { kind in
+        let builtIn = AgentKind.allCases.map { kind in
+            let descriptor = kind.descriptor
             let status = snapshot.agent(kind)
             let availability: WorkspaceOptionAvailability = status?.isInstalled == true
                 ? .available
-                : .unavailable(reason: "CLI not installed")
+                : .unavailable(reason: descriptor.canInstall
+                    ? "CLI not installed"
+                    : "CLI not installed — Byori does not install this one")
+
+            var models = [
+                WorkspaceModelOption(
+                    id: Self.cliDefaultModelID,
+                    displayName: Self.cliDefaultModelName,
+                    detail: "Resolved by the agent CLI when this session starts",
+                    availability: availability
+                ),
+            ]
+            // Offering a model box for a CLI that takes no model flag would only
+            // produce a session that refuses to launch.
+            if descriptor.supportsModelFlag {
+                models.append(WorkspaceModelOption(
+                    id: Self.customModelOptionID,
+                    displayName: "Custom identifier",
+                    detail: "Use an exact model identifier accepted by this CLI",
+                    availability: availability,
+                    acceptsCustomIdentifier: true,
+                    customIdentifierPlaceholder: "Provider model identifier"
+                ))
+            }
+
             return WorkspaceProviderOption(
                 id: kind.rawValue,
-                displayName: kind.displayName,
-                systemImage: providerIcon(kind),
+                displayName: descriptor.displayName,
+                systemImage: descriptor.systemImage,
+                availability: availability,
+                models: models
+            )
+        }
+
+        // Registered CLIs are offered alongside the built-in ones, but never
+        // with a model list: Byori does not know their interfaces and would only
+        // be inventing a flag.
+        let custom = await customProviders.providers().map { provider in
+            let isExecutable = FileManager.default.isExecutableFile(atPath: provider.executablePath)
+            let availability: WorkspaceOptionAvailability = isExecutable
+                ? .available
+                : .unavailable(reason: "Registered executable is missing")
+            return WorkspaceProviderOption(
+                id: provider.id,
+                displayName: provider.displayName,
+                systemImage: "terminal",
                 availability: availability,
                 models: [
                     WorkspaceModelOption(
                         id: Self.cliDefaultModelID,
                         displayName: Self.cliDefaultModelName,
-                        detail: "Resolved by the agent CLI when this session starts",
+                        detail: "Byori does not pass a model to a registered CLI",
                         availability: availability
-                    ),
-                    WorkspaceModelOption(
-                        id: Self.customModelOptionID,
-                        displayName: "Custom identifier",
-                        detail: "Use an exact model identifier accepted by this CLI",
-                        availability: availability,
-                        acceptsCustomIdentifier: true,
-                        customIdentifierPlaceholder: "Provider model identifier"
                     ),
                 ]
             )
         }
+        return builtIn + custom
     }
 
     func registerProject(at repositoryURL: URL) async throws {
@@ -403,7 +458,15 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
               let checkout = checkouts[checkoutKey] else {
             throw WorkspaceAdapterError.invalidState("Refresh the workspace and choose a valid source tree.")
         }
-        guard let agent = AgentKind(rawValue: request.providerID) else {
+        // A provider id is either a built-in kind or a CLI the user registered.
+        // Nothing else may start a session: an unknown id must not fall through
+        // to some default executable.
+        let resolvedProvider: ResolvedProvider
+        if let agent = AgentKind(rawValue: request.providerID) {
+            resolvedProvider = .builtIn(agent)
+        } else if let custom = await customProviders.provider(id: request.providerID) {
+            resolvedProvider = .custom(custom)
+        } else {
             throw WorkspaceAdapterError.invalidState("The selected coding provider is not supported.")
         }
         // Validate before creating a new task so an invalid session identity
@@ -448,19 +511,20 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         let session = try await taskStore.createSession(
             taskID: task.id,
             name: sessionName,
-            provider: WorkspaceProvider(rawValue: agent.rawValue),
+            provider: WorkspaceProvider(rawValue: request.providerID),
             model: persistedModel
         )
         let terminalID = UUID()
         var didActivateSession = false
 
         do {
-            let descriptor = try launchFactory.codingAgent(
-                agent,
+            let descriptor = try makeLaunchDescriptor(
+                provider: resolvedProvider,
                 model: explicitModel,
                 workingDirectory: checkout.url,
-                sessionID: terminalID,
-                environmentOverrides: ["BYORIDB_MEMORY_SPACE": project.memorySpace]
+                terminalID: terminalID,
+                environment: ["BYORIDB_MEMORY_SPACE": project.memorySpace],
+                additionalArguments: request.additionalArguments
             )
             _ = try await taskStore.updateSessionStatus(
                 taskID: task.id,
@@ -470,7 +534,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
             )
             didActivateSession = true
             lastTerminalStatus[session.id] = .starting
-            try terminalController.start(
+            try await terminalController.start(
                 descriptor,
                 callbacks: TerminalSessionCallbacks(statusChanged: { [weak self] snapshot in
                     self?.terminalStatusChanged(
@@ -518,6 +582,131 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
     }
 
 
+
+    func sessionPersistenceWarning() async -> String? {
+        switch await terminalController.sessionPersistence() {
+        case .available:
+            return nil
+        case let .unavailable(reason):
+            return reason.message
+        }
+    }
+
+    /// The one place a session's argv is built, so a reattach cannot drift from
+    /// the launch it is meant to resume.
+    private func makeLaunchDescriptor(
+        provider: ResolvedProvider,
+        model: String?,
+        workingDirectory: URL,
+        terminalID: UUID,
+        environment: [String: String],
+        additionalArguments: [String]
+    ) throws -> TerminalLaunchDescriptor {
+        switch provider {
+        case let .builtIn(agent):
+            return try launchFactory.codingAgent(
+                agent,
+                model: model,
+                workingDirectory: workingDirectory,
+                sessionID: terminalID,
+                environmentOverrides: environment,
+                additionalArguments: additionalArguments
+            )
+        case let .custom(custom):
+            return try launchFactory.customAgent(
+                custom,
+                workingDirectory: workingDirectory,
+                sessionID: terminalID,
+                environmentOverrides: environment,
+                additionalArguments: additionalArguments
+            )
+        }
+    }
+
+    func reattachSession(id: String) async throws -> WorkspaceSessionLaunchResult {
+        try await operationGate.perform { [self] in
+            try await reattachSessionLocked(id: id)
+        }
+    }
+
+    /// Reopens a terminal onto a CLI tmux is still running.
+    ///
+    /// Reuses the session's original terminal id, which is what makes this a
+    /// reattach: the tmux session is named after it, so `new-session -A` finds
+    /// the running one instead of starting a second CLI beside it.
+    private func reattachSessionLocked(id: String) async throws -> WorkspaceSessionLaunchResult {
+        guard let taskID = taskIDBySessionID[id],
+              let task = try await taskStore.task(id: taskID),
+              let session = task.sessions.first(where: { $0.id == id }),
+              let project = coreProjects[task.projectID] else {
+            throw WorkspaceAdapterError.invalidState("The selected session could not be found.")
+        }
+        guard let nativeSessionID = session.nativeSessionID,
+              let terminalID = UUID(uuidString: nativeSessionID) else {
+            throw WorkspaceAdapterError.invalidState("This session has no terminal to reattach to.")
+        }
+        guard terminalController.snapshot(for: terminalID) == nil else {
+            throw WorkspaceAdapterError.invalidState("This session is already open.")
+        }
+        // Re-checked rather than trusting the last load: the CLI may have
+        // exited since. Reattaching then would silently start a *new* CLI under
+        // the same name, which reads as the old conversation coming back.
+        guard await terminalController.liveDetachedSessionIDs().contains(terminalID) else {
+            detachedSessionIDs.remove(terminalID)
+            throw WorkspaceAdapterError.invalidState(
+                "이 세션은 더 이상 실행 중이 아닙니다. 새 세션을 시작해 주세요."
+            )
+        }
+        let checkoutKey = CheckoutKey(projectID: task.projectID, checkoutID: task.checkout.id)
+        guard let checkout = checkouts[checkoutKey] else {
+            throw WorkspaceAdapterError.invalidState("Refresh the workspace and choose a valid source tree.")
+        }
+
+        let resolvedProvider: ResolvedProvider
+        if let agent = AgentKind(rawValue: session.provider.rawValue) {
+            resolvedProvider = .builtIn(agent)
+        } else if let custom = await customProviders.provider(id: session.provider.rawValue) {
+            resolvedProvider = .custom(custom)
+        } else {
+            throw WorkspaceAdapterError.invalidState("The session's coding provider is no longer available.")
+        }
+
+        let descriptor = try makeLaunchDescriptor(
+            provider: resolvedProvider,
+            model: session.model == Self.cliDefaultModelName ? nil : session.model,
+            workingDirectory: checkout.url,
+            terminalID: terminalID,
+            environment: ["BYORIDB_MEMORY_SPACE": project.memorySpace],
+            additionalArguments: []
+        )
+        lastTerminalStatus[session.id] = .starting
+        try await terminalController.start(
+            descriptor,
+            callbacks: TerminalSessionCallbacks(statusChanged: { [weak self] snapshot in
+                self?.terminalStatusChanged(
+                    coreSessionID: session.id,
+                    taskID: task.id,
+                    snapshot: snapshot
+                )
+            })
+        )
+        if case let .failed(message) = terminalController.snapshot(for: terminalID)?.status {
+            throw WorkspaceAdapterError.invalidState(message)
+        }
+        detachedSessionIDs.remove(terminalID)
+
+        coreTasks[task.id] = task
+        let taskItem = makeTaskItem(task, sourceTreeID: task.checkout.id)
+        guard let sessionItem = taskItem.sessions.first(where: { $0.id == session.id }) else {
+            throw WorkspaceAdapterError.invalidState("The session reattached but could not be selected.")
+        }
+        return WorkspaceSessionLaunchResult(
+            projectID: task.projectID,
+            sourceTreeID: task.checkout.id,
+            task: taskItem,
+            session: sessionItem
+        )
+    }
 
     private func stopSessionLocked(id: String) async throws -> WorkspaceSessionItem {
         guard let taskID = taskIDBySessionID[id],
@@ -580,10 +769,31 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         }
     }
 
+    func readFile(_ request: WorkspaceFileReadRequest) async throws -> WorkspaceFileDocument {
+        try await documents.read(
+            at: checkoutURL(projectID: request.projectID, sourceTreeID: request.sourceTreeID),
+            relativePath: request.relativePath
+        )
+    }
+
+    func writeFile(_ request: WorkspaceFileWriteRequest) async throws -> WorkspaceFileDocument {
+        try await documents.write(
+            at: checkoutURL(projectID: request.projectID, sourceTreeID: request.sourceTreeID),
+            relativePath: request.relativePath,
+            text: request.text,
+            expectedRevision: request.expectedRevision
+        )
+    }
+
+    /// The source tree's root is the containment boundary every file and Git
+    /// operation is resolved against, so it is looked up from the registry
+    /// rather than passed in from the view.
     private func checkoutURL(projectID: String, sourceTreeID: String) throws -> URL {
         let key = CheckoutKey(projectID: projectID, checkoutID: sourceTreeID)
         guard coreProjects[projectID] != nil, let checkout = checkouts[key] else {
-            throw WorkspaceAdapterError.invalidState("Refresh the workspace before reading history.")
+            throw WorkspaceAdapterError.invalidState(
+                "Refresh the workspace before reading this source tree."
+            )
         }
         return checkout.url
     }
@@ -606,14 +816,21 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         return WorkspaceContextSnapshot(items: context.items, isTruncated: context.isTruncated)
     }
 
+    /// Marks sessions that did not survive as terminal.
+    ///
+    /// `liveDetachedIDs` is what tmux still holds. Without consulting it, every
+    /// session that outlived a quit would be marked failed on the next launch —
+    /// the running CLI would still be there, but Byori would have recorded it
+    /// as dead and offered no way back to it.
     private func reconcileStaleSessions(
-        in task: ByoriManagerCore.WorkspaceTask
+        in task: ByoriManagerCore.WorkspaceTask,
+        liveDetachedIDs: Set<UUID>
     ) async throws -> ByoriManagerCore.WorkspaceTask {
         for session in task.sessions where !session.status.isTerminal {
             let attached: Bool
             if let nativeID = session.nativeSessionID,
                let terminalID = UUID(uuidString: nativeID),
-               terminalController.snapshot(for: terminalID) != nil {
+               terminalController.snapshot(for: terminalID) != nil || liveDetachedIDs.contains(terminalID) {
                 attached = true
             } else {
                 attached = false
@@ -704,24 +921,31 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         taskID: String
     ) -> WorkspaceSessionItem {
         let kind = AgentKind(rawValue: session.provider.rawValue)
-        let terminalSnapshot = session.nativeSessionID
-            .flatMap(UUID.init(uuidString:))
-            .flatMap { terminalController.snapshot(for: $0) }
-        let presentation = presentationStatus(core: session.status, terminal: terminalSnapshot?.status)
+        let terminalID = session.nativeSessionID.flatMap(UUID.init(uuidString:))
+        let terminalSnapshot = terminalID.flatMap { terminalController.snapshot(for: $0) }
+        // Detached only while this app holds no terminal: once reattached the
+        // session is an ordinary running one again.
+        let isDetached = terminalSnapshot == nil
+            && terminalID.map(detachedSessionIDs.contains) == true
+        var presentation = presentationStatus(core: session.status, terminal: terminalSnapshot?.status)
+        if isDetached {
+            presentation = (.running, "Detached — running in tmux")
+        }
         return WorkspaceSessionItem(
             id: session.id,
             taskID: taskID,
             name: session.name,
             providerID: session.provider.rawValue,
             providerName: kind?.displayName ?? session.provider.rawValue,
-            providerSystemImage: kind.map(providerIcon) ?? "terminal",
+            providerSystemImage: kind?.descriptor.systemImage ?? "terminal",
             modelID: session.model == Self.cliDefaultModelName ? Self.cliDefaultModelID : session.model,
             modelName: session.model,
             state: presentation.status,
             statusDetail: presentation.detail,
             startedAt: session.startedAt,
             endedAt: session.endedAt,
-            nativeSessionID: session.nativeSessionID
+            nativeSessionID: session.nativeSessionID,
+            isDetached: isDetached
         )
     }
 
@@ -975,10 +1199,6 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         if raw.contains("D") { return .deleted }
         if raw.contains("A") { return .added }
         return .modified
-    }
-
-    private func providerIcon(_ kind: AgentKind) -> String {
-        kind == .claude ? "sparkles" : "terminal"
     }
 
     private func boundedContext(_ value: String) -> String {

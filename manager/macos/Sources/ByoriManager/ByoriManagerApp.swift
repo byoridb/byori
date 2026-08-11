@@ -144,7 +144,9 @@ private final class ByoriApplicationDelegate: NSObject, NSApplicationDelegate {
         // Best-effort fallback for lifecycle paths that do not first ask the
         // delegate. Normal menu, keyboard, Dock and Apple-event quits are
         // drained asynchronously by `applicationShouldTerminate` above.
-        TerminalSessionController.shared.stopAll()
+        // Releases rather than stops: a tmux-backed session must survive the
+        // quit so it can be reattached on the next launch.
+        TerminalSessionController.shared.releaseAllForApplicationExit()
     }
 }
 

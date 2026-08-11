@@ -93,6 +93,63 @@ final class IntegrationInventoryTests: XCTestCase {
         XCTAssertThrowsError(try scanner.validatedDirectory(for: forged))
     }
 
+    func testSkillScannerMarksBothBundledSkillsAsManaged() throws {
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let skillsRoot = home.appendingPathComponent(".agents/skills", isDirectory: true)
+        for name in ["byoridb-memory", "byori-design", "custom"] {
+            let directory = skillsRoot.appendingPathComponent(name, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data(name.utf8).write(to: directory.appendingPathComponent("SKILL.md"))
+        }
+
+        let skills = UserSkillScanner(home: home).scan(.codex).skills
+        XCTAssertEqual(skills.map(\.name), ["byori-design", "byoridb-memory", "custom"])
+        XCTAssertTrue(skills.first(where: { $0.name == "byori-design" })?.isByoriManaged == true)
+        XCTAssertTrue(skills.first(where: { $0.name == "byoridb-memory" })?.isByoriManaged == true)
+        XCTAssertTrue(skills.first(where: { $0.name == "custom" })?.isByoriManaged == false)
+    }
+
+    func testDesignSkillSyncAndRemovalManageAllBundledAssets() async throws {
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let runtime = root.appendingPathComponent("runtime", isDirectory: true)
+        let source = runtime.appendingPathComponent(
+            "adapters/claude/skills/byori-design",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: source.appendingPathComponent("agents", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try Data("design-skill".utf8).write(to: source.appendingPathComponent("SKILL.md"))
+        try Data("interface: {}".utf8).write(
+            to: source.appendingPathComponent("agents/openai.yaml")
+        )
+
+        let service = ManagerService(paths: ManagerPaths(home: home, runtimeRoot: runtime))
+        _ = try await service.syncSkill(.codex, skill: .byoriDesign)
+
+        let installed = home.appendingPathComponent(
+            ".agents/skills/byori-design",
+            isDirectory: true
+        )
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: installed.appendingPathComponent("SKILL.md").path
+        ))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: installed.appendingPathComponent("agents/openai.yaml").path
+        ))
+        let snapshot = await service.snapshot()
+        XCTAssertEqual(snapshot.agent(.codex)?.state(for: .byoriDesign), .current)
+
+        _ = try await service.removeSkill(.codex, skill: .byoriDesign)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: installed.appendingPathComponent("SKILL.md").path
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: installed.appendingPathComponent("agents/openai.yaml").path
+        ))
+    }
+
     func testArbitrarySkillRemovalBacksUpWholeDirectory() async throws {
         let home = root.appendingPathComponent("home", isDirectory: true)
         let runtime = root.appendingPathComponent("runtime", isDirectory: true)

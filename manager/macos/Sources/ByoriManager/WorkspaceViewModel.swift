@@ -15,6 +15,9 @@ protocol WorkspaceDataSource: AnyObject {
     func loadContext(_ request: WorkspaceInspectorRequest) async throws -> WorkspaceContextSnapshot
     func loadHistory(projectID: String, sourceTreeID: String) async throws -> WorkspaceGitGraph
     func checkout(projectID: String, sourceTreeID: String, ref: String) async throws
+
+    func readFile(_ request: WorkspaceFileReadRequest) async throws -> WorkspaceFileDocument
+    func writeFile(_ request: WorkspaceFileWriteRequest) async throws -> WorkspaceFileDocument
     func registerProject(at repositoryURL: URL) async throws
     func removeProject(id: String) async throws
     func branches(projectID: String) async throws -> [WorkspaceGitBranch]
@@ -23,6 +26,10 @@ protocol WorkspaceDataSource: AnyObject {
     func restoreSourceTree(projectID: String, at url: URL) async throws
     func startSession(_ request: WorkspaceSessionLaunchRequest) async throws -> WorkspaceSessionLaunchResult
     func stopSession(id: String) async throws -> WorkspaceSessionItem
+    /// Reopens a terminal onto a session the CLI is still running in.
+    func reattachSession(id: String) async throws -> WorkspaceSessionLaunchResult
+    /// Why sessions started now will not outlive the app, or nil when they will.
+    func sessionPersistenceWarning() async -> String?
 }
 
 extension WorkspaceDataSource {
@@ -40,6 +47,14 @@ extension WorkspaceDataSource {
 
     func checkout(projectID: String, sourceTreeID: String, ref: String) async throws {
         throw WorkspaceAdapterError.unsupported("Checkout is not connected yet.")
+    }
+
+    func readFile(_ request: WorkspaceFileReadRequest) async throws -> WorkspaceFileDocument {
+        throw WorkspaceAdapterError.unsupported("Opening files is not connected yet.")
+    }
+
+    func writeFile(_ request: WorkspaceFileWriteRequest) async throws -> WorkspaceFileDocument {
+        throw WorkspaceAdapterError.unsupported("Saving files is not connected yet.")
     }
 
     func registerProject(at repositoryURL: URL) async throws {
@@ -73,6 +88,12 @@ extension WorkspaceDataSource {
     func stopSession(id: String) async throws -> WorkspaceSessionItem {
         throw WorkspaceAdapterError.unsupported("Session stopping is not connected yet.")
     }
+
+    func reattachSession(id: String) async throws -> WorkspaceSessionLaunchResult {
+        throw WorkspaceAdapterError.unsupported("Session reattach is not connected yet.")
+    }
+
+    func sessionPersistenceWarning() async -> String? { nil }
 
 
 }
@@ -241,6 +262,9 @@ struct WorkspaceSessionItem: Identifiable, Hashable {
     var startedAt: Date?
     var endedAt: Date?
     var nativeSessionID: String?
+    /// The CLI is still running under tmux but this app holds no terminal for
+    /// it — the state a session is in after Byori was quit and reopened.
+    var isDetached: Bool = false
 
     var displayName: String {
         guard let normalizedName = name?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -356,6 +380,22 @@ struct WorkspaceInspectorSnapshot: Hashable {
     var git: WorkspaceGitSummaryItem
 }
 
+struct WorkspaceFileReadRequest: Hashable {
+    let projectID: String
+    let sourceTreeID: String
+    let relativePath: String
+}
+
+struct WorkspaceFileWriteRequest: Hashable {
+    let projectID: String
+    let sourceTreeID: String
+    let relativePath: String
+    let text: String
+    /// The digest the editor was opened from. The adapter refuses the write if
+    /// the file on disk no longer matches it.
+    let expectedRevision: String
+}
+
 struct WorkspaceContextSnapshot: Hashable {
     var items: [WorkspaceContextItem]
     var isTruncated: Bool
@@ -428,6 +468,7 @@ struct WorkspaceSessionLaunchRequest: Hashable {
     let providerID: String
     let modelChoice: WorkspaceLaunchModelChoice
     let contextDepth: WorkspaceContextDepth
+    let additionalArguments: [String]
 }
 
 enum WorkspaceLaunchModelChoice: Hashable {
@@ -544,6 +585,9 @@ struct WorkspaceNewSessionDraft: Hashable {
     var customModelID = ""
     var contextDepth: WorkspaceContextDepth = .related
     var acceptsModifiedWorkingTree = false
+    /// Free-form flags appended to the CLI invocation, e.g.
+    /// `--dangerously-skip-permissions`. Byori does not interpret them.
+    var additionalArguments = ""
 }
 
 struct WorkspaceAlert: Identifiable, Equatable {
@@ -576,6 +620,34 @@ struct WorkspaceHistoryPresentation: Equatable {
     var canCheckOut: Bool { activeSessionBlockReason == nil && checkingOutRef == nil }
 }
 
+/// One file open for editing. `original` is kept beside `draft` so the sheet can
+/// tell an untouched view from unsaved work without asking the disk again.
+struct WorkspaceFileEditor: Equatable {
+    enum Phase: Equatable {
+        case loading
+        case ready
+        case failed(String)
+    }
+
+    let projectID: String
+    let sourceTreeID: String
+    let relativePath: String
+    var phase: Phase = .loading
+    var original = ""
+    var draft = ""
+    var revision = ""
+    var byteSize = 0
+    var isSaving = false
+    /// Set after a save, or when the file moved underneath the editor.
+    var notice: String?
+
+    var isDirty: Bool { phase == .ready && draft != original }
+
+    var name: String {
+        relativePath.split(separator: "/").last.map(String.init) ?? relativePath
+    }
+}
+
 struct WorkspaceLineage {
     let project: WorkspaceProjectItem
     let sourceTree: WorkspaceSourceTreeItem?
@@ -605,6 +677,12 @@ final class WorkspaceViewModel: ObservableObject {
     @Published private(set) var isCreatingSourceTree = false
     @Published private(set) var isMutatingWorkspace = false
     @Published private(set) var stoppingSessionIDs: Set<String> = []
+    @Published private(set) var reattachingSessionIDs: Set<String> = []
+    /// Set when a session started now would die with the app. Shown before the
+    /// user commits to a session, not after the work is already lost.
+    @Published private(set) var sessionPersistenceWarning: String?
+
+    @Published var fileEditor: WorkspaceFileEditor?
 
     @Published var history: WorkspaceHistoryPresentation?
 
@@ -840,6 +918,91 @@ final class WorkspaceViewModel: ObservableObject {
             current.checkingOutRef = nil
             current.notice = error.localizedDescription
             history = current
+        }
+    }
+
+    // MARK: - File editing
+
+    func openFile(_ item: WorkspaceFileItem) {
+        guard item.kind == .file,
+              let lineage = selectedLineage,
+              let sourceTree = lineage.sourceTree else { return }
+        let editor = WorkspaceFileEditor(
+            projectID: lineage.project.id,
+            sourceTreeID: sourceTree.id,
+            relativePath: item.id
+        )
+        fileEditor = editor
+        Task { await loadOpenFile() }
+    }
+
+    func closeFileEditor() {
+        fileEditor = nil
+    }
+
+    /// Re-reads the file and discards the draft. Reloading is how a conflicted
+    /// save is resolved, so the sheet confirms first when there are unsaved
+    /// edits to lose.
+    func reloadOpenFile() async {
+        await loadOpenFile()
+    }
+
+    private func loadOpenFile() async {
+        guard var editor = fileEditor else { return }
+        editor.phase = .loading
+        editor.notice = nil
+        fileEditor = editor
+        let request = WorkspaceFileReadRequest(
+            projectID: editor.projectID,
+            sourceTreeID: editor.sourceTreeID,
+            relativePath: editor.relativePath
+        )
+        do {
+            let document = try await dataSource.readFile(request)
+            // The sheet may have been dismissed, or another file opened, while
+            // the read was in flight.
+            guard var current = fileEditor, current.relativePath == editor.relativePath else { return }
+            current.phase = .ready
+            current.original = document.text
+            current.revision = document.revision
+            current.byteSize = document.byteSize
+            current.draft = document.text
+            fileEditor = current
+        } catch {
+            guard var current = fileEditor, current.relativePath == editor.relativePath else { return }
+            current.phase = .failed(error.localizedDescription)
+            fileEditor = current
+        }
+    }
+
+    func saveOpenFile() async {
+        guard var editor = fileEditor, editor.phase == .ready, !editor.isSaving else { return }
+        editor.isSaving = true
+        editor.notice = nil
+        fileEditor = editor
+        let request = WorkspaceFileWriteRequest(
+            projectID: editor.projectID,
+            sourceTreeID: editor.sourceTreeID,
+            relativePath: editor.relativePath,
+            text: editor.draft,
+            expectedRevision: editor.revision
+        )
+        do {
+            let document = try await dataSource.writeFile(request)
+            guard var current = fileEditor, current.relativePath == editor.relativePath else { return }
+            current.isSaving = false
+            current.original = document.text
+            current.revision = document.revision
+            current.byteSize = document.byteSize
+            current.notice = "Saved."
+            fileEditor = current
+            // The Git tab counts this file among the working-tree changes now.
+            await loadInspector()
+        } catch {
+            guard var current = fileEditor, current.relativePath == editor.relativePath else { return }
+            current.isSaving = false
+            current.notice = error.localizedDescription
+            fileEditor = current
         }
     }
 
@@ -1081,6 +1244,7 @@ final class WorkspaceViewModel: ObservableObject {
         sessionOptionsPhase = .loading
         newSessionError = nil
         isPresentingNewSession = true
+        sessionPersistenceWarning = await dataSource.sessionPersistenceWarning()
         await loadSessionOptions(projectID: target.project.id)
     }
 
@@ -1139,7 +1303,9 @@ final class WorkspaceViewModel: ObservableObject {
             sessionName: sessionName,
             providerID: providerID,
             modelChoice: modelChoice,
-            contextDepth: newSessionDraft.contextDepth
+            contextDepth: newSessionDraft.contextDepth,
+            additionalArguments: TerminalLaunchDescriptorFactory
+                .splitArguments(newSessionDraft.additionalArguments)
         )
 
         isStartingSession = true
@@ -1155,6 +1321,28 @@ final class WorkspaceViewModel: ObservableObject {
         } catch {
             isStartingSession = false
             newSessionError = error.localizedDescription
+        }
+    }
+
+    /// Reopens a terminal onto a session still running under tmux.
+    func reattachSession(_ session: WorkspaceSessionItem) async {
+        guard session.isDetached, !reattachingSessionIDs.contains(session.id) else { return }
+        reattachingSessionIDs.insert(session.id)
+        defer { reattachingSessionIDs.remove(session.id) }
+
+        do {
+            let result = try await dataSource.reattachSession(id: session.id)
+            upsert(result)
+            selection = .session(result.session.id)
+            await loadInspector()
+        } catch {
+            // A session that ended while Byori was closed lands here. Reload so
+            // the row stops offering a reattach that cannot succeed.
+            alert = WorkspaceAlert(
+                title: "세션에 다시 연결하지 못했습니다",
+                message: error.localizedDescription
+            )
+            await load()
         }
     }
 
