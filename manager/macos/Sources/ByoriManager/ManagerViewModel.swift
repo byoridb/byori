@@ -251,6 +251,9 @@ final class ManagerViewModel: ObservableObject {
     private var lastOperationHadRollbackFailure = false
     private var updateCheckTask: Task<Void, Never>?
     private var terminateAfterCurrentOperation = false
+    /// Set when the user stops ByoriDB in this launch, so autostart leaves it
+    /// down. Starting it again from the UI clears it.
+    private var didUserStopByori = false
 
     private static let updateCheckInterval: Duration = .seconds(6 * 60 * 60)
 
@@ -260,8 +263,28 @@ final class ManagerViewModel: ObservableObject {
         self.service = service
         Task { [weak self] in
             await self?.refresh()
+            await self?.startByoriIfStopped()
         }
         startUpdateChecks()
+    }
+
+    /// Brings ByoriDB back up when it is installed but not running.
+    ///
+    /// Every agent session reads and writes memory through ByoriDB. A stopped
+    /// service does not fail loudly — the agents simply run without memory —
+    /// so leaving it down is a silent downgrade the user has to notice on
+    /// their own. The launch agent already has `RunAtLoad`/`KeepAlive`, which
+    /// means a service that is down was booted out rather than crashed, and
+    /// only a bootstrap brings it back.
+    ///
+    /// Skipped when the user stopped it themselves in this launch: an explicit
+    /// stop that undoes itself is worse than one that sticks.
+    private func startByoriIfStopped() async {
+        guard !isBusy, let byori = snapshot?.byori else { return }
+        guard ByoriAutostart.shouldStart(byori, userStoppedThisLaunch: didUserStopByori) else {
+            return
+        }
+        execute(.startByori)
     }
 
     deinit {
@@ -324,6 +347,13 @@ final class ManagerViewModel: ObservableObject {
     func execute(_ action: ManagerAction) {
         pendingAction = nil
         guard !isBusy else { return }
+        // Remembered so autostart cannot immediately undo a deliberate stop,
+        // and cleared as soon as the user asks for it to run again.
+        switch action {
+        case .stopByori: didUserStopByori = true
+        case .startByori, .restartByori, .installByori: didUserStopByori = false
+        default: break
+        }
         isBusy = true
         canCancelCurrentOperation = action.supportsSafeCancellation
         lastOperationHadRollbackFailure = false
