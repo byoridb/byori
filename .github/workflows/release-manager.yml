@@ -135,12 +135,25 @@ jobs:
           xcrun stapler validate "$DMG"
           hdiutil verify "$DMG"
 
+      # Uploaded with `gh`, not with an action that finds the release by tag: a
+      # tag lookup through the API does not return drafts, so such an action
+      # cannot see the draft the other workflow just created and makes a second
+      # release for the same tag. That is what happened to v0.6.2 — install.sh
+      # stayed on an invisible draft and the published release shipped without
+      # it, breaking the install command in the README.
       - name: Attach Byori DMG to release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: v${{ steps.release.outputs.version }}
-          files: dist/Byori-${{ steps.release.outputs.version }}-universal.dmg
-          fail_on_unmatched_files: true
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.release.outputs.version }}"
+          dmg="dist/Byori-${{ steps.release.outputs.version }}-universal.dmg"
+          test -f "$dmg"
+          # Normally the other workflow has already created the draft. Create it
+          # here when this job won the race, or when dispatched by hand against
+          # a tag that has no release yet.
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+                 --draft --generate-notes --title "$tag"
+          gh release upload "$tag" "$dmg" --clobber --repo "$GITHUB_REPOSITORY"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -157,13 +170,24 @@ jobs:
           # without a DMG is the exact state this ordering exists to prevent.
           # `--draft` is only honoured on a release that is still a draft, so
           # this also covers a re-run against an already published one.
-          dmgs=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
-            --json assets \
-            --jq '[.assets[].name | select(endswith(".dmg"))] | length')
-          if [ "$dmgs" -lt 1 ]; then
-            echo "::error::$tag has no DMG asset; refusing to publish it."
-            exit 1
-          fi
+          assets=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '[.assets[].name] | join(" ")')
+          echo "assets: $assets"
+          case " $assets " in
+            *" install.sh "*) ;;
+            *)
+              # The README, the docs and the app's own online update all fetch
+              # releases/latest/download/install.sh. Publishing without it
+              # breaks the documented install command.
+              echo "::error::$tag has no install.sh asset; refusing to publish it."
+              exit 1 ;;
+          esac
+          case "$assets" in
+            *.dmg*) ;;
+            *)
+              echo "::error::$tag has no DMG asset; refusing to publish it."
+              exit 1 ;;
+          esac
 
           # Leaves the prerelease flag alone: it was set from the tag name when
           # the draft was created.
