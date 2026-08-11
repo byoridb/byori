@@ -493,6 +493,17 @@ final class ManagerViewModel: ObservableObject {
             case .updateByori:
                 result = try await service.updateByoriOnline()
             case .updateApp:
+                // Replacing the bundle needs the app to quit. Refuse before
+                // downloading anything: verifying a release and then failing
+                // silently inside the helper minutes later is the worst order
+                // to discover that the app was never going to be able to quit.
+                let lost = TerminalSessionController.shared.sessionsLostOnQuitCount
+                guard lost == 0 else {
+                    throw ManagerError.prerequisite(
+                        "실행 중인 세션이 \(lost)개 있습니다. 업데이트는 앱을 종료한 뒤 교체하므로 "
+                            + "세션을 먼저 끝내 주세요. tmux 로 실행된 세션은 종료 후에도 유지됩니다."
+                    )
+                }
                 let outcome = try await service.updateApp { [weak self] stage in
                     Task { @MainActor in
                         self?.currentOperation = stage.message
