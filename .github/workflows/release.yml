@@ -17,10 +17,20 @@ jobs:
       - name: Sanity check installer
         run: bash -n install.sh
 
-      - name: Create Release
+      # Created as a draft on purpose. This job finishes in seconds while the
+      # DMG is still being built, signed and notarised by "Release Byori", so
+      # publishing here would expose a release whose only asset is install.sh.
+      # The app's updater reads the newest published release and reports a
+      # release with no DMG as an outright failure — for the several minutes
+      # notarisation takes, every update check would fail.
+      #
+      # "Release Byori" publishes it once the DMG is attached. A release that
+      # never gets its DMG stays a draft, which is the safe direction: no user
+      # is offered an update that cannot be installed.
+      - name: Create draft release
         uses: softprops/action-gh-release@v1
         with:
-          draft: false
+          draft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           files: |

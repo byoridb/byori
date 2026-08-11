@@ -144,6 +144,33 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Publishing is the last step, so a release becomes visible only once it
+      # has an installable DMG. Done with the CLI rather than the action's
+      # `draft` input because this must also publish a release the other
+      # workflow created, and it must not race with that workflow's own write.
+      - name: Publish the release now that it is installable
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.release.outputs.version }}"
+
+          # Verified before publishing, not after: a release that goes public
+          # without a DMG is the exact state this ordering exists to prevent.
+          # `--draft` is only honoured on a release that is still a draft, so
+          # this also covers a re-run against an already published one.
+          dmgs=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
+            --json assets \
+            --jq '[.assets[].name | select(endswith(".dmg"))] | length')
+          if [ "$dmgs" -lt 1 ]; then
+            echo "::error::$tag has no DMG asset; refusing to publish it."
+            exit 1
+          fi
+
+          # Leaves the prerelease flag alone: it was set from the tag name when
+          # the draft was created.
+          gh release edit "$tag" --draft=false --repo "$GITHUB_REPOSITORY"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Remove temporary keychain
         if: always()
         run: |
