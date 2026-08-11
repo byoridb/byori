@@ -202,7 +202,9 @@ struct WorkspaceView<TerminalHost: View>: View {
                 task: task,
                 session: session,
                 isStopping: model.stoppingSessionIDs.contains(session.id),
+                isReattaching: model.reattachingSessionIDs.contains(session.id),
                 stop: { Task { await model.stopSession(session) } },
+                reattach: { Task { await model.reattachSession(session) } },
                 newSession: { Task { await model.prepareNewSession(after: session) } },
                 terminalHost: terminalHost
             )
@@ -823,7 +825,9 @@ private struct WorkspaceTerminalPane<TerminalHost: View>: View {
     let task: WorkspaceTaskItem
     let session: WorkspaceSessionItem
     let isStopping: Bool
+    let isReattaching: Bool
     let stop: () -> Void
+    let reattach: () -> Void
     let newSession: () -> Void
     let terminalHost: (WorkspaceSessionItem) -> TerminalHost
 
@@ -837,7 +841,32 @@ private struct WorkspaceTerminalPane<TerminalHost: View>: View {
                     .lineLimit(1)
                 Spacer(minLength: 12)
                 sessionStatus
-                if session.state.isActive {
+                if session.isDetached {
+                    Divider().frame(height: 18)
+                    Button(action: reattach) {
+                        if isReattaching {
+                            ProgressView()
+                                .controlSize(.small)
+                                .accessibilityLabel("Reattaching session")
+                        } else {
+                            Label("다시 연결", systemImage: "arrow.uturn.backward.circle")
+                        }
+                    }
+                    .disabled(isReattaching)
+                    .help("tmux에서 실행 중인 세션에 다시 연결")
+                    Button(action: stop) {
+                        if isStopping {
+                            ProgressView()
+                                .controlSize(.small)
+                                .accessibilityLabel("Stopping session")
+                        } else {
+                            Label("Stop", systemImage: "stop.circle")
+                        }
+                    }
+                    .keyboardShortcut(".", modifiers: .command)
+                    .disabled(isStopping)
+                    .help("Stop Session")
+                } else if session.state.isActive {
                     Divider().frame(height: 18)
                     Button(action: stop) {
                         if isStopping {
@@ -907,7 +936,11 @@ private struct WorkspaceTerminalPane<TerminalHost: View>: View {
 
     @ViewBuilder
     private var terminalContent: some View {
-        if session.state.isActive {
+        if session.isDetached {
+            // The CLI is running, but under the tmux server rather than this
+            // app, so there is no terminal view to mount until it reattaches.
+            detachedSessionView
+        } else if session.state.isActive {
             terminalHost(session)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(WorkspacePalette.terminalBackground)
@@ -917,6 +950,40 @@ private struct WorkspaceTerminalPane<TerminalHost: View>: View {
         } else {
             endedSessionView
         }
+    }
+
+    private var detachedSessionView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "bolt.horizontal.circle")
+                .font(.system(size: 32))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Text("세션이 계속 실행 중입니다")
+                .font(.title3.weight(.semibold))
+            Text("Byori를 닫는 동안에도 이 CLI는 tmux에서 실행되고 있었습니다. 다시 연결하면 중단된 지점 그대로 이어집니다.")
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 460)
+
+            Button(action: reattach) {
+                if isReattaching {
+                    HStack(spacing: 7) {
+                        ProgressView().controlSize(.small)
+                        Text("연결 중…")
+                    }
+                } else {
+                    Label("세션에 다시 연결", systemImage: "arrow.uturn.backward.circle")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isReattaching)
+            .padding(.top, 4)
+            .accessibilityLabel("Reattach to session \(session.displayName)")
+            .accessibilityHint("Reopens the terminal for the CLI still running in tmux")
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(WorkspacePalette.terminalBackground)
     }
 
     private var endedSessionView: some View {
@@ -1445,6 +1512,13 @@ private struct NewWorkspaceSessionSheet: View {
 
                     Section("Agent") {
                         sessionOptions
+
+                        if let warning = model.sessionPersistenceWarning {
+                            Label(warning, systemImage: "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                                .accessibilityHint("Sessions started now will end when Byori quits")
+                        }
                     }
 
                     Section("ByoriDB Context") {
