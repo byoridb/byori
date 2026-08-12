@@ -50,6 +50,7 @@ enum TerminalSessionControllerError: LocalizedError, Equatable {
     case activeSession(UUID)
     case applicationIsTerminating
     case inputTooLarge
+    case tmuxStopFailed
 
     var errorDescription: String? {
         switch self {
@@ -65,6 +66,8 @@ enum TerminalSessionControllerError: LocalizedError, Equatable {
             return "앱이 종료 중이어서 새 터미널 세션을 시작할 수 없습니다."
         case .inputTooLarge:
             return "터미널에 한 번에 보낼 수 있는 입력은 최대 1 MiB입니다."
+        case .tmuxStopFailed:
+            return "tmux가 세션 종료를 확인하지 못했습니다. CLI가 계속 실행 중일 수 있어 세션을 활성 상태로 유지했습니다."
         }
     }
 }
@@ -227,14 +230,18 @@ final class TerminalSessionController: ObservableObject {
         retainedSessions[descriptor.id] = retained
         publish(retained)
 
-        // tmux passes the session's environment with `-e`, so the client itself
-        // only needs a PATH to find the server.
+        // The tmux client receives the descriptor environment directly. The
+        // private Byori server copies named values into the new session via
+        // update-environment, keeping secret values out of process argv.
         terminalView.startProcess(
             executable: (plan?.executable ?? descriptor.executable).path,
             args: plan?.arguments ?? descriptor.arguments,
             environment: descriptor.environmentArray,
             currentDirectory: descriptor.workingDirectory.path
         )
+        if plan != nil {
+            _ = await tmuxService.enableMouse(id: descriptor.id)
+        }
 
         if terminalView.process.running {
             updateStatus(.running, for: retained)
@@ -298,7 +305,7 @@ final class TerminalSessionController: ObservableObject {
     /// Killing a tmux client would only detach it, leaving the CLI running
     /// while Byori reported the session as stopped. The tmux session is ended
     /// first so "stop" means the same thing on both backends.
-    func stop(_ sessionID: UUID) throws {
+    func stop(_ sessionID: UUID) async throws {
         guard let retained = retainedSessions[sessionID] else {
             throw TerminalSessionControllerError.missingSession(sessionID)
         }
@@ -306,7 +313,12 @@ final class TerminalSessionController: ObservableObject {
         guard retained.snapshot.status != .stopping else { return }
 
         if retained.isTmuxBacked {
-            Task { await tmuxService.killSession(id: sessionID) }
+            guard await tmuxService.killSession(id: sessionID) else {
+                throw TerminalSessionControllerError.tmuxStopFailed
+            }
+            // The process-exit callback can arrive while the actor is waiting
+            // for tmux. If it did, the retained buffer is already truthful.
+            guard retained.snapshot.status.isActive else { return }
         }
         releaseTerminal(for: retained)
     }
@@ -405,6 +417,12 @@ final class TerminalSessionController: ObservableObject {
         )
         terminal.caretColor = .systemTeal
         terminal.optionAsMetaKey = true
+        // SwiftTerm's overlay scroller disappears until scrolling starts, which
+        // made the terminal look like a one-screen input field. Keep a native
+        // scrollbar visible and retain enough ordinary shell output to make it
+        // useful outside alternate-screen TUIs.
+        terminal.scrollerStyle = .legacy
+        terminal.terminal.changeHistorySize(50_000)
         terminal.layer?.backgroundColor = terminal.nativeBackgroundColor.cgColor
         terminal.setAccessibilityLabel(accessibilityLabel(for: descriptor))
         return terminal

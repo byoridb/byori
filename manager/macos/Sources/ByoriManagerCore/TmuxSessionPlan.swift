@@ -13,7 +13,7 @@ public enum TmuxUnavailability: Equatable, Sendable {
         case .notInstalled:
             return "tmux가 설치되어 있지 않아 세션이 Byori와 함께 종료됩니다. tmux를 설치하면 앱을 닫아도 세션이 유지됩니다."
         case let .versionTooOld(found, required):
-            return "tmux \(found)은 세션 환경 변수 전달(-e)을 지원하지 않습니다. \(required) 이상에서 세션 유지가 가능합니다."
+            return "tmux \(found)은 Byori 세션 백엔드가 지원하지 않습니다. \(required) 이상에서 세션 유지가 가능합니다."
         case .unreadableVersion:
             return "tmux 버전을 확인하지 못해 세션 유지를 사용하지 않습니다."
         }
@@ -66,18 +66,19 @@ public enum TmuxConfiguration {
     set -g default-terminal "xterm-256color"
     set -ga terminal-overrides ",xterm-256color:Tc"
 
-    # Mouse handling stays with Byori's terminal view rather than tmux's
-    # copy-mode, so scrolling behaves the same as an in-app session.
-    set -g mouse off
+    # Let tmux own wheel events while its alternate screen is active. Otherwise
+    # SwiftTerm translates wheel movement into Up/Down keys and the coding CLI
+    # recalls earlier input instead of showing terminal history.
+    set -g mouse on
     """
 }
 
 /// Builds tmux command lines. Pure argv construction with no process spawning,
 /// so the shapes below are pinned by tests on a machine that has no tmux.
 public enum TmuxSupport {
-    /// `new-session -e` landed in tmux 3.2. Without it the CLI would inherit
-    /// whatever environment the tmux *server* was first started with, which is
-    /// some earlier session's — or none at all.
+    /// Keep the same conservative floor previously required by the retained
+    /// session backend. Newer tmux releases are tested with direct argv and
+    /// per-session client environment updates.
     public static let minimumVersion = "3.2"
 
     /// Namespaced so Byori never attaches to, reports, or kills a tmux session
@@ -105,19 +106,23 @@ public enum TmuxSupport {
     public static func attachOrCreate(
         _ descriptor: TerminalLaunchDescriptor,
         tmux: URL,
-        configFile: URL
+        configFile: URL,
+        socketFile: URL
     ) -> TmuxLaunchPlan {
         let name = sessionName(for: descriptor.id)
         var arguments = [
+            "-S", socketFile.path,
             "-f", configFile.path,
+            // Values arrive only through the tmux client's environment. The
+            // argv contains names, never API keys or other secret values.
+            "set-option", "-g", "update-environment",
+            descriptor.environment.keys.sorted().joined(separator: " "),
+            ";",
             "new-session",
             "-A",
             "-s", name,
             "-c", descriptor.workingDirectory.path,
         ]
-        for entry in descriptor.environmentArray {
-            arguments.append(contentsOf: ["-e", entry])
-        }
         arguments.append("--")
         arguments.append(descriptor.executable.path)
         arguments.append(contentsOf: descriptor.arguments)
@@ -125,15 +130,51 @@ public enum TmuxSupport {
         return TmuxLaunchPlan(executable: tmux, arguments: arguments, sessionName: name)
     }
 
+    /// Reattaches a session created by older Byori builds on the user's
+    /// default tmux server. No launch environment is needed: its CLI is
+    /// already running. New sessions always use Byori's private socket.
+    public static func attachLegacy(
+        sessionID: UUID,
+        tmux: URL,
+        configFile: URL
+    ) -> TmuxLaunchPlan {
+        let name = sessionName(for: sessionID)
+        return TmuxLaunchPlan(
+            executable: tmux,
+            arguments: ["-f", configFile.path, "attach-session", "-t", name],
+            sessionName: name
+        )
+    }
+
     /// Ends the session for good. Detaching is what happens on app quit; this
     /// runs only when the user explicitly stops the session.
-    public static func killSessionArguments(configFile: URL, sessionName: String) -> [String] {
-        ["-f", configFile.path, "kill-session", "-t", sessionName]
+    public static func killSessionArguments(
+        configFile: URL,
+        sessionName: String,
+        socketFile: URL? = nil
+    ) -> [String] {
+        serverArguments(socketFile: socketFile)
+            + ["-f", configFile.path, "kill-session", "-t", sessionName]
     }
 
     /// Lists only session names, one per line.
-    public static func listSessionsArguments(configFile: URL) -> [String] {
-        ["-f", configFile.path, "list-sessions", "-F", "#{session_name}"]
+    public static func listSessionsArguments(
+        configFile: URL,
+        socketFile: URL? = nil
+    ) -> [String] {
+        serverArguments(socketFile: socketFile)
+            + ["-f", configFile.path, "list-sessions", "-F", "#{session_name}"]
+    }
+
+    /// Applies scrolling to one Byori session without changing the user's
+    /// unrelated tmux sessions that may share the same server.
+    public static func enableMouseArguments(
+        configFile: URL,
+        sessionName: String,
+        socketFile: URL? = nil
+    ) -> [String] {
+        serverArguments(socketFile: socketFile)
+            + ["-f", configFile.path, "set-option", "-t", sessionName, "mouse", "on"]
     }
 
     /// Session ids for the live Byori sessions in `tmux list-sessions` output.
@@ -186,5 +227,9 @@ public enum TmuxSupport {
         return stripped.split(separator: ".").map { component in
             Int(component.prefix { $0.isNumber }) ?? 0
         }
+    }
+
+    private static func serverArguments(socketFile: URL?) -> [String] {
+        socketFile.map { ["-S", $0.path] } ?? []
     }
 }

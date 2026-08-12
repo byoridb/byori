@@ -227,6 +227,7 @@ final class ManagerViewModel: ObservableObject {
     @Published private(set) var activities: [ActivityEntry] = []
     @Published private(set) var integrationInventories: [AgentIntegrationInventory] = []
     @Published private(set) var isRefreshingIntegrations = false
+    let claudeGatewaySettings: ClaudeGatewaySettingsController
 
     /// Absent when running outside an app bundle, which is also when the
     /// updater refuses to replace anything.
@@ -259,8 +260,19 @@ final class ManagerViewModel: ObservableObject {
 
     var hasActiveOperation: Bool { operationTask != nil }
 
-    init(service: ManagerService = ManagerService()) {
+    convenience init(service: ManagerService = ManagerService()) {
+        self.init(
+            service: service,
+            claudeGatewaySettings: ClaudeGatewaySettingsController()
+        )
+    }
+
+    init(
+        service: ManagerService,
+        claudeGatewaySettings: ClaudeGatewaySettingsController
+    ) {
         self.service = service
+        self.claudeGatewaySettings = claudeGatewaySettings
         Task { [weak self] in
             await self?.refresh()
             await self?.startByoriIfStopped()

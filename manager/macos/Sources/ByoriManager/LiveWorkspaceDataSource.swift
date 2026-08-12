@@ -55,6 +55,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
     private let managerService: ManagerService
     private let launchFactory: TerminalLaunchDescriptorFactory
     private let terminalController: TerminalSessionController
+    private let claudeGatewaySettings: ClaudeGatewaySettingsController
     private let operationGate = WorkspaceOperationGate()
     private let customProviders: CustomAgentProviderStore
 
@@ -86,6 +87,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
     init(
         managerService: ManagerService,
         terminalController: TerminalSessionController,
+        claudeGatewaySettings: ClaudeGatewaySettingsController,
         workspaceHome: URL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".byori", isDirectory: true)
     ) {
@@ -103,6 +105,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         self.files = LocalWorkspaceFileTreeService()
         self.documents = LocalWorkspaceFileDocumentService()
         self.managerService = managerService
+        self.claudeGatewaySettings = claudeGatewaySettings
         self.launchFactory = TerminalLaunchDescriptorFactory(paths: managerService.paths)
         self.customProviders = CustomAgentProviderStore(paths: managerService.paths)
         self.terminalController = terminalController
@@ -233,11 +236,17 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
                     ? "CLI not installed"
                     : "CLI not installed — Byori does not install this one")
 
+            let defaultModelDetail: String
+            if kind == .claude, claudeGatewaySettings.activeConfiguration.isEnabled {
+                defaultModelDetail = "Byori gateway · \(claudeGatewaySettings.activeConfiguration.normalizedModel)"
+            } else {
+                defaultModelDetail = "Resolved by the agent CLI when this session starts"
+            }
             var models = [
                 WorkspaceModelOption(
                     id: Self.cliDefaultModelID,
                     displayName: Self.cliDefaultModelName,
-                    detail: "Resolved by the agent CLI when this session starts",
+                    detail: defaultModelDetail,
                     availability: availability
                 ),
             ]
@@ -507,7 +516,19 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         case let .exact(identifier):
             explicitModel = identifier
         }
-        let persistedModel = explicitModel ?? Self.cliDefaultModelName
+        let gatewayDefaultModel: String?
+        if case .builtIn(.claude) = resolvedProvider,
+           claudeGatewaySettings.activeConfiguration.isEnabled {
+            let configuredModel = claudeGatewaySettings.activeConfiguration.normalizedModel
+            gatewayDefaultModel = configuredModel.isEmpty ? nil : configuredModel
+        } else {
+            gatewayDefaultModel = nil
+        }
+        // A gateway-backed "CLI default" is not unknown: Byori injects the
+        // configured model. Record and pass that exact identity so session
+        // history, accessibility, and the actual launch all agree.
+        let launchModel = explicitModel ?? gatewayDefaultModel
+        let persistedModel = launchModel ?? Self.cliDefaultModelName
         let session = try await taskStore.createSession(
             taskID: task.id,
             name: sessionName,
@@ -520,7 +541,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         do {
             let descriptor = try makeLaunchDescriptor(
                 provider: resolvedProvider,
-                model: explicitModel,
+                model: launchModel,
                 workingDirectory: checkout.url,
                 terminalID: terminalID,
                 environment: ["BYORIDB_MEMORY_SPACE": project.memorySpace],
@@ -604,12 +625,23 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
     ) throws -> TerminalLaunchDescriptor {
         switch provider {
         case let .builtIn(agent):
+            var launchEnvironment = environment
+            var environmentRemovals: Set<String> = []
+            if agent == .claude {
+                environmentRemovals = claudeGatewaySettings
+                    .activeConfiguration
+                    .environmentKeysToReplace
+                launchEnvironment.merge(try claudeGatewaySettings.launchEnvironment()) { _, gateway in
+                    gateway
+                }
+            }
             return try launchFactory.codingAgent(
                 agent,
                 model: model,
                 workingDirectory: workingDirectory,
                 sessionID: terminalID,
-                environmentOverrides: environment,
+                environmentOverrides: launchEnvironment,
+                environmentRemovals: environmentRemovals,
                 additionalArguments: additionalArguments
             )
         case let .custom(custom):
@@ -717,7 +749,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         if let nativeSessionID = session.nativeSessionID,
            let terminalID = UUID(uuidString: nativeSessionID),
            terminalController.snapshot(for: terminalID)?.status.isActive == true {
-            try terminalController.stop(terminalID)
+            try await terminalController.stop(terminalID)
         }
         let updated = try await taskStore.updateSessionStatus(
             taskID: taskID,

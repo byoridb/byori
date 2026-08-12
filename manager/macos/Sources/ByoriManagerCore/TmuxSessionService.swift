@@ -82,6 +82,10 @@ public actor TmuxSessionService {
             at: file.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: file.deletingLastPathComponent().path
+        )
         let contents = Data(TmuxConfiguration.fileContents.utf8)
         if let existing = try? Data(contentsOf: file), existing == contents {
             return file
@@ -100,18 +104,20 @@ public actor TmuxSessionService {
               let configFile = try? prepareConfiguration() else {
             return []
         }
-        let result = await runner.run(
-            CommandSpec(
-                executable: executable.path,
-                arguments: TmuxSupport.listSessionsArguments(configFile: configFile),
-                environment: ["PATH": paths.processPath],
-                timeout: 10
-            )
+        let isolated = await liveSessionIDs(
+            executable: executable,
+            configFile: configFile,
+            socketFile: paths.tmuxSocket
         )
-        // A server with no sessions exits non-zero with "no server running on
-        // …", which is not an error worth surfacing.
-        guard result.succeeded else { return [] }
-        return TmuxSupport.liveSessionIDs(fromListOutput: result.output)
+        // Older builds used the default tmux server. Keep those sessions
+        // visible and reattachable while all new sessions move to the private
+        // Byori socket.
+        let legacy = await liveSessionIDs(
+            executable: executable,
+            configFile: configFile,
+            socketFile: nil
+        )
+        return isolated.union(legacy)
     }
 
     /// Ends a session for good. Detaching happens by the client exiting; this is
@@ -122,18 +128,51 @@ public actor TmuxSessionService {
               let configFile = try? prepareConfiguration() else {
             return false
         }
-        let result = await runner.run(
-            CommandSpec(
-                executable: executable.path,
-                arguments: TmuxSupport.killSessionArguments(
-                    configFile: configFile,
-                    sessionName: TmuxSupport.sessionName(for: id)
-                ),
-                environment: ["PATH": paths.processPath],
-                timeout: 10
+        let name = TmuxSupport.sessionName(for: id)
+        if await runSessionCommand(
+            executable: executable,
+            arguments: TmuxSupport.killSessionArguments(
+                configFile: configFile,
+                sessionName: name,
+                socketFile: paths.tmuxSocket
+            )
+        ) {
+            return true
+        }
+        return await runSessionCommand(
+            executable: executable,
+            arguments: TmuxSupport.killSessionArguments(
+                configFile: configFile,
+                sessionName: name
             )
         )
-        return result.succeeded
+    }
+
+    /// Ensures wheel events enter tmux copy mode for this session. The first
+    /// attempt can race the tmux client creating a brand-new session, so retry
+    /// briefly instead of leaving SwiftTerm to translate scrolling into Up/Down
+    /// input history.
+    @discardableResult
+    public func enableMouse(id: UUID) async -> Bool {
+        guard case let .available(executable, _) = await availability(),
+              let configFile = try? prepareConfiguration() else {
+            return false
+        }
+        let name = TmuxSupport.sessionName(for: id)
+        if await enableMouse(
+            executable: executable,
+            configFile: configFile,
+            sessionName: name,
+            socketFile: paths.tmuxSocket
+        ) {
+            return true
+        }
+        return await enableMouse(
+            executable: executable,
+            configFile: configFile,
+            sessionName: name,
+            socketFile: nil
+        )
     }
 
     /// The argv for starting or reattaching `descriptor` under tmux, or nil when
@@ -143,10 +182,92 @@ public actor TmuxSessionService {
               let configFile = try? prepareConfiguration() else {
             return nil
         }
+        let isolatedIDs = await liveSessionIDs(
+            executable: executable,
+            configFile: configFile,
+            socketFile: paths.tmuxSocket
+        )
+        if isolatedIDs.contains(descriptor.id) {
+            return TmuxSupport.attachOrCreate(
+                descriptor,
+                tmux: executable,
+                configFile: configFile,
+                socketFile: paths.tmuxSocket
+            )
+        }
+        let legacyIDs = await liveSessionIDs(
+            executable: executable,
+            configFile: configFile,
+            socketFile: nil
+        )
+        if legacyIDs.contains(descriptor.id) {
+            return TmuxSupport.attachLegacy(
+                sessionID: descriptor.id,
+                tmux: executable,
+                configFile: configFile
+            )
+        }
         return TmuxSupport.attachOrCreate(
             descriptor,
             tmux: executable,
-            configFile: configFile
+            configFile: configFile,
+            socketFile: paths.tmuxSocket
         )
+    }
+
+    private func liveSessionIDs(
+        executable: URL,
+        configFile: URL,
+        socketFile: URL?
+    ) async -> Set<UUID> {
+        let result = await runner.run(
+            CommandSpec(
+                executable: executable.path,
+                arguments: TmuxSupport.listSessionsArguments(
+                    configFile: configFile,
+                    socketFile: socketFile
+                ),
+                environment: ["PATH": paths.processPath],
+                timeout: 10
+            )
+        )
+        // A server with no sessions exits non-zero with "no server running on
+        // …", which is not an error worth surfacing.
+        guard result.succeeded else { return [] }
+        return TmuxSupport.liveSessionIDs(fromListOutput: result.output)
+    }
+
+    private func runSessionCommand(executable: URL, arguments: [String]) async -> Bool {
+        let result = await runner.run(
+            CommandSpec(
+                executable: executable.path,
+                arguments: arguments,
+                environment: ["PATH": paths.processPath],
+                timeout: 10
+            )
+        )
+        return result.succeeded
+    }
+
+    private func enableMouse(
+        executable: URL,
+        configFile: URL,
+        sessionName: String,
+        socketFile: URL?
+    ) async -> Bool {
+        let arguments = TmuxSupport.enableMouseArguments(
+            configFile: configFile,
+            sessionName: sessionName,
+            socketFile: socketFile
+        )
+        for attempt in 0..<3 {
+            if await runSessionCommand(executable: executable, arguments: arguments) {
+                return true
+            }
+            if attempt < 2 {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+        }
+        return false
     }
 }

@@ -34,5 +34,9 @@ let package = Package(
             name: "ByoriManagerCoreTests",
             dependencies: ["ByoriManagerCore"]
         ),
+        .testTarget(
+            name: "ByoriManagerTests",
+            dependencies: ["ByoriManager"]
+        ),
     ]
 )

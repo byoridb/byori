@@ -13,11 +13,16 @@ struct ByoriManagerApp: App {
 
     init() {
         let service = ManagerService()
-        let managerModel = ManagerViewModel(service: service)
+        let claudeGatewaySettings = ClaudeGatewaySettingsController()
+        let managerModel = ManagerViewModel(
+            service: service,
+            claudeGatewaySettings: claudeGatewaySettings
+        )
         let terminalController = TerminalSessionController.shared
         let dataSource = LiveWorkspaceDataSource(
             managerService: service,
             terminalController: terminalController,
+            claudeGatewaySettings: claudeGatewaySettings,
             workspaceHome: Self.workspaceHome
         )
         let workspaceModel = WorkspaceViewModel(dataSource: dataSource)

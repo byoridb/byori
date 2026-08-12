@@ -58,8 +58,8 @@ still under development; see [current limitations](#current-limitations).
 > [!WARNING]
 > Byori is currently an early experiment. The native macOS workspace MVP, real interactive PTY,
 > local single-node ByoriDB setup, MCP surface, schema v2 (notes plus the typed wiki), and a
-> separate foreground multi-CLI prototype are implemented. The app cannot reattach terminal
-> sessions after a full quit, and automatic repository ingestion is still under development.
+> separate foreground multi-CLI prototype are implemented. Retained terminal sessions require
+> tmux 3.2 or later; without it they end with the app. Automatic repository ingestion is still under development.
 > Do not use Byori as the only copy of important data.
 
 ## Workspace model
@@ -125,10 +125,12 @@ The app discovers existing Git worktrees but does not create them yet. It also d
 one prompt to several agents, compare their patches, select a winner, merge, or clean up worktrees.
 Create another session explicitly when you want another agent.
 
-Closing the workspace window keeps its PTYs alive only while the menu bar app process continues
-running. Quitting Byori stops those sessions; the app cannot reattach to or automatically resume
-them after a full quit. Prompts are entered directly in the terminal and are not stored by Byori.
-The app does not read Claude Code or Codex login details or tokens.
+Closing the workspace window keeps its PTYs alive. With tmux 3.2 or later, quitting Byori detaches
+from active sessions and a later launch can reattach; without a supported tmux, sessions end with
+the app and the UI says so before launch. Prompts are entered directly in the terminal and are not
+stored by Byori. Vendor login remains CLI-owned. An optional Claude model API setting stores only
+the credential the user explicitly enters in macOS Keychain and can be disabled to restore the
+ordinary Claude environment for future sessions.
 
 #### Build from source for now
 
