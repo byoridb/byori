@@ -5,9 +5,9 @@
 Byori macOS 앱은 로컬 Git checkout에서 Claude Code 또는 Codex를 실행하는 네이티브
 SwiftUI 멀티 에이전트 코딩 워크스페이스다. 메인 화면은 워크스페이스이며 Settings는
 설치, 연동, 진단을 보조한다. ByoriDB는 그 아래에서 프로젝트 범위의 공유 지식 그래프를
-제공한다. 앱을 종료해도 ByoriDB는 기존 launchd user service로 계속 실행되지만 대화형
-코딩 세션은 그렇지 않다. 지원 기준은 macOS 13 이상이며 Apple Silicon과 Intel 빌드를
-만들 수 있다.
+제공한다. 앱을 종료해도 ByoriDB는 기존 launchd user service로 계속 실행된다. tmux 3.2
+이상이 있으면 대화형 코딩 세션도 분리된 채 유지되며 다음 앱 실행에서 다시 attach할 수 있다.
+지원 기준은 macOS 13 이상이며 Apple Silicon과 Intel 빌드를 만들 수 있다.
 
 ## 워크스페이스 모델
 
@@ -44,8 +44,9 @@ prototype/호환 경로로 남아 있다.
   수정할 수 있으며, 이름이 없는 기존 session은 provider/model 이름으로 표시한다.
   종료된 session은 **Close**로 숨기고 해당 Task 행의
   **More Actions → Closed Sessions** 메뉴에서 복원할 수 있다.
-- 가운데는 선택한 session의 실제 대화형 PTY를 SwiftTerm으로 표시한다. Claude
-  Code나 Codex는 해당 checkout에서 실행되며 인증은 각 CLI가 처리한다. Session은
+- 가운데는 선택한 session의 시각적 Activity 요약을 먼저 보여 주며, Terminal 탭을 선택하면
+  SwiftTerm으로 실제 대화형 PTY를 표시한다. Claude Code나 Codex는 해당 checkout에서
+  실행되며 인증은 각 CLI가 처리한다. Session은
   256-color와 truecolor 지원을 알리고 상위 process의 `NO_COLOR` 같은 색상 억제
   환경변수를 제거하므로 provider가 출력한 ANSI 색상을 그대로 표시한다.
 - 오른쪽 inspector는 제한된 **Files** metadata, read-only **Git** status, project
@@ -65,13 +66,13 @@ prototype/호환 경로로 남아 있다.
 
 ## 세션 수명
 
-워크스페이스 창을 닫으면 terminal view만 분리되고 활성 session은 종료되지
-않는다. 메뉴 막대 항목이 앱 process를 계속 실행하며 같은 workspace와 terminal을
-다시 열 수 있다. 이 유지 범위는 현재 Byori 앱 process의 수명까지다.
+워크스페이스 창을 닫으면 terminal view만 분리되고 활성 session은 종료되지 않는다.
+tmux 3.2 이상이면 Byori 전용 tmux server를 사용하므로 앱을 완전히 종료해도 세션이 유지된다.
+기존 Byori 빌드가 기본 tmux server에 만든 세션도 다시 attach할 수 있다. 지원되는 tmux가 없으면
+유지 범위는 현재 Byori 앱 process의 수명까지이며, workspace가 실행 전에 이 제한을 표시한다.
 
-- **Quit Byori**는 활성 terminal process를 중지한 뒤 앱을 종료한다.
-- 앱을 다시 실행해도 이전 process의 session에 reattach하거나 자동 resume하지
-  않는다.
+- **Quit Byori**는 tmux 기반 세션에서는 client만 분리하고, 지속성이 없는 fallback 세션만 중지한다.
+- 앱을 다시 실행하면 유지된 세션을 찾아 기존 PTY에 다시 attach할 수 있다.
 - 종료된 session에는 같은 Task로 여는 **New Session**을 제공한다. 활성 session은
   **Close**할 수 없으며 먼저 중지해야 한다.
 - **Close**는 task/session history를 삭제하지 않고 종료된 session을 sidebar에서
@@ -89,6 +90,8 @@ prototype/호환 경로로 남아 있다.
 - Claude의 `~/.claude/skills`, Codex의 `~/.agents/skills`에 Memory Skill 동기화
 - Settings에서 각 agent의 사용자 범위 MCP·Skill 목록을 제한된 크기로 조회하고,
   원본 설정/`SKILL.md` 편집 또는 백업 후 안전한 제거 지원
+- 새 Claude Code 세션을 Upstage Solar 또는 다른 Anthropic 호환 모델 API로 선택적으로 실행하고,
+  credential은 macOS Keychain에 보관하며 `~/.claude`를 변경하지 않고 일반 Claude 환경으로 복원
 - MCP command 인자, header, 환경변수 값, token은 목록이나 작업 기록에 표시하지 않고,
   Claude.ai가 관리하는 connector는 읽기 전용으로 표시
 - ByoriDB 설치와 agent 연결 분리: database 설치·업데이트는 Claude/Codex의 MCP나
@@ -102,8 +105,9 @@ prototype/호환 경로로 남아 있다.
 - Settings 창을 닫아도 작업은 계속하고, 앱 종료 시 snapshot으로 복구 가능한 runtime
   작업만 취소하며 나머지는 정확히 그 작업이 끝날 때까지 기다린 뒤 종료
 
-벤더 CLI 설치 버튼은 실행 전 확인을 받고 Anthropic/OpenAI의 공식 설치 스크립트만
-실행한다. 인증과 로그인은 각 CLI가 처리하며 Byori는 token을 읽거나 저장하지 않는다.
+벤더 CLI 설치 버튼은 실행 전 확인을 받고 Anthropic/OpenAI의 공식 설치 스크립트만 실행한다.
+각 CLI가 자체 로그인을 처리한다. Byori는 기존 벤더 credential을 읽지 않으며, 선택형 Claude 모델
+API 설정에서 사용자가 직접 입력한 credential만 저장하고 화면에 다시 표시하지 않는다.
 
 ## 개발 및 검증
 
