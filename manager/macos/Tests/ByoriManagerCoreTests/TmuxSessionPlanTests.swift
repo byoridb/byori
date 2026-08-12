@@ -29,7 +29,8 @@ final class TmuxSessionPlanTests: XCTestCase {
         let plan = TmuxSupport.attachOrCreate(
             descriptor,
             tmux: URL(fileURLWithPath: "/opt/homebrew/bin/tmux"),
-            configFile: URL(fileURLWithPath: "/conf/tmux.conf")
+            configFile: URL(fileURLWithPath: "/conf/tmux.conf"),
+            socketFile: URL(fileURLWithPath: "/private/byori/tmux.sock")
         )
 
         XCTAssertEqual(plan.executable.path, "/opt/homebrew/bin/tmux")
@@ -42,7 +43,8 @@ final class TmuxSessionPlanTests: XCTestCase {
         )
 
         let head = Array(plan.arguments[..<separator])
-        XCTAssertEqual(head.prefix(3), ["-f", "/conf/tmux.conf", "new-session"])
+        XCTAssertEqual(head.prefix(4), ["-S", "/private/byori/tmux.sock", "-f", "/conf/tmux.conf"])
+        XCTAssertTrue(head.contains("new-session"))
         XCTAssertTrue(head.contains("-A"), "without -A a relaunch cannot reattach")
         XCTAssertEqual(value(after: "-s", in: head), plan.sessionName)
         XCTAssertEqual(
@@ -51,28 +53,30 @@ final class TmuxSessionPlanTests: XCTestCase {
         )
     }
 
-    /// The tmux *server* may already be running from an earlier session, so it
-    /// cannot inherit this launch's environment. `-e` is the only way the
-    /// variables reach the CLI.
-    func testEveryEnvironmentEntryIsPassedWithItsOwnFlag() throws {
+    /// Values travel in the tmux client's environment. argv carries only the
+    /// names that the private server should copy into the session.
+    func testEnvironmentValuesNeverAppearInTmuxArguments() throws {
         let descriptor = try makeDescriptor(
-            environmentOverrides: ["BYORIDB_MEMORY_SPACE": "demo", "EXTRA": "value"]
+            environmentOverrides: [
+                "ANTHROPIC_AUTH_TOKEN": "highly-secret-token",
+                "BYORIDB_MEMORY_SPACE": "demo",
+                "EXTRA": "value",
+            ]
         )
         let plan = TmuxSupport.attachOrCreate(
             descriptor,
             tmux: URL(fileURLWithPath: "/bin/tmux"),
-            configFile: URL(fileURLWithPath: "/conf/tmux.conf")
+            configFile: URL(fileURLWithPath: "/conf/tmux.conf"),
+            socketFile: URL(fileURLWithPath: "/private/byori/tmux.sock")
         )
-        let separator = try XCTUnwrap(plan.arguments.firstIndex(of: "--"))
-        let head = Array(plan.arguments[..<separator])
 
-        var passed: [String] = []
-        for (index, argument) in head.enumerated() where argument == "-e" {
-            passed.append(head[index + 1])
-        }
-        XCTAssertTrue(passed.contains("BYORIDB_MEMORY_SPACE=demo"))
-        XCTAssertTrue(passed.contains("EXTRA=value"))
-        XCTAssertEqual(passed.count, descriptor.environmentArray.count)
+        XCTAssertFalse(plan.arguments.contains { $0.contains("highly-secret-token") })
+        XCTAssertFalse(plan.arguments.contains { $0.contains("=demo") })
+        let updateIndex = try XCTUnwrap(plan.arguments.firstIndex(of: "update-environment"))
+        let names = plan.arguments[updateIndex + 1].split(separator: " ").map(String.init)
+        XCTAssertTrue(names.contains("ANTHROPIC_AUTH_TOKEN"))
+        XCTAssertTrue(names.contains("BYORIDB_MEMORY_SPACE"))
+        XCTAssertTrue(names.contains("EXTRA"))
     }
 
     func testSessionNamesRoundTripAndAreNamespaced() {
@@ -115,6 +119,10 @@ final class TmuxSessionPlanTests: XCTestCase {
             TmuxSupport.listSessionsArguments(configFile: config),
             ["-f", "/conf/tmux.conf", "list-sessions", "-F", "#{session_name}"]
         )
+        XCTAssertEqual(
+            TmuxSupport.enableMouseArguments(configFile: config, sessionName: "byori-x"),
+            ["-f", "/conf/tmux.conf", "set-option", "-t", "byori-x", "mouse", "on"]
+        )
     }
 
     func testVersionParsingAcceptsTheShapesTmuxActuallyPrints() {
@@ -155,6 +163,14 @@ final class TmuxSessionPlanTests: XCTestCase {
         XCTAssertTrue(contents.contains("set -g destroy-unattached off"))
         XCTAssertTrue(contents.contains("set -g status off"))
         XCTAssertTrue(contents.contains("set -sg escape-time 0"))
+    }
+
+    func testConfigurationRoutesWheelEventsToTmuxScrollback() {
+        let contents = TmuxConfiguration.fileContents
+
+        XCTAssertTrue(contents.contains("set -g history-limit 50000"))
+        XCTAssertTrue(contents.contains("set -g mouse on"))
+        XCTAssertFalse(contents.contains("set -g mouse off"))
     }
 
     func testConfigurationIsWrittenToAByoriOwnedPath() async throws {

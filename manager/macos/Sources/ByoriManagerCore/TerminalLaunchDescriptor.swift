@@ -134,6 +134,7 @@ public struct TerminalLaunchDescriptorFactory {
         sessionID: UUID = UUID(),
         executableOverride: URL? = nil,
         environmentOverrides: [String: String] = [:],
+        environmentRemovals: Set<String> = [],
         additionalArguments: [String] = []
     ) throws -> TerminalLaunchDescriptor {
         let descriptor = provider.descriptor
@@ -154,7 +155,10 @@ public struct TerminalLaunchDescriptorFactory {
             executableOverride,
             defaultName: descriptor.executableName
         )
-        let environment = try makeEnvironment(overrides: environmentOverrides)
+        let environment = try makeEnvironment(
+            overrides: environmentOverrides,
+            removing: environmentRemovals
+        )
 
         var arguments: [String] = []
         if case let .explicit(model) = modelSelection {
@@ -324,8 +328,17 @@ public struct TerminalLaunchDescriptorFactory {
         return executable
     }
 
-    private func makeEnvironment(overrides: [String: String]) throws -> [String: String] {
+    private func makeEnvironment(
+        overrides: [String: String],
+        removing keysToRemove: Set<String> = []
+    ) throws -> [String: String] {
         var environment = baseEnvironment
+        for key in keysToRemove {
+            guard key.range(of: #"^[A-Za-z_][A-Za-z0-9_]*$"#, options: .regularExpression) != nil else {
+                throw TerminalLaunchDescriptorError.invalidEnvironmentKey(key)
+            }
+            environment.removeValue(forKey: key)
+        }
         for (key, value) in overrides {
             try validateEnvironment(key: key, value: value)
             environment[key] = value

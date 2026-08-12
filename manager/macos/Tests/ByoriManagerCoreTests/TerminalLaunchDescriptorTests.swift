@@ -104,6 +104,43 @@ final class TerminalLaunchDescriptorTests: XCTestCase {
         XCTAssertEqual(descriptor.environment["CLICOLOR"], "1")
     }
 
+    func testClaudeGatewayCanReplaceOnlyItsManagedInheritedEnvironment() throws {
+        let executable = try makeExecutable(named: "claude")
+        let factory = TerminalLaunchDescriptorFactory(
+            paths: paths,
+            environment: [
+                "ANTHROPIC_AUTH_TOKEN": "old-token",
+                "ANTHROPIC_API_KEY": "old-api-key",
+                "ANTHROPIC_MODEL": "old-model",
+                "API_TIMEOUT_MS": "user-timeout",
+                "UNRELATED": "preserved",
+            ]
+        )
+        let configuration = ClaudeGatewayConfiguration(
+            isEnabled: true,
+            baseURL: "https://gateway.example.com",
+            model: "new-model"
+        )
+
+        let descriptor = try factory.codingAgent(
+            .claude,
+            workingDirectory: workingDirectory,
+            executableOverride: executable,
+            environmentOverrides: [
+                "ANTHROPIC_BASE_URL": "https://gateway.example.com",
+                "ANTHROPIC_AUTH_TOKEN": "new-token",
+                "ANTHROPIC_MODEL": "new-model",
+            ],
+            environmentRemovals: configuration.environmentKeysToReplace
+        )
+
+        XCTAssertEqual(descriptor.environment["ANTHROPIC_AUTH_TOKEN"], "new-token")
+        XCTAssertNil(descriptor.environment["ANTHROPIC_API_KEY"])
+        XCTAssertEqual(descriptor.environment["ANTHROPIC_MODEL"], "new-model")
+        XCTAssertEqual(descriptor.environment["API_TIMEOUT_MS"], "user-timeout")
+        XCTAssertEqual(descriptor.environment["UNRELATED"], "preserved")
+    }
+
     func testCLIModelDefaultIsRecordedWithoutPassingSyntheticModelArgument() throws {
         let executable = try makeExecutable(named: "codex")
         let factory = TerminalLaunchDescriptorFactory(paths: paths, environment: [:])

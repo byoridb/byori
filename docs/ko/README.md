@@ -57,8 +57,8 @@ Claude Code 또는 Codex를 선택합니다. 어떤 소스트리에서 어떤 �
 > [!WARNING]
 > 현재는 초기 실험 단계입니다. 네이티브 macOS 워크스페이스 MVP, 실제 대화형 PTY,
 > 로컬 단일 노드 ByoriDB, MCP surface, notes + typed wiki schema v2, 별도의 foreground
-> 멀티 CLI 프로토타입은 구현되어 있습니다. 앱을 완전히 종료한 뒤 터미널 세션에 다시
-> attach할 수 없고 저장소 자동 ingestion도 아직 개발 중입니다. 중요한 데이터의 유일한
+> 멀티 CLI 프로토타입은 구현되어 있습니다. 터미널 세션 유지는 tmux 3.2 이상이 필요하며,
+> 없으면 앱과 함께 종료됩니다. 저장소 자동 ingestion도 아직 개발 중입니다. 중요한 데이터의 유일한
 > 저장소로 사용하지 마세요.
 
 ## 워크스페이스 모델
@@ -124,10 +124,12 @@ CLI 기본 model을 사용하거나 정확한 launch model identifier를 입력�
 여러 agent에 전파하거나 patch를 비교하고 winner를 고르거나 merge·정리하지도 않습니다. 다른
 agent가 필요하면 사용자가 새 세션을 명시적으로 엽니다.
 
-워크스페이스 창을 닫아도 메뉴 막대 앱 process가 살아 있는 동안에는 PTY가 유지됩니다. Byori를
-완전히 종료하면 해당 세션도 중지되며 다시 attach하거나 자동 resume할 수 없습니다. prompt는
-terminal에서 직접 입력하며 Byori가 저장하지 않습니다. 앱은 Claude Code/Codex 로그인 정보나
-token을 읽지 않습니다.
+워크스페이스 창을 닫아도 PTY는 유지됩니다. tmux 3.2 이상이 있으면 Byori를 완전히 종료해도
+활성 세션은 분리된 채 살아 있고, 다음 실행에서 다시 attach할 수 있습니다. 지원되는 tmux가 없으면
+세션은 앱과 함께 종료되며 UI가 실행 전에 이를 알립니다. Prompt는 terminal에서 직접 입력하며
+Byori가 저장하지 않습니다. 벤더 로그인은 각 CLI가 관리합니다. 선택형 Claude 모델 API 설정은
+사용자가 직접 입력한 credential만 macOS Keychain에 저장하며, 비활성화하면 이후 세션에서 일반
+Claude 환경으로 돌아갑니다.
 
 #### 지금은 소스에서 빌드하세요
 
@@ -324,8 +326,8 @@ bitemporal history(`AS OF`), similarity recommendation을 제공합니다. 설�
 - capture는 매 턴 자동 추출이 아니라 체크포인트에서 에이전트가 수행합니다.
 - 기본 `memory_recall`은 note 이름·본문 substring 검색이며 엔진의 vector search를 사용하지 않습니다.
 - Codex·NaraeClaw용 체크포인트 hook은 없습니다(번들 reminder hook은 Claude Code 전용).
-- macOS 앱은 기존 linked worktree를 찾아 보여 주지만 새로 만들지는 않으며, 앱 process 종료 후
-  PTY에 다시 attach할 수 없습니다.
+- macOS 앱은 기존 linked worktree를 찾아 보여 주지만 새로 만들지는 않습니다. tmux 3.2 이상이면
+  앱 process 종료 후에도 PTY에 다시 attach할 수 있고, 없으면 세션이 앱과 함께 종료됩니다.
 - 멀티 CLI 오케스트레이션은 foreground 로컬 MVP입니다. daemon, 원격 UI, 자동 patch 비교,
   merge, worktree 정리는 아직 제공하지 않습니다.
 - 엔진 temporal v1의 공개 조회는 vertex `FETCH ... AS OF`에 한정되며 current/history dual-write는 비원자적입니다.

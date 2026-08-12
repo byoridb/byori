@@ -83,6 +83,14 @@ or alter a provider; MCP and Memory Skill changes remain explicit per-agent acti
 may inventory user-scoped MCP registrations and Skills, but it never presents secret-bearing
 command arguments, headers, environment values, or tokens.
 
+Claude Code may optionally be launched through Upstage's official Solar integration or a
+user-configured Anthropic-compatible gateway. Byori stores the API credential in macOS Keychain,
+stores only non-secret routing metadata in its preferences, and injects that configuration only
+into newly launched Claude sessions. It does not rewrite Claude's settings files. Disabling the
+option restores the user's ordinary Claude login and inherited configuration for subsequent
+sessions. The Upstage preset follows Upstage's published Claude Code environment for
+`https://api.upstage.ai` and Solar Pro 4; other providers must expose a Claude-compatible API.
+
 The current Byori macOS app is built with SwiftUI for macOS 13 or later. The CLI and local runtime
 support macOS and Linux. Web, iOS, Android, remote collaboration, and a cross-platform desktop UI
 are not current product commitments.
@@ -100,7 +108,9 @@ Existing repository capabilities that the workspace can build on:
   revisions, and prototype run state under `~/.byori`;
 - recall and checkpoint durable knowledge through a guarded MCP surface backed by ByoriDB;
 - install, update, start, stop, diagnose, and connect the local runtime through the Byori macOS
-  app and installer; and
+  app and installer;
+- optionally route newly launched Claude Code sessions through an Anthropic-compatible gateway,
+  with Keychain-backed credentials and a reversible default-Claude state; and
 - inspect a bounded, read-only view of the knowledge graph.
 
 Current implementation constraints:
@@ -115,7 +125,8 @@ Current implementation constraints:
 - native project removal and checkout hiding are visibility/registration operations, not Git
   cleanup or knowledge deletion;
 - the default managed-worktree mode requires a clean registered repository;
-- vendor authentication and model data handling remain owned by each coding CLI;
+- vendor authentication and model data handling remain owned by each coding CLI unless the user
+  explicitly enables Byori's Claude gateway override for new sessions;
 - memory is historical reference and must be checked against the current repository;
 - ByoriDB stores durable knowledge, not raw reasoning traces or complete provider logs;
 - automatic repository ingestion and semantic-ranked recall are not implemented; and

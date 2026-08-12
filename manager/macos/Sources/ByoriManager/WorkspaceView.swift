@@ -16,14 +16,14 @@ private enum WorkspaceRemovalRequest: Identifiable {
     var title: String {
         switch self {
         case .project: return "Remove Project from Byori?"
-        case .sourceTree: return "Remove Source Tree from Byori?"
+        case let .sourceTree(sourceTree): return "Hide \(sourceTree.kind.removalLabel) from Byori?"
         }
     }
 
     var actionTitle: String {
         switch self {
         case .project: return "Remove Project"
-        case .sourceTree: return "Remove from Byori"
+        case let .sourceTree(sourceTree): return "Hide \(sourceTree.kind.removalLabel)"
         }
     }
 
@@ -56,7 +56,7 @@ private enum WorkspaceRemovalRequest: Identifiable {
             case .unavailable:
                 workState = " Its folder is currently unavailable; only Byori's visibility record will change."
             }
-            return "\(sourceTree.name) will be hidden from this project. Its folder, Git worktree and branch, task/session history, and ByoriDB context will be kept. Restore it later from the project menu.\(workState)"
+            return "Only \(sourceTree.name) will disappear from Byori's outline. Its folder, Git worktree, branch, task/session history, and ByoriDB context will not be deleted. Restore it later from the project menu.\(workState)"
         }
     }
 }
@@ -66,6 +66,7 @@ private enum WorkspaceRemovalRequest: Identifiable {
 struct WorkspaceView<TerminalHost: View>: View {
     @ObservedObject private var model: WorkspaceViewModel
     @State private var removalRequest: WorkspaceRemovalRequest?
+    @State private var sessionSurfacePreferences = WorkspaceSessionSurfacePreferences()
     private let openSettings: () -> Void
     private let terminalHost: (WorkspaceSessionItem) -> TerminalHost
 
@@ -199,13 +200,16 @@ struct WorkspaceView<TerminalHost: View>: View {
                   let lineage = model.selectedLineage,
                   let sourceTree = lineage.sourceTree,
                   let task = lineage.task {
-            WorkspaceTerminalPane(
+            WorkspaceSessionPane(
                 project: lineage.project,
                 sourceTree: sourceTree,
                 task: task,
                 session: session,
+                surface: sessionSurfaceBinding(for: session.id),
+                isRefreshing: model.isRefreshing,
                 isStopping: model.stoppingSessionIDs.contains(session.id),
                 isReattaching: model.reattachingSessionIDs.contains(session.id),
+                refresh: { Task { await model.load(force: true) } },
                 stop: { Task { await model.stopSession(session) } },
                 reattach: { Task { await model.reattachSession(session) } },
                 newSession: { Task { await model.prepareNewSession(after: session) } },
@@ -245,6 +249,13 @@ struct WorkspaceView<TerminalHost: View>: View {
                 detail: "Select a source tree, task, or session from the project outline."
             )
         }
+    }
+
+    private func sessionSurfaceBinding(for sessionID: String) -> Binding<WorkspaceSessionSurface> {
+        Binding(
+            get: { sessionSurfacePreferences.selection(for: sessionID) },
+            set: { sessionSurfacePreferences.select($0, for: sessionID) }
+        )
     }
 
     private var newSourceTreePresentation: Binding<Bool> {
@@ -848,7 +859,7 @@ private struct WorkspaceSidebarRow: View {
     private func removalMenuTitle(for request: WorkspaceRemovalRequest) -> String {
         switch request {
         case .project: return "Remove Project from Byori…"
-        case .sourceTree: return "Remove from Byori…"
+        case let .sourceTree(sourceTree): return "Hide \(sourceTree.kind.removalLabel) from Byori…"
         }
     }
 
@@ -922,7 +933,9 @@ private struct WorkspaceSidebarRow: View {
         switch node.kind {
         case let .project(project):
             return project.registration == .trusted ? nil : project.registration.label
-        case .sourceTree, .task, .session:
+        case let .sourceTree(sourceTree):
+            return sourceTree.kind.label
+        case .task, .session:
             return nil
         }
     }
@@ -972,15 +985,18 @@ private struct WorkspaceSidebarRow: View {
     }
 }
 
-// MARK: - Terminal pane
+// MARK: - Session pane
 
-private struct WorkspaceTerminalPane<TerminalHost: View>: View {
+private struct WorkspaceSessionPane<TerminalHost: View>: View {
     let project: WorkspaceProjectItem
     let sourceTree: WorkspaceSourceTreeItem
     let task: WorkspaceTaskItem
     let session: WorkspaceSessionItem
+    @Binding var surface: WorkspaceSessionSurface
+    let isRefreshing: Bool
     let isStopping: Bool
     let isReattaching: Bool
+    let refresh: () -> Void
     let stop: () -> Void
     let reattach: () -> Void
     let newSession: () -> Void
@@ -990,7 +1006,7 @@ private struct WorkspaceTerminalPane<TerminalHost: View>: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 breadcrumb(project.name)
-                breadcrumb(sourceTree.name)
+                breadcrumb("\(sourceTree.name) · \(sourceTree.kind.label)")
                 Text(task.title)
                     .fontWeight(.medium)
                     .lineLimit(1)
@@ -1072,12 +1088,16 @@ private struct WorkspaceTerminalPane<TerminalHost: View>: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                if let detail = session.statusDetail, !detail.isEmpty {
-                    Text(detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                Picker("Session view", selection: $surface) {
+                    ForEach(WorkspaceSessionSurface.allCases) { item in
+                        Label(item.label, systemImage: item.systemImage)
+                            .tag(item)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 220)
+                .accessibilityLabel("Session view")
             }
             .padding(.horizontal, 16)
             .frame(height: 42)
@@ -1085,6 +1105,24 @@ private struct WorkspaceTerminalPane<TerminalHost: View>: View {
 
             Divider()
 
+            sessionContent
+        }
+    }
+
+    @ViewBuilder
+    private var sessionContent: some View {
+        switch surface {
+        case .activity:
+            WorkspaceSessionActivityView(
+                project: project,
+                sourceTree: sourceTree,
+                task: task,
+                session: session,
+                isRefreshing: isRefreshing,
+                refresh: refresh,
+                openTerminal: { surface = .terminal }
+            )
+        case .terminal:
             terminalContent
         }
     }
@@ -1095,15 +1133,16 @@ private struct WorkspaceTerminalPane<TerminalHost: View>: View {
             // The CLI is running, but under the tmux server rather than this
             // app, so there is no terminal view to mount until it reattaches.
             detachedSessionView
-        } else if session.state.isActive {
+        } else {
+            // TerminalSessionController retains SwiftTerm after process exit.
+            // Keep that final buffer visible; historical sessions without a
+            // retained view render ContentView's TerminalUnavailableView.
             terminalHost(session)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(WorkspacePalette.terminalBackground)
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel(terminalAccessibilityLabel)
                 .accessibilityHint("Byori keeps the original launch selection; changes made inside the provider terminal are provider-controlled")
-        } else {
-            endedSessionView
         }
     }
 
@@ -1141,40 +1180,6 @@ private struct WorkspaceTerminalPane<TerminalHost: View>: View {
         .background(WorkspacePalette.terminalBackground)
     }
 
-    private var endedSessionView: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "terminal.fill")
-                .font(.system(size: 32))
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
-            Text("Terminal session ended")
-                .font(.title3.weight(.semibold))
-            Text("The terminal process is no longer active. Its provider, model, and task history are preserved.")
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 460)
-
-            HStack(spacing: 8) {
-                Button(action: newSession) {
-                    Label("New Session", systemImage: "plus.rectangle.on.rectangle")
-                }
-                .buttonStyle(.borderedProminent)
-                .accessibilityLabel("New session for task \(task.title)")
-                .accessibilityHint(
-                    "Opens session setup for this task and keeps the ended session in history"
-                )
-
-            }
-            .padding(.top, 4)
-        }
-        .padding(28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(WorkspacePalette.terminalBackground)
-        .foregroundStyle(.white)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Ended terminal session \(session.displayName)")
-    }
-
     private func breadcrumb(_ text: String) -> some View {
         Group {
             Text(text)
@@ -1204,6 +1209,340 @@ private struct WorkspaceTerminalPane<TerminalHost: View>: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Session status: \(session.state.label)")
+    }
+}
+
+private struct WorkspaceSessionActivityView: View {
+    let project: WorkspaceProjectItem
+    let sourceTree: WorkspaceSourceTreeItem
+    let task: WorkspaceTaskItem
+    let session: WorkspaceSessionItem
+    let isRefreshing: Bool
+    let refresh: () -> Void
+    let openTerminal: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 28) {
+                activityHeader
+                lifecycleDiagram
+
+                if session.state == .waitingForUser {
+                    waitingForUserCallout
+                }
+
+                Divider()
+                sessionDetails
+                Divider()
+                truthBoundary
+            }
+            .frame(maxWidth: 760, alignment: .leading)
+            .padding(.horizontal, 36)
+            .padding(.vertical, 32)
+            .frame(maxWidth: .infinity, alignment: .top)
+        }
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private var activityHeader: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            HStack(alignment: .top, spacing: 18) {
+                Image(systemName: activitySystemImage)
+                    .font(.system(size: 38, weight: .medium))
+                    .foregroundStyle(WorkspacePalette.statusColor(session.state))
+                    .frame(width: 48, height: 48)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(session.state.label)
+                        .font(.title2.weight(.semibold))
+                    Text(activityDetail)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 24)
+
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text(
+                        WorkspaceSessionDurationFormatter.string(
+                            startedAt: session.startedAt,
+                            endedAt: session.endedAt,
+                            now: context.date
+                        )
+                    )
+                    .font(.title3.monospacedDigit().weight(.medium))
+                    Text(session.state.isActive ? "Elapsed" : "Duration")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+            }
+        }
+    }
+
+    private var lifecycleDiagram: some View {
+        HStack(alignment: .top, spacing: 12) {
+            WorkspaceActivityStage(
+                title: "Checkout",
+                detail: sourceTree.kind.locationLabel,
+                systemImage: "folder.fill",
+                emphasis: .complete
+            )
+            WorkspaceActivityConnector(color: .green)
+            WorkspaceActivityStage(
+                title: "CLI",
+                detail: cliStageDetail,
+                systemImage: "terminal.fill",
+                emphasis: cliStageEmphasis
+            )
+            WorkspaceActivityConnector(color: outcomeConnectorColor)
+            WorkspaceActivityStage(
+                title: "Current state",
+                detail: session.state.label,
+                systemImage: activitySystemImage,
+                emphasis: outcomeEmphasis
+            )
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(
+            "Session flow: \(sourceTree.kind.locationLabel), \(cliStageDetail), \(session.state.label)"
+        )
+    }
+
+    private var waitingForUserCallout: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: "person.crop.circle.badge.exclamationmark")
+                .font(.title2)
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Your decision is needed")
+                    .font(.headline)
+                Text("Open the terminal to review the provider's request and choose an option.")
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 16)
+            Button("Open Terminal", action: openTerminal)
+                .buttonStyle(.borderedProminent)
+        }
+        .padding(16)
+        .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var sessionDetails: some View {
+        Grid(alignment: .leading, horizontalSpacing: 28, verticalSpacing: 14) {
+            detailRow("Session", value: session.displayName, systemImage: "tag")
+            detailRow("Agent", value: session.launchSelectionDisplayName, systemImage: session.providerSystemImage)
+            detailRow("Project", value: project.name, systemImage: "shippingbox")
+            detailRow(
+                "Checkout",
+                value: "\(sourceTree.name) · \(sourceTree.kind.locationLabel)",
+                systemImage: "folder"
+            )
+            detailRow("Task", value: task.title, systemImage: "checklist")
+            detailRow("Branch", value: sourceTree.branch, systemImage: "arrow.triangle.branch")
+            detailRow("Working tree", value: workingTreeLabel, systemImage: workingTreeSystemImage)
+            GridRow(alignment: .firstTextBaseline) {
+                Label("Working directory", systemImage: "folder")
+                    .foregroundStyle(.secondary)
+                Text(sourceTree.url.path)
+                    .font(.callout.monospaced())
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var truthBoundary: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "info.circle")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Text("Activity shows verified session, checkout, and Git state. Byori does not infer prompts or choices from terminal output.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 20)
+            Button {
+                refresh()
+            } label: {
+                if isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Refreshing activity")
+                } else {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+            }
+            .disabled(isRefreshing)
+            Button("Open Terminal", action: openTerminal)
+                .buttonStyle(.borderedProminent)
+        }
+    }
+
+    private func detailRow(_ title: String, value: String, systemImage: String) -> some View {
+        GridRow(alignment: .firstTextBaseline) {
+            Label(title, systemImage: systemImage)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .textSelection(.enabled)
+        }
+    }
+
+    private var activityDetail: String {
+        if session.isDetached {
+            return "The CLI is still running in tmux and can be reattached without restarting it."
+        }
+        if let statusDetail = session.statusDetail?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !statusDetail.isEmpty {
+            return statusDetail
+        }
+        switch session.state {
+        case .preparing:
+            return "Byori is preparing the checkout and launching the selected CLI."
+        case .running:
+            return "The agent process is running in this checkout. Open Terminal whenever you want the raw CLI view."
+        case .waitingForUser:
+            return "The provider has reported that it needs your input before it can continue."
+        case .completed:
+            return "The CLI process finished successfully. Session history remains available here."
+        case .failed:
+            return "The CLI process stopped with an error. Open Terminal for the provider's last output."
+        case .cancelled:
+            return "The session was stopped before the CLI finished."
+        case .timedOut:
+            return "The session exceeded its allowed runtime and stopped."
+        }
+    }
+
+    private var activitySystemImage: String {
+        switch session.state {
+        case .preparing: return "hourglass"
+        case .running: return "bolt.horizontal.fill"
+        case .waitingForUser: return "person.crop.circle.badge.exclamationmark"
+        case .completed: return "checkmark.circle.fill"
+        case .failed: return "xmark.octagon.fill"
+        case .cancelled: return "stop.circle.fill"
+        case .timedOut: return "clock.fill"
+        }
+    }
+
+    private var cliStageDetail: String {
+        switch session.state {
+        case .preparing: return "Launching"
+        case .failed: return "Failed"
+        default: return session.providerName
+        }
+    }
+
+    private var cliStageEmphasis: WorkspaceActivityStage.Emphasis {
+        switch session.state {
+        case .preparing: return .current
+        case .failed: return .failed
+        case .cancelled where session.startedAt == nil: return .muted
+        default: return .complete
+        }
+    }
+
+    private var outcomeEmphasis: WorkspaceActivityStage.Emphasis {
+        switch session.state {
+        case .preparing, .running: return .current
+        case .waitingForUser: return .attention
+        case .completed: return .complete
+        case .failed, .timedOut: return .failed
+        case .cancelled: return .muted
+        }
+    }
+
+    private var outcomeConnectorColor: Color {
+        switch outcomeEmphasis {
+        case .complete, .current: return WorkspacePalette.running
+        case .attention: return .orange
+        case .failed: return .red
+        case .muted: return .secondary
+        }
+    }
+
+    private var workingTreeLabel: String {
+        switch sourceTree.workingState {
+        case .clean: return "Clean"
+        case let .modified(changeCount):
+            let noun = changeCount == 1 ? "change" : "changes"
+            return "\(changeCount) uncommitted \(noun)"
+        case let .unavailable(reason): return "Unavailable — \(reason)"
+        }
+    }
+
+    private var workingTreeSystemImage: String {
+        switch sourceTree.workingState {
+        case .clean: return "checkmark.circle"
+        case .modified: return "pencil.circle"
+        case .unavailable: return "exclamationmark.triangle"
+        }
+    }
+}
+
+private struct WorkspaceActivityConnector: View {
+    let color: Color
+
+    var body: some View {
+        Rectangle()
+            .fill(color.opacity(0.55))
+            .frame(maxWidth: .infinity)
+            .frame(height: 1)
+            .padding(.top, 17)
+            .accessibilityHidden(true)
+    }
+}
+
+private struct WorkspaceActivityStage: View {
+    enum Emphasis {
+        case complete
+        case current
+        case attention
+        case failed
+        case muted
+    }
+
+    let title: String
+    let detail: String
+    let systemImage: String
+    let emphasis: Emphasis
+
+    var body: some View {
+        VStack(spacing: 7) {
+            Image(systemName: systemImage)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(foregroundColor)
+                .frame(width: 34, height: 34)
+                .background(backgroundColor, in: Circle())
+            Text(title)
+                .font(.callout.weight(.medium))
+                .lineLimit(1)
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var foregroundColor: Color {
+        switch emphasis {
+        case .complete: return .green
+        case .current: return WorkspacePalette.running
+        case .attention: return .orange
+        case .failed: return .red
+        case .muted: return .secondary
+        }
+    }
+
+    private var backgroundColor: Color {
+        foregroundColor.opacity(0.12)
     }
 }
 
@@ -1595,7 +1934,7 @@ private struct NewWorkspaceSessionSheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("New Session")
                         .font(.title2.weight(.semibold))
-                    Text("Choose the provider and model Byori will use to launch this session.")
+                    Text("Confirm where the agent will work, then choose its launch provider and model.")
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -1624,15 +1963,30 @@ private struct NewWorkspaceSessionSheet: View {
                     Section("Location") {
                         LabeledContent("Project", value: projectName)
 
-                        Picker("Source Tree", selection: sourceTreeBinding) {
+                        Picker("Checkout", selection: sourceTreeBinding) {
                             ForEach(model.sourceTrees(for: model.newSessionDraft.projectID)) { sourceTree in
-                                Text(sourceTree.name == sourceTree.branch
-                                     ? sourceTree.name
-                                     : "\(sourceTree.name) — \(sourceTree.branch)")
+                                Text(sourceTreeOptionLabel(sourceTree))
                                     .tag(sourceTree.id)
                             }
                         }
-                        .accessibilityHint("The agent process uses this working directory")
+                        .accessibilityHint("Choose the exact checkout and working directory used by the agent process")
+
+                        if let selectedSourceTree {
+                            LabeledContent("Type", value: selectedSourceTree.kind.locationLabel)
+
+                            LabeledContent("Working Directory") {
+                                Text(selectedSourceTree.url.path)
+                                    .font(.caption.monospaced())
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .help(selectedSourceTree.url.path)
+                                    .textSelection(.enabled)
+                            }
+
+                            Text(selectedSourceTree.kind.sessionLocationDetail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
 
                         Picker("Task", selection: $model.newSessionDraft.taskChoice) {
                             Text("New Task").tag(WorkspaceNewSessionTaskChoice.newTask)
@@ -1917,6 +2271,19 @@ private struct NewWorkspaceSessionSheet: View {
         model.projects.first(where: { $0.id == model.newSessionDraft.projectID })?.name ?? "Unknown Project"
     }
 
+    private var selectedSourceTree: WorkspaceSourceTreeItem? {
+        model
+            .sourceTrees(for: model.newSessionDraft.projectID)
+            .first(where: { $0.id == model.newSessionDraft.sourceTreeID })
+    }
+
+    private func sourceTreeOptionLabel(_ sourceTree: WorkspaceSourceTreeItem) -> String {
+        let identity = sourceTree.name == sourceTree.branch
+            ? sourceTree.name
+            : "\(sourceTree.name) — \(sourceTree.branch)"
+        return "\(identity) — \(sourceTree.kind.locationLabel)"
+    }
+
     private var sourceTreeBinding: Binding<String> {
         Binding(
             get: { model.newSessionDraft.sourceTreeID },
@@ -1942,9 +2309,7 @@ private struct NewWorkspaceSessionSheet: View {
     }
 
     private var sourceTreeWarning: String? {
-        guard let sourceTree = model
-            .sourceTrees(for: model.newSessionDraft.projectID)
-            .first(where: { $0.id == model.newSessionDraft.sourceTreeID }) else {
+        guard let sourceTree = selectedSourceTree else {
             return nil
         }
         switch sourceTree.workingState {
@@ -1957,9 +2322,7 @@ private struct NewWorkspaceSessionSheet: View {
     }
 
     private var sourceTreeIsModified: Bool {
-        guard let sourceTree = model
-            .sourceTrees(for: model.newSessionDraft.projectID)
-            .first(where: { $0.id == model.newSessionDraft.sourceTreeID }) else {
+        guard let sourceTree = selectedSourceTree else {
             return false
         }
         if case .modified = sourceTree.workingState { return true }
@@ -2060,7 +2423,8 @@ private enum WorkspacePalette {
     static func statusColor(_ status: WorkspaceSessionItemStatus) -> Color {
         switch status {
         case .preparing: return .blue
-        case .running, .waitingForUser: return running
+        case .running: return running
+        case .waitingForUser: return .orange
         case .completed: return .green
         case .failed, .timedOut: return .red
         case .cancelled: return .secondary

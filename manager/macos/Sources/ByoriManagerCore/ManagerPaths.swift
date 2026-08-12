@@ -26,6 +26,9 @@ public struct ManagerPaths: Sendable {
     public var installer: URL { runtimeRoot.appendingPathComponent("install.sh") }
     /// Byori's own tmux configuration, kept out of the user's `~/.tmux.conf`.
     public var tmuxConfig: URL { managerHome.appendingPathComponent("tmux.conf") }
+    /// A private tmux server keeps Byori session options and credentials out
+    /// of the user's ordinary tmux server.
+    public var tmuxSocket: URL { managerHome.appendingPathComponent("tmux.sock") }
     public var skillSource: URL {
         skillSource(.byoridbMemory)
     }

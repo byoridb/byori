@@ -1,8 +1,8 @@
 /*
- THESIS: Project lineage stays visible while one real agent terminal owns attention; refuse settings dashboards and automatic fan-out.
- OWN-WORLD: Native macOS light chrome, edge-bound near-black terminal, 1px separators, system UI type, monospaced terminal type, and restrained teal state accents.
- STORY: Choose a project and source tree, enter a task's launch-selected agent/model session, work interactively, then inspect Files, Git, or shared ByoriDB knowledge.
- FIRST VIEWPORT: A 290pt project/source-tree outline at left, dominant terminal center, and 320pt tabbed inspector at right; New Session sits beside the selected task.
+ THESIS: Verified agent progress owns attention while the raw terminal stays one explicit tab away; refuse guessed prompts and automatic fan-out.
+ OWN-WORLD: Native macOS light chrome, an edge-bound Activity surface, near-black terminal, 1px separators, system UI type, and restrained semantic state accents.
+ STORY: Choose a project and checkout, follow its agent's verified Activity flow, open Terminal when needed, then inspect Files, Git, or shared ByoriDB knowledge.
+ FIRST VIEWPORT: A 290pt project/checkout outline at left, default Activity diagram center with an Activity/Terminal switch, and a 320pt tabbed inspector at right.
  FORM: Source-tree-first native Operate workspace, option 3 of 3 combined with option 1 Context depth; seed key direct-c+a-20260806.
  FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
  */
@@ -642,7 +642,11 @@ private struct AgentInventoryPane: View {
                     .padding(.bottom, 10)
             }
 
-            Divider()
+            if kind == .claude {
+                ClaudeGatewaySettingsView(settings: model.claudeGatewaySettings)
+                    .padding(.vertical, 12)
+                Divider()
+            }
 
             InventorySectionHeader(
                 title: "MCP 서버",
@@ -760,6 +764,261 @@ private struct AgentInventoryPane: View {
 
     private func removeAction(for skill: ManagedSkill) -> ManagerAction {
         .removeSkill(kind, skill)
+    }
+}
+
+private struct ClaudeGatewaySettingsView: View {
+    @ObservedObject var settings: ClaudeGatewaySettingsController
+    @State private var isShowingAdvanced = false
+    @State private var isConfirmingCredentialDeletion = false
+    @State private var errorMessage: String?
+    @State private var savedMessage: String?
+
+    var body: some View {
+        GroupBox("Claude 모델 API") {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("새 Claude Code 세션을 호환 게이트웨이로 실행")
+                            .font(.body.weight(.medium))
+                        Text("Claude 설정 파일은 변경하지 않으며, 저장 후 새로 여는 세션에만 적용됩니다.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 20)
+                    Toggle("사용", isOn: $settings.draft.isEnabled)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                        .accessibilityLabel("커스텀 Claude 모델 API 사용")
+                }
+
+                if settings.draft.isEnabled {
+                    Divider()
+
+                    Picker("연결 방식", selection: presetBinding) {
+                        ForEach(ClaudeGatewayPreset.allCases) { preset in
+                            Text(preset.displayName).tag(preset)
+                        }
+                    }
+
+                    compatibilityNotice
+
+                    LabeledContent("Gateway URL") {
+                        TextField("https://gateway.example.com", text: $settings.draft.baseURL)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(minWidth: 300)
+                            .disabled(settings.draft.preset == .upstageSolar)
+                            .accessibilityHint("Anthropic Messages API 형식을 제공하는 게이트웨이 주소")
+                    }
+
+                    LabeledContent("기본 모델") {
+                        TextField("Gateway model name", text: $settings.draft.model)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(minWidth: 300)
+                    }
+
+                    LabeledContent("인증") {
+                        Picker("인증", selection: $settings.draft.authentication) {
+                            ForEach(ClaudeGatewayAuthentication.allCases) { authentication in
+                                Text(authentication.displayName).tag(authentication)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(minWidth: 220)
+                        .disabled(settings.draft.preset == .upstageSolar)
+                    }
+
+                    if settings.draft.authentication.requiresCredential {
+                        LabeledContent(credentialLabel) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                SecureField(credentialPlaceholder, text: $settings.credentialInput)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(minWidth: 300)
+                                Text(credentialDetail)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
+                    DisclosureGroup("고급 모델 매핑", isExpanded: $isShowingAdvanced) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Toggle(
+                                "Opus·Sonnet·Haiku·Fable 요청을 기본 모델로 라우팅",
+                                isOn: $settings.draft.routeAllModelFamilies
+                            )
+                            .disabled(settings.draft.preset == .upstageSolar)
+                            LabeledContent("빠른 모델") {
+                                TextField(
+                                    "Optional Haiku/fast model name",
+                                    text: $settings.draft.fastModel
+                                )
+                                .textFieldStyle(.roundedBorder)
+                                .frame(minWidth: 300)
+                            }
+                            Text("모델 이름은 게이트웨이가 노출하는 정확한 식별자여야 합니다. 새 세션에서 모델을 직접 고르면 그 선택이 기본 모델보다 우선합니다.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.top, 8)
+                    }
+
+                    if settings.draft.usesUnencryptedTransport {
+                        Label(
+                            "HTTP 연결에서는 프롬프트와 코드가 암호화되지 않습니다. 로컬 게이트웨이가 아니라면 HTTPS를 사용하세요.",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    }
+                } else {
+                    Label(
+                        "Claude 기본 로그인과 기존 사용자 설정을 그대로 사용합니다.",
+                        systemImage: "checkmark.shield"
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                }
+
+                Divider()
+
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(settings.activeConfiguration.isEnabled ? Color.green : Color.secondary)
+                        .frame(width: 7, height: 7)
+                        .accessibilityHidden(true)
+                    Text(activeStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let savedMessage {
+                        Text(savedMessage)
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
+                    Spacer(minLength: 16)
+
+                    if settings.hasStoredCredential {
+                        Button("저장된 키 삭제", role: .destructive) {
+                            isConfirmingCredentialDeletion = true
+                        }
+                    }
+                    if settings.activeConfiguration.isEnabled {
+                        Button("Claude 기본값 사용") {
+                            perform { try settings.restoreClaudeDefault() }
+                        }
+                    }
+                    if hasUnsavedChanges {
+                        Button("변경 취소") {
+                            settings.discardDraft()
+                            savedMessage = nil
+                        }
+                    }
+                    Button("설정 저장") {
+                        perform {
+                            try settings.save()
+                            savedMessage = settings.activeConfiguration.isEnabled
+                                ? "새 세션부터 적용됩니다."
+                                : "Claude 기본값을 사용합니다."
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!hasUnsavedChanges)
+                }
+            }
+            .padding(10)
+        }
+        .alert("설정을 적용하지 못했습니다", isPresented: errorPresentation) {
+            Button("확인", role: .cancel) { errorMessage = nil }
+        } message: {
+            Text(errorMessage ?? "알 수 없는 오류가 발생했습니다.")
+        }
+        .confirmationDialog(
+            "Keychain에서 저장된 Gateway credential을 삭제할까요?",
+            isPresented: $isConfirmingCredentialDeletion,
+            titleVisibility: .visible
+        ) {
+            Button("저장된 키 삭제", role: .destructive) {
+                perform { try settings.deleteStoredCredential() }
+            }
+            Button("취소", role: .cancel) {}
+        } message: {
+            Text("활성 설정이 이 키를 사용 중이면 Claude 기본값으로 함께 복원됩니다.")
+        }
+    }
+
+    @ViewBuilder
+    private var compatibilityNotice: some View {
+        switch settings.draft.preset {
+        case .custom:
+            Label(
+                "Anthropic Messages API 형식을 구현한 게이트웨이만 사용할 수 있습니다. OpenAI 호환 URL을 직접 입력하는 기능은 아닙니다.",
+                systemImage: "info.circle"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        case .upstageSolar:
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Upstage 공식 Claude Code 연결", systemImage: "checkmark.seal")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.green)
+                Text("Upstage의 Claude Code 통합과 동일하게 api.upstage.ai, Solar Pro 4, 전체 Claude 모델 별칭을 사용합니다. API 키는 이 세션의 Authorization 헤더에만 전달됩니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var presetBinding: Binding<ClaudeGatewayPreset> {
+        Binding(
+            get: { settings.draft.preset },
+            set: {
+                settings.selectPreset($0)
+                savedMessage = nil
+            }
+        )
+    }
+
+    private var credentialPlaceholder: String {
+        settings.hasStoredCredential ? "저장된 키 유지" : credentialLabel
+    }
+
+    private var credentialLabel: String {
+        settings.draft.preset == .upstageSolar ? "Upstage API key" : "Gateway credential"
+    }
+
+    private var credentialDetail: String {
+        settings.hasStoredCredential
+            ? "비워 두면 Keychain에 저장된 키를 계속 사용합니다."
+            : "키는 macOS Keychain에 저장되며 설정 파일과 화면에는 다시 표시되지 않습니다."
+    }
+
+    private var activeStatus: String {
+        if settings.activeConfiguration.isEnabled {
+            return "적용 중 · \(settings.activeConfiguration.preset.displayName) · 새 세션만"
+        }
+        return "Claude 기본값 · Byori 환경 주입 없음"
+    }
+
+    private var hasUnsavedChanges: Bool {
+        settings.draft != settings.activeConfiguration || !settings.credentialInput.isEmpty
+    }
+
+    private var errorPresentation: Binding<Bool> {
+        Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )
+    }
+
+    private func perform(_ operation: () throws -> Void) {
+        do {
+            try operation()
+            errorMessage = nil
+        } catch {
+            savedMessage = nil
+            errorMessage = error.localizedDescription
+        }
     }
 }
 

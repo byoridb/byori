@@ -45,8 +45,9 @@ prototype and compatibility path.
   session name, while legacy unnamed sessions retain the provider/model fallback. An ended
   session can be hidden with **Close** and restored from its Task row's
   **More Actions → Closed Sessions** menu.
-- The center displays one real interactive PTY for the selected session, rendered by
-  SwiftTerm. Claude Code or Codex runs in that checkout and handles its own login. Sessions
+- The center opens on a visual Activity summary for the selected session; its Terminal tab
+  reveals the real interactive PTY rendered by SwiftTerm. Claude Code or Codex runs in that
+  checkout and handles its own login. Sessions
   advertise 256-color and truecolor support and discard inherited color-suppression variables
   such as `NO_COLOR`, so provider-emitted ANSI color remains visible.
 - The right inspector provides bounded **Files** metadata, read-only **Git** status, and
@@ -67,13 +68,14 @@ prototype and compatibility path.
 
 ## Session lifetime
 
-Closing the workspace window detaches it from the terminal view without ending active
-sessions. The menu bar item keeps the app process running and can reopen the same workspace
-and terminal. This retention boundary is the lifetime of the current Byori app process:
+Closing the workspace window detaches it from the terminal view without ending active sessions.
+With tmux 3.2 or later, Byori uses its private tmux server so sessions can also survive a full app
+quit. Existing sessions created by older Byori builds on the default tmux server remain
+reattachable. Without a supported tmux, retention is limited to the current Byori process and the
+workspace surfaces that limitation before launch:
 
-- **Quit Byori** stops active terminal processes before terminating the app.
-- A later app launch does not reattach to or automatically resume sessions from the previous
-  process.
+- **Quit Byori** detaches tmux-backed sessions and stops only non-persistent fallback sessions.
+- A later app launch discovers retained sessions and offers to reattach to their existing PTYs.
 - An ended session offers **New Session** for the same task. An active session cannot be
   closed and must be stopped first.
 - **Close** persistently hides the ended session from the sidebar without deleting its task
@@ -94,6 +96,9 @@ and terminal. This retention boundary is the lifetime of the current Byori app p
   `~/.agents/skills`
 - Inspect a bounded, Settings-only list of each agent's user MCP registrations and Skills;
   edit configuration/`SKILL.md` at its source or remove a validated item after backup
+- Optionally launch new Claude Code sessions through Upstage Solar or another
+  Anthropic-compatible model API; keep its credential in macOS Keychain and restore the ordinary
+  Claude environment without rewriting `~/.claude`
 - Keep secret-bearing MCP command arguments, headers, environment values, and tokens out of
   the inventory UI and Activity history; Claude.ai-owned connectors are shown read-only
 - Keep ByoriDB installation separate from agent wiring: database install/update does not
@@ -110,9 +115,10 @@ and terminal. This retention boundary is the lifetime of the current Byori app p
   runtime work, otherwise waits for the exact operation, and always waits for cleanup or
   rollback before terminating
 
-Vendor CLI installation buttons ask for confirmation before running and invoke only the
-official Anthropic/OpenAI installation scripts. Each CLI handles its own authentication
-and login; Byori does not read or store tokens.
+Vendor CLI installation buttons ask for confirmation before running and invoke only the official
+Anthropic/OpenAI installation scripts. Each CLI handles its own login. Byori reads no existing
+vendor credential; the optional Claude model API setting stores only a credential the user enters
+explicitly and never presents it again.
 
 ## Development and verification
 

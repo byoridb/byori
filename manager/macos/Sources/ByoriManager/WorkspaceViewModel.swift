@@ -204,7 +204,37 @@ enum WorkspaceSourceTreeItemKind: String, Hashable {
         switch self {
         case .primary: return "Primary"
         case .managedWorktree: return "Worktree"
-        case .externalCheckout: return "Checkout"
+        case .externalCheckout: return "External"
+        }
+    }
+
+    /// Used where the checkout type changes the user's decision, such as the
+    /// launch sheet. A branch name alone cannot distinguish the original folder
+    /// from another worktree checked out at the same revision.
+    var locationLabel: String {
+        switch self {
+        case .primary: return "Primary checkout"
+        case .managedWorktree: return "Byori worktree"
+        case .externalCheckout: return "External checkout"
+        }
+    }
+
+    var removalLabel: String {
+        switch self {
+        case .primary: return "Primary Checkout"
+        case .managedWorktree: return "Worktree"
+        case .externalCheckout: return "External Checkout"
+        }
+    }
+
+    var sessionLocationDetail: String {
+        switch self {
+        case .primary:
+            return "The agent will work in the original project folder."
+        case .managedWorktree:
+            return "The agent will work in a Byori-managed Git worktree, not the original project folder."
+        case .externalCheckout:
+            return "The agent will work in a Git checkout managed outside Byori."
         }
     }
 }
@@ -308,6 +338,55 @@ enum WorkspaceSessionItemStatus: String, CaseIterable, Hashable {
         case .preparing, .running, .waitingForUser: return true
         case .completed, .failed, .cancelled, .timedOut: return false
         }
+    }
+}
+
+enum WorkspaceSessionSurface: String, CaseIterable, Identifiable, Hashable {
+    case activity
+    case terminal
+
+    var id: Self { self }
+
+    var label: String {
+        switch self {
+        case .activity: return "Activity"
+        case .terminal: return "Terminal"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .activity: return "chart.xyaxis.line"
+        case .terminal: return "terminal"
+        }
+    }
+}
+
+/// Keeps each session on the surface the user last chose while the workspace
+/// window is open. Sessions without an explicit choice always start on Activity.
+struct WorkspaceSessionSurfacePreferences: Equatable {
+    private var selectionBySessionID: [String: WorkspaceSessionSurface] = [:]
+
+    func selection(for sessionID: String) -> WorkspaceSessionSurface {
+        selectionBySessionID[sessionID] ?? .activity
+    }
+
+    mutating func select(_ surface: WorkspaceSessionSurface, for sessionID: String) {
+        selectionBySessionID[sessionID] = surface
+    }
+}
+
+enum WorkspaceSessionDurationFormatter {
+    static func string(startedAt: Date?, endedAt: Date?, now: Date) -> String {
+        guard let startedAt else { return "Not started" }
+        let elapsed = max(0, Int((endedAt ?? now).timeIntervalSince(startedAt)))
+        let hours = elapsed / 3_600
+        let minutes = (elapsed % 3_600) / 60
+        let seconds = elapsed % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "%d:%02d", minutes, seconds)
     }
 }
 
