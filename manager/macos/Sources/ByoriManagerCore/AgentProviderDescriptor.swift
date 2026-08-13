@@ -2,9 +2,9 @@ import Foundation
 
 /// How Byori installs a CLI, when it can.
 ///
-/// A missing method is not a gap to fill in later with a guess: these run a
-/// shell pipeline fetched over the network, so one is only listed for a CLI
-/// whose official install command has actually been confirmed.
+/// A missing method is not a gap to fill in later with a guess: these execute a
+/// package-manager command or a shell pipeline fetched over the network, so one
+/// is only listed for a CLI whose official install command has been confirmed.
 public enum AgentInstallMethod: Equatable, Sendable {
     case shellPipeline(command: String, shell: String)
 
@@ -207,17 +207,20 @@ public enum AgentProviderCatalog {
                 displayName: "Gemini CLI",
                 executableName: "gemini",
                 systemImage: "diamond",
-                // Gemini CLI is distributed through package managers rather than
-                // a single official install script, so Byori detects it and
-                // leaves installing it to the user.
-                install: nil,
+                // Google documents Homebrew as an official macOS installation
+                // method. Unlike the other providers, Gemini has no native
+                // install script, so the package-manager command is intentional.
+                install: .shellPipeline(
+                    command: "/usr/bin/env brew install gemini-cli",
+                    shell: "/bin/bash"
+                ),
                 mcp: .gemini,
                 // It reads GEMINI.md context files, not a skills directory of
                 // the shape Byori installs.
                 skillsRootRelativePath: nil,
                 supportsModelFlag: true,
                 launchArguments: .none,
-                limitations: "Byori does not install this CLI or sync a Skill to it. MCP is connected."
+                limitations: "Byori does not sync a Skill to this CLI. MCP is connected."
             )
         case .cursorAgent:
             return AgentProviderDescriptor(
@@ -225,13 +228,16 @@ public enum AgentProviderCatalog {
                 displayName: "Cursor CLI",
                 executableName: "cursor-agent",
                 systemImage: "cursorarrow.rays",
-                install: nil,
+                install: .shellPipeline(
+                    command: "/usr/bin/curl -fsSL https://cursor.com/install | /bin/bash",
+                    shell: "/bin/bash"
+                ),
                 // Left unset rather than guessed: see AgentMCPCommandStyle.
                 mcp: nil,
                 skillsRootRelativePath: nil,
                 supportsModelFlag: false,
                 launchArguments: .none,
-                limitations: "Byori launches this CLI only. Install it and configure MCP yourself."
+                limitations: "Byori installs and launches this CLI. Configure MCP yourself."
             )
         case .opencode:
             return AgentProviderDescriptor(
@@ -239,12 +245,15 @@ public enum AgentProviderCatalog {
                 displayName: "opencode",
                 executableName: "opencode",
                 systemImage: "terminal",
-                install: nil,
+                install: .shellPipeline(
+                    command: "/usr/bin/curl -fsSL https://opencode.ai/install | /bin/bash",
+                    shell: "/bin/bash"
+                ),
                 mcp: nil,
                 skillsRootRelativePath: nil,
                 supportsModelFlag: false,
                 launchArguments: .none,
-                limitations: "Byori launches this CLI only. Install it and configure MCP yourself."
+                limitations: "Byori installs and launches this CLI. Configure MCP yourself."
             )
         }
     }

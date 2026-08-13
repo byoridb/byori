@@ -20,7 +20,10 @@ Project
         └── Session (사용자가 고른 코딩 agent 하나 + model 선택 하나)
 ```
 
-- Project는 사용자가 명시적으로 등록하고 신뢰한 로컬 Git repository다.
+- Project는 사용자가 명시적으로 등록하고 신뢰한 로컬 Git repository다. **새 프로젝트
+  생성…**은 이름을 정한 폴더를 만들고 `main` repository로 초기화한 뒤, remote나 첫 commit을
+  추가하지 않고 등록한다. **폴더 열기…**는 기존 폴더를 모두 선택할 수 있으며, Git
+  repository가 아니면 기존 파일을 그대로 둔 채 `git init`을 실행하기 전에 별도로 확인한다.
 - Source Tree나 Worktree는 코딩 CLI가 실행될 checkout을 나타낸다. 이 릴리스의
   앱은 등록된 worktree를 표시할 수는 있지만 새로 생성하지는 않는다.
 - Task는 해당 checkout에서 연관된 session을 묶는다.
@@ -39,7 +42,8 @@ prototype/호환 경로로 남아 있다.
 ## 메인 창
 
 - 왼쪽 sidebar는 **Project → Source Tree/Worktree → Task → Session** 계층을
-  보여 주고 현재 checkout을 명확히 한다. Source Tree의 `+`는 새 Task용 session sheet를,
+  보여 주고 현재 checkout을 명확히 한다. 상단 `+` 메뉴에서 새 project를 만들거나 기존
+  폴더를 열 수 있다. Source Tree의 `+`는 새 Task용 session sheet를,
   Task의 `+`는 정확히 그 Task용 sheet를 연다. Session 이름은 두 단어로 자동 제안되고
   수정할 수 있으며, 이름이 없는 기존 session은 provider/model 이름으로 표시한다.
   종료된 session은 **Close**로 숨기고 해당 Task 행의
@@ -88,7 +92,8 @@ tmux 3.2 이상이면 Byori 전용 tmux server를 사용하므로 앱을 완전�
 - 번들 MCP·Skill 자산과 다운로드한 호환 ByoriDB 엔진 설치·복구, 최신 릴리스 업데이트,
   인증된 readiness 및 launchd 상태 확인
 - ByoriDB 시작·중지·재시작, 서버 로그 열기
-- Claude Code/Codex CLI 탐지와 공식 설치 스크립트를 통한 설치·업데이트
+- Claude Code, Codex, Gemini CLI, Cursor CLI, OpenCode 탐지와 각 벤더의 공식 설치 명령을
+  통한 설치·업데이트
 - 각 CLI의 공식 `mcp add/remove` 명령을 통한 `byoridb` stdio MCP 설정
 - Claude의 `~/.claude/skills`, Codex의 `~/.agents/skills`에 Memory Skill 동기화
 - Settings에서 각 agent의 사용자 범위 MCP·Skill 목록을 제한된 크기로 조회하고,
@@ -108,7 +113,7 @@ tmux 3.2 이상이면 Byori 전용 tmux server를 사용하므로 앱을 완전�
 - Settings 창을 닫아도 작업은 계속하고, 앱 종료 시 snapshot으로 복구 가능한 runtime
   작업만 취소하며 나머지는 정확히 그 작업이 끝날 때까지 기다린 뒤 종료
 
-벤더 CLI 설치 버튼은 실행 전 확인을 받고 Anthropic/OpenAI의 공식 설치 스크립트만 실행한다.
+벤더 CLI 설치 버튼은 실행 전 확인을 받고 각 벤더의 공식 설치 명령만 실행한다.
 각 CLI가 자체 로그인을 처리한다. Byori는 기존 벤더 credential을 읽지 않으며, 선택형 Claude 모델
 API 설정에서 사용자가 직접 입력한 credential만 저장하고 화면에 다시 표시하지 않는다.
 

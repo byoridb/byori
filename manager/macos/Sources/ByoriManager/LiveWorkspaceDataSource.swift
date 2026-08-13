@@ -304,8 +304,110 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         }
     }
 
+    func inspectProjectFolder(at folderURL: URL) async throws -> WorkspaceProjectFolderStatus {
+        let directory = try Self.existingDirectory(folderURL)
+        do {
+            return .gitRepository(try await git.repositoryRoot(at: directory))
+        } catch let error as WorkspaceError {
+            if case .notGitRepository = error {
+                return .requiresInitialization(directory)
+            }
+            throw error
+        }
+    }
+
+    func initializeAndRegisterProject(at folderURL: URL) async throws {
+        try await operationGate.perform { [self] in
+            let directory = try Self.existingDirectory(folderURL)
+            let root: URL
+            do {
+                root = try await git.initializeRepository(at: directory)
+            } catch {
+                throw WorkspaceAdapterError.invalidState(
+                    "Git could not be initialized in \(directory.path). \(error.localizedDescription)"
+                )
+            }
+            do {
+                try await registerProjectLocked(at: root)
+            } catch {
+                throw WorkspaceAdapterError.invalidState(
+                    "Git was initialized in \(root.path), but Byori could not register it. You can open the folder again. \(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
+    func createProject(named name: String, in parentDirectoryURL: URL) async throws {
+        try await operationGate.perform { [self] in
+            let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            try Self.validateProjectName(normalizedName)
+            let parent = try Self.existingDirectory(parentDirectoryURL)
+            let destination = parent
+                .appendingPathComponent(normalizedName, isDirectory: true)
+                .standardizedFileURL
+            guard destination.deletingLastPathComponent().standardizedFileURL == parent.standardizedFileURL else {
+                throw WorkspaceAdapterError.invalidState("Choose a project name inside the selected location.")
+            }
+            guard !FileManager.default.fileExists(atPath: destination.path) else {
+                throw WorkspaceAdapterError.invalidState(
+                    "A file or folder already exists at \(destination.path). Choose another project name."
+                )
+            }
+
+            do {
+                try FileManager.default.createDirectory(
+                    at: destination,
+                    withIntermediateDirectories: false
+                )
+            } catch {
+                throw WorkspaceAdapterError.invalidState(
+                    "The project folder could not be created at \(destination.path). \(error.localizedDescription)"
+                )
+            }
+
+            let root: URL
+            do {
+                root = try await git.initializeRepository(at: destination)
+            } catch {
+                throw WorkspaceAdapterError.invalidState(
+                    "The folder was created at \(destination.path), but Git initialization failed. The folder was left in place. \(error.localizedDescription)"
+                )
+            }
+            do {
+                try await registerProjectLocked(at: root)
+            } catch {
+                throw WorkspaceAdapterError.invalidState(
+                    "The project and Git repository were created at \(root.path), but Byori could not register them. Open the folder again to retry. \(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
     private func registerProjectLocked(at repositoryURL: URL) async throws {
         _ = try await projectRegistry.registerProject(at: repositoryURL, memorySpace: nil)
+    }
+
+    private static func existingDirectory(_ url: URL) throws -> URL {
+        let directory = url.resolvingSymlinksInPath().standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard directory.isFileURL,
+              FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw WorkspaceAdapterError.invalidState(
+                "Choose an existing local folder. \(directory.path) is not available."
+            )
+        }
+        return directory
+    }
+
+    private static func validateProjectName(_ name: String) throws {
+        guard !name.isEmpty, name != ".", name != "..", name.utf8.count <= 255,
+              !name.contains("/"), !name.contains(":"),
+              !name.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) else {
+            throw WorkspaceAdapterError.invalidState(
+                "Use a non-empty project name without slashes, colons, or control characters."
+            )
+        }
     }
 
     func removeProject(id: String) async throws {

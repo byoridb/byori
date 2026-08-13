@@ -82,7 +82,7 @@ enum ManagerAction: Identifiable, Equatable {
     var confirmationDetail: String {
         switch self {
         case let .installCLI(kind):
-            return "\(kind.displayName)의 공식 설치 스크립트를 다운로드해 실행합니다. 로그인 정보는 Byori가 다루지 않습니다."
+            return "\(kind.displayName)의 공식 설치 명령을 실행합니다. 로그인 정보는 Byori가 다루지 않습니다."
         case .updateByori:
             return "GitHub의 최신 Byori 릴리스 설치기를 실행합니다. 기존 데이터와 root 비밀번호는 보존됩니다."
         case .updateApp:

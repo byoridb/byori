@@ -339,6 +339,31 @@ public struct WorkspaceGitService: WorkspaceGitInspecting, Sendable {
             .standardizedFileURL
     }
 
+    /// Initializes a local repository without invoking a shell. Callers create
+    /// and approve the directory first; this method only adds Git metadata and
+    /// deliberately does not configure a remote or create a commit.
+    public func initializeRepository(at directory: URL) async throws -> URL {
+        let candidate = directory.standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw WorkspaceError.notGitRepository("Project folder does not exist: \(candidate.path)")
+        }
+
+        let result = await git(
+            ["-C", candidate.path, "init", "-b", "main"],
+            workingDirectory: candidate.path
+        )
+        guard result.succeeded else {
+            let message = bounded(result.output, limit: 2_048)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw WorkspaceError.gitCommandFailed(
+                message.isEmpty ? "git init failed for \(candidate.path)" : message
+            )
+        }
+        return try await repositoryRoot(at: candidate)
+    }
+
     public func originRemote(at repositoryRoot: URL) async throws -> String? {
         let result = await git(
             ["-C", repositoryRoot.path, "config", "--get", "remote.origin.url"],

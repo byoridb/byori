@@ -20,7 +20,11 @@ Project
         └── Session (one user-selected coding agent + one model choice)
 ```
 
-- A project is an explicitly registered and trusted local Git repository.
+- A project is an explicitly registered and trusted local Git repository. **Create New Project…**
+  creates a named folder, initializes a `main` repository, and registers it without adding a
+  remote or initial commit. **Open Folder…** accepts any existing folder; if it is not already a
+  Git repository, Byori asks for confirmation before running `git init` and keeps existing files
+  in place.
 - A source tree or worktree identifies the checkout in which the coding CLI runs. The
   app can display registered worktrees, but this release does not create them.
 - A task groups related sessions for that checkout.
@@ -40,7 +44,8 @@ prototype and compatibility path.
 ## Main window
 
 - The left sidebar shows the **Project → Source Tree/Worktree → Task → Session**
-  outline and makes the selected checkout explicit. A source-tree `+` opens a session sheet
+  outline and makes the selected checkout explicit. Its top `+` menu creates a new project or
+  opens an existing folder. A source-tree `+` opens a session sheet
   for a new task; a task `+` targets that exact task. The sheet proposes an editable two-word
   session name, while legacy unnamed sessions retain the provider/model fallback. An ended
   session can be hidden with **Close** and restored from its Task row's
@@ -91,8 +96,8 @@ workspace surfaces that limitation before launch:
 - Install or repair the bundled MCP and Skill assets and a downloaded compatible
   ByoriDB engine; update to the latest release; and check authenticated readiness and launchd status
 - Start, stop, and restart ByoriDB, and open server logs
-- Detect the Claude Code/Codex CLIs and install or update them through their official
-  installation scripts
+- Detect Claude Code, Codex, Gemini CLI, Cursor CLI, and OpenCode, and install or update them
+  through each vendor's official installation command
 - Configure the `byoridb` stdio MCP integration through each CLI's official
   `mcp add/remove` commands
 - Synchronize the Memory Skill to Claude's `~/.claude/skills` and Codex's
@@ -119,7 +124,7 @@ workspace surfaces that limitation before launch:
   rollback before terminating
 
 Vendor CLI installation buttons ask for confirmation before running and invoke only the official
-Anthropic/OpenAI installation scripts. Each CLI handles its own login. Byori reads no existing
+vendor installation command. Each CLI handles its own login. Byori reads no existing
 vendor credential; the optional Claude model API setting stores only a credential the user enters
 explicitly and never presents it again.
 

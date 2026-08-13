@@ -89,7 +89,8 @@ struct WorkspaceView<TerminalHost: View>: View {
         HSplitView {
             WorkspaceSidebar(
                 model: model,
-                addProject: chooseProject,
+                createProject: model.presentNewProject,
+                openProject: chooseProjectFolder,
                 openSettings: openSettings,
                 requestRemoval: { removalRequest = $0 },
                 restoreSourceTree: { sourceTree in
@@ -129,6 +130,9 @@ struct WorkspaceView<TerminalHost: View>: View {
         .sheet(isPresented: newSessionPresentation) {
             NewWorkspaceSessionSheet(model: model)
         }
+        .sheet(isPresented: newProjectPresentation) {
+            NewWorkspaceProjectSheet(model: model)
+        }
         .sheet(isPresented: newSourceTreePresentation) {
             NewWorkspaceSourceTreeSheet(model: model)
         }
@@ -160,6 +164,20 @@ struct WorkspaceView<TerminalHost: View>: View {
         } message: {
             if let request = removalRequest {
                 Text(request.disabledReason ?? request.message)
+            }
+        }
+        .confirmationDialog(
+            "Initialize Git Repository?",
+            isPresented: projectInitializationPresentation,
+            titleVisibility: .visible
+        ) {
+            Button("Initialize and Add") {
+                Task { await model.initializePendingProject() }
+            }
+            Button("Cancel", role: .cancel) { model.cancelProjectInitialization() }
+        } message: {
+            if let request = model.pendingProjectInitialization {
+                Text("\(request.displayName) is not a Git repository. Byori will run git init with a main branch in \(request.folderURL.path), then add it as a trusted project. Existing files stay in place and no remote is added.")
             }
         }
     }
@@ -194,12 +212,12 @@ struct WorkspaceView<TerminalHost: View>: View {
         if model.projects.isEmpty {
             WorkspaceUnavailableView(
                 icon: "folder.badge.plus",
-                title: "Add a Git project",
-                detail: "Byori only opens sessions in projects you explicitly register and trust.",
-                primaryTitle: "Add Git Project…",
-                primaryAction: chooseProject,
-                secondaryTitle: "Settings",
-                secondaryAction: openSettings
+                title: "Start a project",
+                detail: "Create a new local project or open any folder you trust. Byori will ask before initializing Git in an existing folder.",
+                primaryTitle: "Create New Project…",
+                primaryAction: model.presentNewProject,
+                secondaryTitle: "Open Folder…",
+                secondaryAction: chooseProjectFolder
             )
         } else if let session = model.selectedSession,
                   let lineage = model.selectedLineage,
@@ -225,8 +243,8 @@ struct WorkspaceView<TerminalHost: View>: View {
                 icon: "folder.badge.questionmark",
                 title: "Project folder is missing",
                 detail: "Byori cannot find \(project.repositoryURL.path). Locate or re-register the project before opening a session.",
-                primaryTitle: "Add Git Project…",
-                primaryAction: chooseProject,
+                primaryTitle: "Open Folder…",
+                primaryAction: chooseProjectFolder,
                 secondaryTitle: "Settings",
                 secondaryAction: openSettings
             )
@@ -259,6 +277,13 @@ struct WorkspaceView<TerminalHost: View>: View {
         Binding(
             get: { model.isPresentingNewSourceTree },
             set: { if !$0 { model.dismissNewSourceTree() } }
+        )
+    }
+
+    private var newProjectPresentation: Binding<Bool> {
+        Binding(
+            get: { model.isPresentingNewProject },
+            set: { if !$0 { model.dismissNewProject() } }
         )
     }
 
@@ -296,6 +321,13 @@ struct WorkspaceView<TerminalHost: View>: View {
         )
     }
 
+    private var projectInitializationPresentation: Binding<Bool> {
+        Binding(
+            get: { model.pendingProjectInitialization != nil },
+            set: { if !$0 { model.cancelProjectInitialization() } }
+        )
+    }
+
     private func performRemoval(_ request: WorkspaceRemovalRequest) {
         removalRequest = nil
         Task {
@@ -319,18 +351,18 @@ struct WorkspaceView<TerminalHost: View>: View {
         }
     }
 
-    private func chooseProject() {
+    private func chooseProjectFolder() {
         let panel = NSOpenPanel()
-        panel.title = "Add Git Project"
-        panel.message = "Choose a local Git repository you trust Byori to use."
-        panel.prompt = "Add Project"
+        panel.title = "Open Project Folder"
+        panel.message = "Choose a local folder you trust Byori to use. If it is not a Git repository, Byori will ask before initializing it."
+        panel.prompt = "Open Folder"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.resolvesAliases = true
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
-            Task { @MainActor in await model.registerProject(at: url) }
+            Task { @MainActor in await model.addProjectFolder(at: url) }
         }
     }
 }
@@ -339,7 +371,8 @@ struct WorkspaceView<TerminalHost: View>: View {
 
 private struct WorkspaceSidebar: View {
     @ObservedObject var model: WorkspaceViewModel
-    let addProject: () -> Void
+    let createProject: () -> Void
+    let openProject: () -> Void
     let openSettings: () -> Void
     let requestRemoval: (WorkspaceRemovalRequest) -> Void
     let restoreSourceTree: (WorkspaceHiddenSourceTreeItem) -> Void
@@ -355,14 +388,22 @@ private struct WorkspaceSidebar: View {
                         .controlSize(.small)
                         .accessibilityLabel("Adding project")
                 }
-                Button(action: addProject) {
-                    Label("Add Git Project", systemImage: "plus")
+                Menu {
+                    Button(action: createProject) {
+                        Label("Create New Project…", systemImage: "folder.badge.plus")
+                    }
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+                    Button(action: openProject) {
+                        Label("Open Folder…", systemImage: "folder")
+                    }
+                    .keyboardShortcut("o", modifiers: [.command, .shift])
+                } label: {
+                    Image(systemName: "plus")
+                        .accessibilityLabel("Add Project")
                 }
-                .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
-                .keyboardShortcut("o", modifiers: [.command, .shift])
-                .disabled(model.isRegisteringProject)
-                .help("Add Git Project…")
+                .disabled(model.isRegisteringProject || model.isCreatingProject)
+                .help("Create or open a project")
             }
             .padding(.horizontal, 14)
             .frame(height: 48)
@@ -2099,6 +2140,142 @@ private enum WorkspacePalette {
         case .completed: return .green
         case .failed, .timedOut: return .red
         case .cancelled: return .secondary
+        }
+    }
+}
+
+/// Creates one ordinary local folder and makes the Git boundary explicit. The
+/// location remains user-owned; Byori only initializes and registers it.
+private struct NewWorkspaceProjectSheet: View {
+    @ObservedObject var model: WorkspaceViewModel
+    @FocusState private var isNameFocused: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Create New Project")
+                        .font(.title2.weight(.semibold))
+                    Text("Create a local folder and start working in Byori.")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(20)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Project name")
+                        .font(.headline)
+                    TextField("My Project", text: $model.newProjectDraft.name)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($isNameFocused)
+                        .accessibilityHint("Also becomes the new folder name")
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Location")
+                        .font(.headline)
+                    HStack(spacing: 8) {
+                        Text(model.newProjectDraft.parentDirectoryURL.path)
+                            .font(.callout.monospaced())
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button("Choose…", action: chooseLocation)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Project folder")
+                        .font(.headline)
+                    Text(destinationPath)
+                        .font(.callout.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+
+                Label(
+                    "Byori initializes Git with a main branch and registers this folder as trusted. No remote or initial commit is added.",
+                    systemImage: "info.circle"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                if let error = model.newProjectError {
+                    Label("Project could not be created", systemImage: "exclamationmark.triangle")
+                        .font(.headline)
+                        .foregroundStyle(.red)
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+            .padding(20)
+
+            Divider()
+
+            HStack {
+                if let message = model.newProjectValidationMessage {
+                    Label(message, systemImage: "exclamationmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Cancel") { model.dismissNewProject() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(model.isCreatingProject)
+                Button {
+                    Task { await model.createProject() }
+                } label: {
+                    if model.isCreatingProject {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Creating…")
+                        }
+                    } else {
+                        Text("Create Project")
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(!model.canCreateProject)
+            }
+            .padding(20)
+        }
+        .frame(width: 560)
+        .onAppear { isNameFocused = true }
+        .onChange(of: model.newProjectDraft.name) { _ in model.clearNewProjectError() }
+        .onChange(of: model.newProjectDraft.parentDirectoryURL) { _ in model.clearNewProjectError() }
+    }
+
+    private var destinationPath: String {
+        model.newProjectDestinationURL?.path
+            ?? model.newProjectDraft.parentDirectoryURL.appendingPathComponent("Project Name").path
+    }
+
+    private func chooseLocation() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Project Location"
+        panel.message = "The new project folder will be created inside this location."
+        panel.prompt = "Choose Location"
+        panel.directoryURL = model.newProjectDraft.parentDirectoryURL
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.resolvesAliases = true
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                model.newProjectDraft.parentDirectoryURL = url.resolvingSymlinksInPath().standardizedFileURL
+            }
         }
     }
 }

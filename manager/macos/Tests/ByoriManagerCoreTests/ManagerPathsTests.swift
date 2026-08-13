@@ -67,9 +67,9 @@ final class ManagerPathsTests: XCTestCase {
         ))
     }
 
-    /// A CLI Byori only launches has no skills directory. Without this, a
-    /// catalog edit could aim a skill write at a layout that was never checked.
-    func testLaunchOnlyCLIsHaveNoSkillDirectory() {
+    /// A provider without verified Skill support has no skills directory.
+    /// Without this, a catalog edit could aim a write at an unchecked layout.
+    func testProvidersWithoutSkillSupportHaveNoSkillDirectory() {
         let paths = ManagerPaths(home: temporaryRoot, runtimeRoot: temporaryRoot)
 
         for kind in AgentKind.allCases where !kind.descriptor.managesSkill {
@@ -81,6 +81,28 @@ final class ManagerPathsTests: XCTestCase {
             }
         }
         XCTAssertNotNil(paths.skillDirectory(.byoridbMemory, for: .claude))
+    }
+
+    func testOfficialOpenCodeInstallDirectoriesAreDiscoverable() throws {
+        let paths = ManagerPaths(home: temporaryRoot, runtimeRoot: temporaryRoot)
+
+        for relativeDirectory in ["bin", ".opencode/bin"] {
+            let executable = temporaryRoot
+                .appendingPathComponent(relativeDirectory, isDirectory: true)
+                .appendingPathComponent("opencode")
+            try FileManager.default.createDirectory(
+                at: executable.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data("#!/bin/sh\n".utf8).write(to: executable)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: executable.path
+            )
+
+            XCTAssertEqual(paths.executable(named: "opencode")?.path, executable.path)
+            try FileManager.default.removeItem(at: executable)
+        }
     }
 
     func testKnowledgeGraphLayoutsAreDeterministicCompleteAndFinite() {
