@@ -341,55 +341,6 @@ enum WorkspaceSessionItemStatus: String, CaseIterable, Hashable {
     }
 }
 
-enum WorkspaceSessionSurface: String, CaseIterable, Identifiable, Hashable {
-    case activity
-    case terminal
-
-    var id: Self { self }
-
-    var label: String {
-        switch self {
-        case .activity: return "Activity"
-        case .terminal: return "Terminal"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .activity: return "chart.xyaxis.line"
-        case .terminal: return "terminal"
-        }
-    }
-}
-
-/// Keeps each session on the surface the user last chose while the workspace
-/// window is open. Sessions without an explicit choice always start on Activity.
-struct WorkspaceSessionSurfacePreferences: Equatable {
-    private var selectionBySessionID: [String: WorkspaceSessionSurface] = [:]
-
-    func selection(for sessionID: String) -> WorkspaceSessionSurface {
-        selectionBySessionID[sessionID] ?? .activity
-    }
-
-    mutating func select(_ surface: WorkspaceSessionSurface, for sessionID: String) {
-        selectionBySessionID[sessionID] = surface
-    }
-}
-
-enum WorkspaceSessionDurationFormatter {
-    static func string(startedAt: Date?, endedAt: Date?, now: Date) -> String {
-        guard let startedAt else { return "Not started" }
-        let elapsed = max(0, Int((endedAt ?? now).timeIntervalSince(startedAt)))
-        let hours = elapsed / 3_600
-        let minutes = (elapsed % 3_600) / 60
-        let seconds = elapsed % 60
-        if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
-        }
-        return String(format: "%d:%02d", minutes, seconds)
-    }
-}
-
 struct WorkspaceProviderOption: Identifiable, Hashable {
     let id: String
     var displayName: String

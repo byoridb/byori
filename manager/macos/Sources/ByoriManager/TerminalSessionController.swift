@@ -3,6 +3,89 @@ import ByoriManagerCore
 import Darwin
 import SwiftTerm
 
+@MainActor
+final class TerminalClipboardImageStore {
+    private let directory: URL
+    private let fileManager: FileManager
+
+    init(
+        sessionID: UUID,
+        temporaryDirectory: URL = FileManager.default.temporaryDirectory,
+        fileManager: FileManager = .default
+    ) {
+        directory = temporaryDirectory
+            .appendingPathComponent("Byori", isDirectory: true)
+            .appendingPathComponent("ClipboardImages", isDirectory: true)
+            .appendingPathComponent(sessionID.uuidString.lowercased(), isDirectory: true)
+        self.fileManager = fileManager
+    }
+
+    func insertionText(from pasteboard: NSPasteboard) -> String? {
+        guard let image = NSImage(pasteboard: pasteboard),
+              let url = persistPNG(image) else { return nil }
+        return Self.shellQuoted(url.path) + " "
+    }
+
+    @discardableResult
+    func persistPNG(_ image: NSImage) -> URL? {
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]) else {
+            return nil
+        }
+        do {
+            try fileManager.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
+            let filename = "paste-\(formatter.string(from: Date()))-\(UUID().uuidString.lowercased()).png"
+            let destination = directory.appendingPathComponent(filename)
+            try png.write(to: destination, options: [.atomic])
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+            return destination
+        } catch {
+            return nil
+        }
+    }
+
+    static func shellQuoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+}
+
+/// SwiftTerm intentionally pastes only text. A screenshot on the macOS
+/// pasteboard therefore used to become an empty paste. Preserve ordinary text
+/// behavior, but turn a bitmap into a private session-temporary PNG and paste
+/// its quoted path so Claude Code, Codex, or an ordinary shell can read it.
+@MainActor
+final class ByoriLocalProcessTerminalView: LocalProcessTerminalView {
+    private let imageStore: TerminalClipboardImageStore
+
+    init(frame: CGRect, sessionID: UUID) {
+        imageStore = TerminalClipboardImageStore(sessionID: sessionID)
+        super.init(frame: frame)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func paste(_ sender: Any) {
+        if let text = imageStore.insertionText(from: .general) {
+            insertText(
+                text,
+                replacementRange: NSRange(location: 0, length: 0)
+            )
+        } else {
+            super.paste(sender)
+        }
+    }
+}
+
 enum TerminalSessionStatus: Equatable {
     case starting
     case running
@@ -289,6 +372,15 @@ final class TerminalSessionController: ObservableObject {
         retained.terminalView.process.send(data: bytes[...])
     }
 
+    /// Inserts without Return, then restores keyboard focus to the terminal.
+    /// Quick commands are suggestions, not actions; only the user decides when
+    /// to edit or execute the resulting input.
+    func insert(_ text: String, into sessionID: UUID) throws {
+        try send(text, to: sessionID)
+        guard let terminal = retainedSessions[sessionID]?.terminalView else { return }
+        terminal.window?.makeFirstResponder(terminal)
+    }
+
     func interrupt(_ sessionID: UUID) throws {
         guard let retained = retainedSessions[sessionID] else {
             throw TerminalSessionControllerError.missingSession(sessionID)
@@ -399,8 +491,9 @@ final class TerminalSessionController: ObservableObject {
     }
 
     private func makeTerminalView(descriptor: TerminalLaunchDescriptor) -> LocalProcessTerminalView {
-        let terminal = LocalProcessTerminalView(
-            frame: NSRect(x: 0, y: 0, width: 960, height: 640)
+        let terminal = ByoriLocalProcessTerminalView(
+            frame: NSRect(x: 0, y: 0, width: 960, height: 640),
+            sessionID: descriptor.id
         )
         terminal.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
         terminal.nativeForegroundColor = NSColor(

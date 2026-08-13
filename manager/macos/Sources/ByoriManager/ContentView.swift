@@ -1,8 +1,8 @@
 /*
- THESIS: Verified agent progress owns attention while the raw terminal stays one explicit tab away; refuse guessed prompts and automatic fan-out.
- OWN-WORLD: Native macOS light chrome, an edge-bound Activity surface, near-black terminal, 1px separators, system UI type, and restrained semantic state accents.
- STORY: Choose a project and checkout, follow its agent's verified Activity flow, open Terminal when needed, then inspect Files, Git, or shared ByoriDB knowledge.
- FIRST VIEWPORT: A 290pt project/checkout outline at left, default Activity diagram center with an Activity/Terminal switch, and a 320pt tabbed inspector at right.
+ THESIS: The real agent terminal owns attention; Byori keeps lineage, commands, and durable context within reach without interpreting CLI output.
+ OWN-WORLD: Native macOS light chrome, one uninterrupted near-black terminal, 1px separators, system UI type, and restrained semantic state accents.
+ STORY: Choose a project and checkout, work directly in its agent terminal, insert an installed Skill or plugin command when useful, then inspect Files, Git, or shared ByoriDB knowledge.
+ FIRST VIEWPORT: A 290pt project/checkout outline at left, the selected session's terminal in the center, and a 320pt tabbed inspector at right.
  FORM: Source-tree-first native Operate workspace, option 3 of 3 combined with option 1 Context depth; seed key direct-c+a-20260806.
  FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
  */
@@ -19,7 +19,23 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            WorkspaceView(model: workspaceModel, openSettings: openSettings) { session in
+            WorkspaceView(
+                model: workspaceModel,
+                openSettings: openSettings,
+                commandGroups: { session in
+                    managerModel.commandGroups(for: AgentKind(rawValue: session.providerID))
+                },
+                insertTerminalText: { session, text in
+                    guard let id = session.nativeSessionID.flatMap(UUID.init(uuidString:)) else {
+                        return
+                    }
+                    do {
+                        try terminalController.insert(text, into: id)
+                    } catch {
+                        NSSound.beep()
+                    }
+                }
+            ) { session in
                 if let nativeID = session.nativeSessionID.flatMap(UUID.init(uuidString:)),
                    terminalController.snapshot(for: nativeID) != nil {
                     TerminalSessionHost(

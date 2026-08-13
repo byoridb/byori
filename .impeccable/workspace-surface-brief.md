@@ -24,6 +24,7 @@
 | New Session action | Small `+` on every eligible source-tree/task row plus toolbar/shortcut; exact clicked target survives sheet presentation | Native `Button` and sheet |
 | Session identity | Editable generated two-word name; recorded launch provider/model remains secondary identity and legacy fallback | Semantic text + SF Symbols |
 | Interactive terminal | Dominant center region, one visible session at a time | PTY-backed AppKit terminal host with semantic accessibility label |
+| Terminal input helpers | Clipboard images become private temporary PNG paths; installed Skill/plugin commands insert without execution | SwiftTerm paste override + native `Menu` |
 | Session controls | Running state, Stop, terminal focus/resize | Native toolbar controls |
 | Files/Git/Context | 300–320pt right inspector with one selected tab | SwiftUI segmented/tab navigation and outline/list content |
 | ByoriDB Context | Decision/module/task checkpoint rows with provenance and empty/error states | SwiftUI list/grouped rows fed by project space |
