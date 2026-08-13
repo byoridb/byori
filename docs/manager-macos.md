@@ -45,9 +45,12 @@ prototype and compatibility path.
   session name, while legacy unnamed sessions retain the provider/model fallback. An ended
   session can be hidden with **Close** and restored from its Task row's
   **More Actions → Closed Sessions** menu.
-- The center opens on a visual Activity summary for the selected session; its Terminal tab
-  reveals the real interactive PTY rendered by SwiftTerm. Claude Code or Codex runs in that
-  checkout and handles its own login. Sessions
+- The center opens directly on the selected session's real interactive PTY rendered by
+  SwiftTerm. Claude Code or Codex runs in that checkout and handles its own login. Pasting a
+  clipboard image writes a private temporary PNG and inserts its quoted path into the current
+  terminal input; ordinary text paste is unchanged. The **Commands** menu reads installed
+  Claude plugins and user Skills or Codex plugin Skills and user Skills, then inserts the chosen
+  invocation without pressing Return. Sessions
   advertise 256-color and truecolor support and discard inherited color-suppression variables
   such as `NO_COLOR`, so provider-emitted ANSI color remains visible.
 - The right inspector provides bounded **Files** metadata, read-only **Git** status, and

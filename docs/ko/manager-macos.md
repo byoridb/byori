@@ -44,9 +44,12 @@ prototype/호환 경로로 남아 있다.
   수정할 수 있으며, 이름이 없는 기존 session은 provider/model 이름으로 표시한다.
   종료된 session은 **Close**로 숨기고 해당 Task 행의
   **More Actions → Closed Sessions** 메뉴에서 복원할 수 있다.
-- 가운데는 선택한 session의 시각적 Activity 요약을 먼저 보여 주며, Terminal 탭을 선택하면
-  SwiftTerm으로 실제 대화형 PTY를 표시한다. Claude Code나 Codex는 해당 checkout에서
-  실행되며 인증은 각 CLI가 처리한다. Session은
+- 가운데는 선택한 session의 실제 대화형 PTY를 SwiftTerm으로 바로 표시한다. Claude Code나
+  Codex는 해당 checkout에서 실행되며 인증은 각 CLI가 처리한다. 클립보드 이미지를 붙여넣으면
+  권한이 제한된 임시 PNG로 저장하고 현재 terminal 입력에 안전하게 인용한 경로를 삽입한다.
+  일반 텍스트 붙여넣기는 그대로 동작한다. **Commands** 메뉴는 설치된 Claude plugin·사용자
+  Skill 또는 Codex plugin Skill·사용자 Skill의 명령을 읽고, Return을 누르지 않은 채 선택한
+  호출문만 terminal에 삽입한다. Session은
   256-color와 truecolor 지원을 알리고 상위 process의 `NO_COLOR` 같은 색상 억제
   환경변수를 제거하므로 provider가 출력한 ANSI 색상을 그대로 표시한다.
 - 오른쪽 inspector는 제한된 **Files** metadata, read-only **Git** status, project

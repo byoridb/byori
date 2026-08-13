@@ -50,6 +50,13 @@ public actor ManagerService {
         return [pair.0, pair.1]
     }
 
+    /// Read-only terminal command hints from installed Skills and plugins.
+    /// Kept separate from integration inventory because it neither launches a
+    /// provider CLI nor performs MCP health checks.
+    public func agentCommandCatalog() -> [AgentCommandGroup] {
+        AgentCommandCatalogScanner(home: paths.home, fileManager: fileManager).scan()
+    }
+
     public func loadKnowledgeGraph(limit: Int = 200) async throws -> KnowledgeGraphSnapshot {
         try await loadKnowledgeGraph(space: nil, limit: limit)
     }

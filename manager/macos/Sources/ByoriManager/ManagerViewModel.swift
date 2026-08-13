@@ -226,6 +226,7 @@ final class ManagerViewModel: ObservableObject {
     @Published var pendingIntegrationRemoval: IntegrationRemovalRequest?
     @Published private(set) var activities: [ActivityEntry] = []
     @Published private(set) var integrationInventories: [AgentIntegrationInventory] = []
+    @Published private(set) var agentCommandCatalog: [AgentCommandGroup] = []
     @Published private(set) var isRefreshingIntegrations = false
     let claudeGatewaySettings: ClaudeGatewaySettingsController
 
@@ -275,6 +276,7 @@ final class ManagerViewModel: ObservableObject {
         self.claudeGatewaySettings = claudeGatewaySettings
         Task { [weak self] in
             await self?.refresh()
+            await self?.refreshAgentCommands()
             await self?.startByoriIfStopped()
         }
         startUpdateChecks()
@@ -337,15 +339,30 @@ final class ManagerViewModel: ObservableObject {
     func refreshIntegrations() async {
         guard operationTask == nil, !isRefreshingIntegrations else { return }
         isRefreshingIntegrations = true
-        let inventories = await service.integrationInventories()
+        async let inventories = service.integrationInventories()
+        async let commands = service.agentCommandCatalog()
+        let results = await (inventories, commands)
         if !Task.isCancelled {
-            integrationInventories = inventories
+            integrationInventories = results.0
+            agentCommandCatalog = results.1
         }
         isRefreshingIntegrations = false
     }
 
     func integrationInventory(_ kind: AgentKind) -> AgentIntegrationInventory? {
         integrationInventories.first { $0.kind == kind }
+    }
+
+    func commandGroups(for kind: AgentKind?) -> [AgentCommandGroup] {
+        guard let kind else { return [] }
+        return agentCommandCatalog.filter { $0.agent == kind }
+    }
+
+    private func refreshAgentCommands() async {
+        let commands = await service.agentCommandCatalog()
+        if !Task.isCancelled {
+            agentCommandCatalog = commands
+        }
     }
 
     func request(_ action: ManagerAction, confirmation: Bool = false) {
