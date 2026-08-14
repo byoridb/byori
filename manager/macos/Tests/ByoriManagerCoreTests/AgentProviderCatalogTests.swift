@@ -91,8 +91,23 @@ final class AgentProviderCatalogTests: XCTestCase {
             let descriptor = kind.descriptor
             XCTAssertFalse(descriptor.isFullyIntegrated, "\(kind)")
             XCTAssertNotNil(descriptor.limitations, "\(kind) must explain what it cannot do")
-            XCTAssertNil(descriptor.install, "\(kind) has no verified install command")
+            XCTAssertTrue(descriptor.canInstall, "\(kind) must expose its verified install command")
         }
+    }
+
+    func testAdditionalProvidersUseTheirOfficialInstallCommands() {
+        XCTAssertEqual(
+            AgentKind.gemini.descriptor.install?.command,
+            "/usr/bin/env brew install gemini-cli"
+        )
+        XCTAssertEqual(
+            AgentKind.cursorAgent.descriptor.install?.command,
+            "/usr/bin/curl -fsSL https://cursor.com/install | /bin/bash"
+        )
+        XCTAssertEqual(
+            AgentKind.opencode.descriptor.install?.command,
+            "/usr/bin/curl -fsSL https://opencode.ai/install | /bin/bash"
+        )
     }
 
     /// Gemini's MCP registration was verified against the real CLI; the other

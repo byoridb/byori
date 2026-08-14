@@ -79,6 +79,45 @@ final class TmuxSessionPlanTests: XCTestCase {
         XCTAssertTrue(names.contains("EXTRA"))
     }
 
+    /// A private tmux server outlives individual sessions and retains its
+    /// global environment. Restoring Claude defaults must therefore name even
+    /// absent gateway variables so tmux removes values left by an older Solar
+    /// session instead of inheriting them into the next one.
+    func testClaudeRefreshesEveryManagedGatewayEnvironmentName() throws {
+        let descriptor = try makeClaudeDescriptor()
+        let plan = TmuxSupport.attachOrCreate(
+            descriptor,
+            tmux: URL(fileURLWithPath: "/bin/tmux"),
+            configFile: URL(fileURLWithPath: "/conf/tmux.conf"),
+            socketFile: URL(fileURLWithPath: "/private/byori/tmux.sock")
+        )
+
+        let updateIndex = try XCTUnwrap(plan.arguments.firstIndex(of: "update-environment"))
+        let names = Set(plan.arguments[updateIndex + 1].split(separator: " ").map(String.init))
+
+        XCTAssertTrue(ClaudeGatewayConfiguration.managedEnvironmentKeys.isSubset(of: names))
+        XCTAssertTrue(
+            ClaudeGatewayConfiguration.managedEnvironmentKeys
+                .isDisjoint(with: descriptor.environment.keys)
+        )
+    }
+
+    func testNonClaudeSessionDoesNotRefreshAbsentGatewayEnvironmentNames() throws {
+        let descriptor = try makeDescriptor()
+        let plan = TmuxSupport.attachOrCreate(
+            descriptor,
+            tmux: URL(fileURLWithPath: "/bin/tmux"),
+            configFile: URL(fileURLWithPath: "/conf/tmux.conf"),
+            socketFile: URL(fileURLWithPath: "/private/byori/tmux.sock")
+        )
+
+        let updateIndex = try XCTUnwrap(plan.arguments.firstIndex(of: "update-environment"))
+        let names = Set(plan.arguments[updateIndex + 1].split(separator: " ").map(String.init))
+
+        XCTAssertFalse(names.contains("ANTHROPIC_BASE_URL"))
+        XCTAssertFalse(names.contains("ANTHROPIC_MODEL"))
+    }
+
     func testSessionNamesRoundTripAndAreNamespaced() {
         let id = UUID()
         let name = TmuxSupport.sessionName(for: id)
@@ -273,6 +312,26 @@ final class TmuxSessionPlanTests: XCTestCase {
             ),
             workingDirectory: workingDirectory,
             environmentOverrides: environmentOverrides
+        )
+    }
+
+    private func makeClaudeDescriptor() throws -> TerminalLaunchDescriptor {
+        let executable = temporaryRoot.appendingPathComponent("bin/claude")
+        try FileManager.default.createDirectory(
+            at: executable.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: executable)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: executable.path
+        )
+
+        let factory = TerminalLaunchDescriptorFactory(paths: paths, environment: [:])
+        return try factory.codingAgent(
+            .claude,
+            workingDirectory: workingDirectory,
+            executableOverride: executable
         )
     }
 

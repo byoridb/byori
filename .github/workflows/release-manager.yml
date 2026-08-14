@@ -1,14 +1,12 @@
 name: Release Byori
 
-# Triggered by the tag itself rather than by `release: published`, because the
-# release is created by another workflow using GITHUB_TOKEN, and events raised
-# with that token never start a new workflow run. Releasing is therefore a
-# single `git push origin vX.Y.Z`; the release job and this one both address the
-# same release, and whichever arrives first creates it.
+# Main CI creates the next patch tag after every successful main build, then
+# uses repository_dispatch because GITHUB_TOKEN-created tag pushes do not start
+# another workflow run. workflow_dispatch remains a recovery path for an
+# existing tag, and the main-ancestry guard applies to both entry points.
 on:
-  push:
-    tags:
-      - 'v*'
+  repository_dispatch:
+    types: [release-main]
   workflow_dispatch:
     inputs:
       version:
@@ -33,9 +31,10 @@ jobs:
       - name: Resolve the release version
         id: release
         run: |
-          # Empty on a tag push; set only when dispatched by hand.
-          version="${{ inputs.version }}"
-          [ -n "$version" ] || version="${{ github.ref_name }}"
+          # repository_dispatch supplies a full tag; workflow_dispatch supplies
+          # a version for a pre-existing tag.
+          version="${{ github.event.client_payload.tag }}"
+          [ -n "$version" ] || version="${{ inputs.version }}"
           version="${version#v}"
           case "$version" in
             [0-9]*) ;;
@@ -47,6 +46,10 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ steps.release.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Require the release tag to be on main
+        run: scripts/require_release_tag_on_main.sh "${{ steps.release.outputs.tag }}"
 
       - name: Require signing and notarization secrets
         run: |

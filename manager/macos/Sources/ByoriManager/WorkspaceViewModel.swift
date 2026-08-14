@@ -18,7 +18,10 @@ protocol WorkspaceDataSource: AnyObject {
 
     func readFile(_ request: WorkspaceFileReadRequest) async throws -> WorkspaceFileDocument
     func writeFile(_ request: WorkspaceFileWriteRequest) async throws -> WorkspaceFileDocument
+    func inspectProjectFolder(at folderURL: URL) async throws -> WorkspaceProjectFolderStatus
     func registerProject(at repositoryURL: URL) async throws
+    func initializeAndRegisterProject(at folderURL: URL) async throws
+    func createProject(named name: String, in parentDirectoryURL: URL) async throws
     func removeProject(id: String) async throws
     func branches(projectID: String) async throws -> [WorkspaceGitBranch]
     func createSourceTree(projectID: String, branch: String, startPoint: String?) async throws -> URL
@@ -59,6 +62,18 @@ extension WorkspaceDataSource {
 
     func registerProject(at repositoryURL: URL) async throws {
         throw WorkspaceAdapterError.unsupported("Project registration is not connected yet.")
+    }
+
+    func inspectProjectFolder(at folderURL: URL) async throws -> WorkspaceProjectFolderStatus {
+        .gitRepository(folderURL)
+    }
+
+    func initializeAndRegisterProject(at folderURL: URL) async throws {
+        throw WorkspaceAdapterError.unsupported("Git initialization is not connected yet.")
+    }
+
+    func createProject(named name: String, in parentDirectoryURL: URL) async throws {
+        throw WorkspaceAdapterError.unsupported("Project creation is not connected yet.")
     }
 
     func removeProject(id: String) async throws {
@@ -141,6 +156,25 @@ struct WorkspacePresentationSnapshot: Hashable {
     init(projects: [WorkspaceProjectItem]) {
         self.projects = projects
     }
+}
+
+enum WorkspaceProjectFolderStatus: Equatable {
+    case gitRepository(URL)
+    case requiresInitialization(URL)
+}
+
+struct WorkspacePendingProjectInitialization: Identifiable, Equatable {
+    let folderURL: URL
+
+    var id: String { folderURL.standardizedFileURL.path }
+    var displayName: String {
+        folderURL.lastPathComponent.isEmpty ? folderURL.path : folderURL.lastPathComponent
+    }
+}
+
+struct WorkspaceNewProjectDraft: Equatable {
+    var name = ""
+    var parentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
 }
 
 struct WorkspaceProjectItem: Identifiable, Hashable {
@@ -730,6 +764,11 @@ final class WorkspaceViewModel: ObservableObject {
     @Published private(set) var contextSnapshot: WorkspaceContextSnapshot?
     @Published private(set) var isRefreshing = false
     @Published private(set) var isRegisteringProject = false
+    @Published private(set) var pendingProjectInitialization: WorkspacePendingProjectInitialization?
+    @Published var newProjectDraft = WorkspaceNewProjectDraft()
+    @Published private(set) var isPresentingNewProject = false
+    @Published private(set) var isCreatingProject = false
+    @Published private(set) var newProjectError: String?
     @Published var newSourceTreeDraft = WorkspaceNewSourceTreeDraft()
     @Published private(set) var isPresentingNewSourceTree = false
     @Published private(set) var availableBranches: [WorkspaceGitBranch] = []
@@ -771,6 +810,44 @@ final class WorkspaceViewModel: ObservableObject {
     var selectedSourceTree: WorkspaceSourceTreeItem? { selectedLineage?.sourceTree }
     var selectedTask: WorkspaceTaskItem? { selectedLineage?.task }
     var selectedSession: WorkspaceSessionItem? { selectedLineage?.session }
+
+    var newProjectNameValidationMessage: String? {
+        let name = normalizedNewProjectName
+        guard !name.isEmpty else { return "Enter a project name." }
+        guard name != ".", name != ".." else { return "Choose a regular folder name." }
+        guard name.utf8.count <= 255 else { return "Keep the project name within 255 bytes." }
+        guard !name.contains("/"), !name.contains(":"),
+              !name.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) else {
+            return "Remove slashes, colons, or control characters from the project name."
+        }
+        return nil
+    }
+
+    var newProjectDestinationURL: URL? {
+        guard newProjectNameValidationMessage == nil else { return nil }
+        return newProjectDraft.parentDirectoryURL
+            .appendingPathComponent(normalizedNewProjectName, isDirectory: true)
+            .standardizedFileURL
+    }
+
+    var newProjectValidationMessage: String? {
+        if let message = newProjectNameValidationMessage { return message }
+        let parent = newProjectDraft.parentDirectoryURL.standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return "Choose an existing location for the project."
+        }
+        guard let destination = newProjectDestinationURL,
+              !FileManager.default.fileExists(atPath: destination.path) else {
+            return "A file or folder with this name already exists in the selected location."
+        }
+        return nil
+    }
+
+    var canCreateProject: Bool {
+        !isCreatingProject && newProjectValidationMessage == nil
+    }
 
     var availableModels: [WorkspaceModelOption] {
         guard let providerID = newSessionDraft.providerID,
@@ -1066,19 +1143,78 @@ final class WorkspaceViewModel: ObservableObject {
         }
     }
 
-    func registerProject(at repositoryURL: URL) async {
+    func addProjectFolder(at folderURL: URL) async {
         guard !isRegisteringProject else { return }
         isRegisteringProject = true
         defer { isRegisteringProject = false }
 
         do {
-            try await dataSource.registerProject(at: repositoryURL)
-            await load(force: true)
+            switch try await dataSource.inspectProjectFolder(at: folderURL) {
+            case let .gitRepository(repositoryURL):
+                try await dataSource.registerProject(at: repositoryURL)
+                await load(force: true)
+            case let .requiresInitialization(directoryURL):
+                pendingProjectInitialization = WorkspacePendingProjectInitialization(
+                    folderURL: directoryURL
+                )
+            }
         } catch {
             alert = WorkspaceAlert(
                 title: "Project could not be added",
                 message: error.localizedDescription
             )
+        }
+    }
+
+    func cancelProjectInitialization() {
+        pendingProjectInitialization = nil
+    }
+
+    func initializePendingProject() async {
+        guard !isRegisteringProject, let request = pendingProjectInitialization else { return }
+        pendingProjectInitialization = nil
+        isRegisteringProject = true
+        defer { isRegisteringProject = false }
+        do {
+            try await dataSource.initializeAndRegisterProject(at: request.folderURL)
+            await load(force: true)
+        } catch {
+            alert = WorkspaceAlert(
+                title: "Project could not be initialized",
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    func presentNewProject() {
+        guard !isCreatingProject else { return }
+        newProjectDraft = WorkspaceNewProjectDraft()
+        newProjectError = nil
+        isPresentingNewProject = true
+    }
+
+    func dismissNewProject() {
+        guard !isCreatingProject else { return }
+        isPresentingNewProject = false
+    }
+
+    func clearNewProjectError() {
+        newProjectError = nil
+    }
+
+    func createProject() async {
+        guard canCreateProject else { return }
+        let name = normalizedNewProjectName
+        let parentDirectoryURL = newProjectDraft.parentDirectoryURL
+        newProjectError = nil
+        isCreatingProject = true
+        defer { isCreatingProject = false }
+        do {
+            try await dataSource.createProject(named: name, in: parentDirectoryURL)
+            isPresentingNewProject = false
+            await load(force: true)
+        } catch {
+            newProjectError = error.localizedDescription
         }
     }
 
@@ -1579,6 +1715,10 @@ final class WorkspaceViewModel: ObservableObject {
 
     private var normalizedSessionName: String {
         newSessionDraft.sessionName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var normalizedNewProjectName: String {
+        newProjectDraft.name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func defaultSelection() -> WorkspaceSelection? {

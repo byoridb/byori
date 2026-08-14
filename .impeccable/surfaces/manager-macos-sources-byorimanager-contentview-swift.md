@@ -9,7 +9,7 @@ related_targets: ["manager/macos/Sources/ByoriManager/ByoriManagerApp.swift","ma
 
 - Scope/mode: native macOS workspace, Operate mode.
 - Audience/job: a local developer selects a project and checkout, then works directly in a real coding-agent terminal without losing project context.
-- Primary task: navigate Project → Checkout/Worktree → Task → Session, create a session with one recorded launch agent/model, interact with its terminal, insert an installed command when useful, and inspect Files, Git, or ByoriDB Context.
+- Primary task: create or open a trusted local project, navigate Project → Checkout/Worktree → Task → Session, create a session with one recorded launch agent/model, interact with its terminal, insert an installed command when useful, and inspect Files, Git, or ByoriDB Context.
 - Constraints: Byori never interprets terminal output or executes a suggested command on selection. No automatic prompt fan-out, multi-terminal comparison, in-session Byori agent/model switcher, invented remote/team capabilities, or Settings in primary navigation.
 - Approved direction: C is the composition authority; A contributes only the richer ByoriDB Context treatment. Approved comp: `.impeccable/mocks/byori-workspace-c-sourcetree-first.png`. Supporting reference: `.impeccable/mocks/byori-workspace-a-balanced.png`.
 - Memorable moment: a selected session opens directly on one uninterrupted terminal, with installed commands in a compact menu and durable project knowledge one inspector tab away.
@@ -27,6 +27,7 @@ related_targets: ["manager/macos/Sources/ByoriManager/ByoriManagerApp.swift","ma
 
 | Ingredient | Commitment | Medium |
 |---|---|---|
+| Project bootstrap | Create a named local project or open any folder; show the destination and confirm before initializing Git in an existing folder | Native `Menu`, sheet, `NSOpenPanel`, and confirmation dialog |
 | Project/checkout/task/session hierarchy | 280–300pt left outline; nesting and checkout kind are always visible | Semantic SwiftUI `List`/`DisclosureGroup` |
 | New Session action | Small `+` on every eligible checkout/task row plus toolbar/shortcut; exact clicked target survives sheet presentation | Native `Button` and sheet |
 | Checkout identity | Launch sheet names Primary, Byori worktree, or External and shows the exact working directory before launch | Native `Picker`, `LabeledContent`, selectable path text |

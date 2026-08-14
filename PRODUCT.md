@@ -100,7 +100,8 @@ are not current product commitments.
 Existing repository capabilities that the workspace can build on:
 
 - detect and invoke Claude Code and Codex through provider-neutral adapters;
-- register trusted projects with stable ByoriDB graph spaces;
+- create new local Git projects, or explicitly initialize and register trusted existing folders,
+  with stable ByoriDB graph spaces;
 - archive and restore project registrations, and hide or restore linked checkouts, without deleting
   their underlying Git or workspace data;
 - create isolated branches and managed worktrees for explicit foreground CLI workers;

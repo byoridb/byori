@@ -258,6 +258,11 @@ public struct ManagerPaths: Sendable {
         let environmentPath = ProcessInfo.processInfo.environment["PATH"] ?? ""
         var preferred = [
             home.appendingPathComponent(".local/bin").path,
+            // OpenCode's official installer uses these user-owned locations,
+            // preferring ~/bin when it already exists and ~/.opencode/bin as
+            // its fallback. Both must be visible to verification and sessions.
+            home.appendingPathComponent("bin").path,
+            home.appendingPathComponent(".opencode/bin").path,
             home.appendingPathComponent(".npm-global/bin").path,
             home.appendingPathComponent(".volta/bin").path,
             home.appendingPathComponent(".asdf/shims").path,

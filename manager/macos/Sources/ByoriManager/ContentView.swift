@@ -486,7 +486,7 @@ private struct OverviewView: View {
                     }
 
                     GroupBox("보안 경계") {
-                        Text("Byori는 Claude/Codex 로그인이나 토큰을 읽지 않습니다. 에이전트 설치는 공식 설치 스크립트만 실행하고, MCP 설정은 각 벤더 CLI를 통해 변경합니다. MCP 설정·Skill·runtime 변경 전에는 백업을 남깁니다.")
+                        Text("Byori는 에이전트 로그인이나 토큰을 읽지 않습니다. 에이전트 설치는 공식 설치 명령만 실행하고, MCP 설정은 지원되는 벤더 CLI를 통해 변경합니다. MCP 설정·Skill·runtime 변경 전에는 백업을 남깁니다.")
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(8)
@@ -638,11 +638,10 @@ private struct AgentInventoryPane: View {
                         .truncationMode(.middle)
                 }
                 Spacer(minLength: 16)
-                // Byori has no install command for every CLI it can launch.
-                // Showing a button that can only report a refusal would be worse
-                // than saying so plainly.
+                // Installation stays capability-driven so a future launch-only
+                // provider never receives a button that can only refuse.
                 if descriptor.canInstall {
-                    Button(status?.isInstalled == true ? "공식 설치기로 업데이트" : "CLI 설치") {
+                    Button(status?.isInstalled == true ? "공식 명령으로 업데이트" : "CLI 설치") {
                         model.request(installAction, confirmation: true)
                     }
                     .buttonStyle(.borderedProminent)

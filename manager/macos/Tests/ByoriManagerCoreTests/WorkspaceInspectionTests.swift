@@ -89,6 +89,63 @@ final class WorkspaceInspectionTests: XCTestCase {
         XCTAssertFalse(status.isClean)
     }
 
+    func testInitializeRepositoryUsesArgumentArrayAndReturnsVerifiedRoot() async throws {
+        let directory = temporaryRoot.appendingPathComponent("new project; safe", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        let runner = StubCommandRunner { command in
+            XCTAssertEqual(command.executable, "/test/bin/git")
+            XCTAssertEqual(command.workingDirectory, directory.path)
+            if command.arguments.contains("init") {
+                XCTAssertEqual(command.arguments, ["-C", directory.path, "init", "-b", "main"])
+                return CommandResult(exitCode: 0, output: "Initialized empty Git repository")
+            }
+            XCTAssertEqual(command.arguments, ["-C", directory.path, "rev-parse", "--show-toplevel"])
+            return CommandResult(exitCode: 0, output: directory.path)
+        }
+        let service = WorkspaceGitService(runner: runner, gitExecutable: "/test/bin/git")
+
+        let root = try await service.initializeRepository(at: directory)
+
+        XCTAssertEqual(root.path, directory.resolvingSymlinksInPath().standardizedFileURL.path)
+    }
+
+    func testInitializeRepositoryRequiresExistingDirectoryBeforeRunningGit() async throws {
+        let missing = temporaryRoot.appendingPathComponent("missing", isDirectory: true)
+        let runner = StubCommandRunner { _ in
+            XCTFail("git must not run for a missing directory")
+            return CommandResult(exitCode: 1, output: "unexpected")
+        }
+        let service = WorkspaceGitService(runner: runner, gitExecutable: "/test/bin/git")
+
+        do {
+            _ = try await service.initializeRepository(at: missing)
+            XCTFail("Expected a missing-directory error")
+        } catch let error as WorkspaceError {
+            guard case let .notGitRepository(message) = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+            XCTAssertTrue(message.contains(missing.path))
+        }
+    }
+
+    func testInitializeRealRepositoryCreatesUsableUnbornMainBranch() async throws {
+        let directory = temporaryRoot.appendingPathComponent("real-new-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        let service = WorkspaceGitService()
+
+        let root = try await service.initializeRepository(at: directory)
+        let status = try await service.status(at: root)
+        let worktrees = try await service.worktrees(at: root)
+
+        XCTAssertEqual(root.path, directory.resolvingSymlinksInPath().standardizedFileURL.path)
+        XCTAssertEqual(status.branch, "main")
+        XCTAssertNil(status.headRevision)
+        XCTAssertTrue(status.isClean)
+        XCTAssertEqual(worktrees.count, 1)
+        XCTAssertEqual(worktrees.first?.branch, "main")
+        XCTAssertTrue(worktrees.first?.isPrimary == true)
+    }
+
     func testGitWorktreeListParsesPrimaryLinkedDetachedAndFlags() async throws {
         let primary = temporaryRoot.appendingPathComponent("repo with spaces", isDirectory: true)
         let linked = temporaryRoot.appendingPathComponent("linked feature", isDirectory: true)

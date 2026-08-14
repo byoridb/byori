@@ -2,7 +2,7 @@
 
 - Scope/mode: native macOS workspace, Operate mode.
 - Audience/job: a local developer selects a project and source tree, then works in a real interactive coding-agent terminal without losing project knowledge.
-- Primary task: navigate Project → SourceTree/Worktree → Task → Session, create a session with one recorded launch agent/model, interact with it, and inspect Files, Git, or ByoriDB Context.
+- Primary task: create or open a trusted local project, navigate Project → SourceTree/Worktree → Task → Session, create a session with one recorded launch agent/model, interact with it, and inspect Files, Git, or ByoriDB Context.
 - Constraints: no automatic prompt fan-out, no multi-terminal comparison, no Byori agent/model switcher inside a running session, no invented remote/team capabilities, and Settings stays outside primary navigation.
 - Approved direction: C is the composition authority; A contributes only the richer ByoriDB Context treatment. Approved comp: `.impeccable/mocks/byori-workspace-c-sourcetree-first.png`. Supporting reference: `.impeccable/mocks/byori-workspace-a-balanced.png`.
 - Memorable moment: a selected session reveals one uninterrupted terminal canvas while its source-tree lineage stays visible at left and durable project knowledge stays one inspector tab away.
@@ -20,6 +20,7 @@
 
 | Ingredient | Commitment | Medium |
 |---|---|---|
+| Project bootstrap | Create a named local project or open any folder; show the destination and confirm before initializing Git in an existing folder | Native `Menu`, sheet, `NSOpenPanel`, and confirmation dialog |
 | Project/source tree/task/session hierarchy | 280–300pt left outline; nesting is always visible | Semantic SwiftUI `List`/`DisclosureGroup` |
 | New Session action | Small `+` on every eligible source-tree/task row plus toolbar/shortcut; exact clicked target survives sheet presentation | Native `Button` and sheet |
 | Session identity | Editable generated two-word name; recorded launch provider/model remains secondary identity and legacy fallback | Semantic text + SF Symbols |

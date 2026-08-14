@@ -110,13 +110,22 @@ public enum TmuxSupport {
         socketFile: URL
     ) -> TmuxLaunchPlan {
         let name = sessionName(for: descriptor.id)
+        var environmentNames = Set(descriptor.environment.keys)
+        if case .codingAgent(.claude) = descriptor.target {
+            // tmux keeps a server-wide environment between sessions. Include
+            // every Byori-managed gateway name even when the current client
+            // does not define it: update-environment then marks a stale value
+            // for removal instead of leaking a previous Solar gateway into a
+            // newly restored/default Claude session.
+            environmentNames.formUnion(ClaudeGatewayConfiguration.managedEnvironmentKeys)
+        }
         var arguments = [
             "-S", socketFile.path,
             "-f", configFile.path,
             // Values arrive only through the tmux client's environment. The
             // argv contains names, never API keys or other secret values.
             "set-option", "-g", "update-environment",
-            descriptor.environment.keys.sorted().joined(separator: " "),
+            environmentNames.sorted().joined(separator: " "),
             ";",
             "new-session",
             "-A",

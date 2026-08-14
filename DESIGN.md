@@ -129,6 +129,12 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 ### Project Outline
 
 - Use native disclosures and list rows for every hierarchy level.
+- Offer `Create New Project…` and `Open Folder…` from the outline header and actionable empty
+  state. Creation shows the resulting path and initializes a local `main` repository without a
+  remote or commit.
+- Let users select any existing folder. If it is not already in a Git repository, require a
+  separate confirmation that names the folder and explains `git init`; never initialize it as a
+  side effect of choosing it.
 - Keep icons in one SF Symbols family and reserve secondary text for genuinely distinct metadata.
 - Show a single semantic status dot for clean, dirty, unavailable, or active state; never repeat a long branch as both title and metadata.
 - Put removal behind a row context or overflow action with an explicit confirmation; do not place an easy-to-misclick trash control beside the session `+` action.
