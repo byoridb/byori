@@ -21,8 +21,8 @@ jobs:
 
       - name: Test Python contracts
         run: |
-          python -m py_compile cli/byori.py mcp/byoridb_mcp.py
-          python -m unittest tests/test_cli.py tests/test_mcp_contract.py
+          python -m py_compile cli/byori.py mcp/byoridb_mcp.py scripts/next_release_tag.py
+          python -m unittest tests/test_cli.py tests/test_mcp_contract.py tests/test_release_workflow.py
 
   smoke:
     name: Engine contract smoke
@@ -84,3 +84,59 @@ jobs:
 
       - name: Verify Byori disk image
         run: hdiutil verify dist/Byori-0.0.0-$(uname -m).dmg
+
+  release-main:
+    name: Tag the verified main commit
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [cli-python, smoke, manager-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-main
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Choose or create the next patch tag
+        id: release
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+          tag=$(git tag --points-at "$GITHUB_SHA" --list 'v*' \
+            | grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+            | sort -V | tail -n 1 || true)
+          if [ -z "$tag" ]; then
+            release_tags=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+              --json tagName,isPrerelease \
+              --jq '.[] | select(.isPrerelease == false) | .tagName')
+            main_tags=$(git tag --merged "$GITHUB_SHA" --list 'v*')
+            tag=$(printf '%s\n%s\n' "$release_tags" "$main_tags" \
+              | python3 scripts/next_release_tag.py --baseline v0.8.2)
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$tag" "$GITHUB_SHA" -m "Byori ${tag#v}"
+            git push origin "refs/tags/$tag"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $tag" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Start release workflows
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$RELEASE_TAG already has a GitHub release; dispatch skipped." \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          jq -n --arg tag "$RELEASE_TAG" \
+            '{event_type:"release-main",client_payload:{tag:$tag}}' \
+            > "$RUNNER_TEMP/release-dispatch.json"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" \
+            --input "$RUNNER_TEMP/release-dispatch.json"

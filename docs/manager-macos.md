@@ -194,8 +194,12 @@ scripts/build-macos-dmg.sh \
   --notary-profile byori-notary
 ```
 
-The GitHub macOS release workflow attaches a signed and notarized universal DMG to an
-existing `v<version>` release. It requires these repository secrets:
+After every successful CI run for a new `main` commit, GitHub Actions creates the next stable
+patch tag (starting with `v0.8.3`) and dispatches the release workflows. Both release workflows
+verify that the tag's commit is contained in `origin/main`; a `v*` tag made from an unmerged
+branch cannot publish a release. A repository tag ruleset reserves `v*` tag creation for GitHub
+Actions. The macOS release workflow then attaches a signed and notarized universal DMG to the
+release. It requires these repository secrets:
 
 - `MACOS_CERTIFICATE_P12_BASE64`, `MACOS_CERTIFICATE_PASSWORD`
 - `MACOS_SIGN_IDENTITY`

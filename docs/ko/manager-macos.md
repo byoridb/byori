@@ -181,8 +181,12 @@ scripts/build-macos-dmg.sh \
   --notary-profile byori-notary
 ```
 
-GitHub의 macOS release workflow는 기존 `v<version>` 릴리스에 서명·공증된 universal
-DMG를 첨부한다. 다음 repository secrets가 필요하다:
+새 `main` commit의 CI가 모두 성공할 때마다 GitHub Actions가 `v0.8.3`부터 다음 stable
+patch tag를 만들고 release workflow를 호출한다. 두 release workflow는 tag commit이
+`origin/main`에 포함되는지 검사하므로, merge되지 않은 branch에서 만든 `v*` tag로는
+릴리스를 발행할 수 없다. Repository tag ruleset은 `v*` tag 생성을 GitHub Actions에만
+허용한다. macOS release workflow는 이 릴리스에 서명·공증된 universal DMG를 첨부한다.
+다음 repository secrets가 필요하다:
 
 - `MACOS_CERTIFICATE_P12_BASE64`, `MACOS_CERTIFICATE_PASSWORD`
 - `MACOS_SIGN_IDENTITY`

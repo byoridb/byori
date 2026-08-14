@@ -1,9 +1,17 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  repository_dispatch:
+    types: [release-main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing main-contained release tag (for example v0.8.3)
+        required: true
+        type: string
+
+env:
+  RELEASE_TAG: ${{ github.event.client_payload.tag || inputs.tag }}
 
 jobs:
   release:
@@ -13,6 +21,12 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Require the release tag to be on main
+        run: scripts/require_release_tag_on_main.sh "$RELEASE_TAG"
 
       - name: Sanity check installer
         run: bash -n install.sh
@@ -28,10 +42,11 @@ jobs:
       # never gets its DMG stays a draft, which is the safe direction: no user
       # is offered an update that cannot be installed.
       - name: Create draft release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           draft: true
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
           generate_release_notes: true
           files: |
             install.sh
