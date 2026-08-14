@@ -65,12 +65,15 @@ The current workflow is local and Git-centered:
 5. At durable boundaries, the configured agent can record compact project and task checkpoints in
    the project's ByoriDB graph space for later recall.
 
-Removing an item from the native workspace is deliberately non-destructive. Removing a project
+Ordinary removal from the native workspace is deliberately non-destructive. Removing a project
 archives its exact registry record outside the active project list; adding the same canonical
-repository root again restores the prior project ID, graph space, and task/session linkage. Removing
-a linked checkout only hides that canonical path from the project's outline until it is restored.
-Neither action deletes repository files, Git worktrees or branches, task/session metadata, or
-ByoriDB data.
+repository root again restores the prior project ID, graph space, and task/session linkage. Hiding
+a linked checkout only removes that canonical path from the project's outline until it is restored.
+Removing a task moves its exact task/session metadata directory into recoverable archived storage.
+An explicit, separately confirmed cleanup action may delete only a clean Byori-managed worktree
+after its sessions have stopped and its tasks have been removed. The user can keep its branch or
+ask Git to delete the branch with safe `-d` semantics, which preserves unmerged work. None of these
+actions deletes ByoriDB data or an original/external checkout.
 
 The primary product surface is a workspace layout: a project, source-tree/worktree, task, and
 session hierarchy in the left navigation; the selected session's real interactive terminal in
@@ -105,6 +108,8 @@ Existing repository capabilities that the workspace can build on:
 - archive and restore project registrations, and hide or restore linked checkouts, without deleting
   their underlying Git or workspace data;
 - create isolated branches and managed worktrees for explicit foreground CLI workers;
+- archive completed task/session metadata and explicitly delete clean Byori-managed worktrees,
+  with optional Git-safe deletion of their merged local branches;
 - preserve foreground CLI prompts, capped stdout/stderr logs, provider session identifiers, Git
   revisions, and prototype run state under `~/.byori`;
 - recall and checkpoint durable knowledge through a guarded MCP surface backed by ByoriDB;
@@ -118,11 +123,10 @@ Current implementation constraints:
 
 - the existing CLI orchestration path is a foreground fan-out prototype and is not the new
   workspace interaction model;
-- the Byori macOS app exposes the project/source-tree/task/session hierarchy and app-retained
-  interactive PTY sessions, but does not yet create worktrees or reattach a PTY after the full
-  app process exits;
-- remote UI, automatic patch comparison, winner selection, merge, and worktree cleanup are not
-  implemented;
+- the Byori macOS app exposes the project/source-tree/task/session hierarchy, creates managed
+  worktrees, and retains interactive PTY sessions through its private tmux server;
+- remote UI, automatic patch comparison, winner selection, merge, and automatic worktree cleanup
+  are not implemented; managed-worktree deletion remains an explicit user action;
 - native project removal and checkout hiding are visibility/registration operations, not Git
   cleanup or knowledge deletion;
 - the default managed-worktree mode requires a clean registered repository;

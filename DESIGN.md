@@ -140,7 +140,9 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 - Put removal behind a row context or overflow action with an explicit confirmation; do not place an easy-to-misclick trash control beside the session `+` action.
 - Removing a project archives its exact registration outside the active list. Re-adding the same canonical repository restores its stable project identity, graph space, and task/session linkage.
 - Removing a linked checkout hides that canonical path from the outline until the user restores it. The action must be described as hiding from Byori, not deleting a Git worktree.
-- State plainly that neither action deletes files, Git worktrees or branches, task/session metadata, or ByoriDB records. Actual Git cleanup remains an external, deliberate operation.
+- Removing a task archives its exact task/session metadata outside the active outline. State plainly that repository files, its checkout and branch, and ByoriDB records remain.
+- Offer actual cleanup only for a Byori-managed worktree, behind a separate destructive confirmation. Disable it until active sessions have stopped, tasks have been removed, and Git reports a clean worktree. Let the user keep the branch or request Git-safe `-d` deletion; report an unmerged branch as retained after the worktree is removed.
+- Never offer file deletion for the primary checkout or an externally managed worktree.
 
 ### Terminal Session
 

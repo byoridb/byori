@@ -274,6 +274,27 @@ public protocol WorkspaceGitInspecting: Sendable {
         branch: String,
         creatingFrom startPoint: String?
     ) async throws -> WorkspaceGitWorktreeSnapshot
+    func removeWorktree(
+        repositoryRoot: URL,
+        at worktree: URL,
+        deletingBranch: Bool
+    ) async throws -> WorkspaceGitWorktreeRemovalResult
+}
+
+public struct WorkspaceGitWorktreeRemovalResult: Equatable, Sendable {
+    public let branch: String?
+    public let branchDeleted: Bool
+    public let branchDeletionFailure: String?
+
+    public init(
+        branch: String?,
+        branchDeleted: Bool,
+        branchDeletionFailure: String? = nil
+    ) {
+        self.branch = branch
+        self.branchDeleted = branchDeleted
+        self.branchDeletionFailure = branchDeletionFailure
+    }
 }
 
 /// Project registration only inspects; branch listing and worktree creation are
@@ -291,6 +312,14 @@ extension WorkspaceGitInspecting {
         creatingFrom startPoint: String?
     ) async throws -> WorkspaceGitWorktreeSnapshot {
         throw WorkspaceError.gitCommandFailed("Worktree creation is not available here.")
+    }
+
+    public func removeWorktree(
+        repositoryRoot: URL,
+        at worktree: URL,
+        deletingBranch: Bool
+    ) async throws -> WorkspaceGitWorktreeRemovalResult {
+        throw WorkspaceError.gitCommandFailed("Worktree removal is not available here.")
     }
 
     public func log(
@@ -612,6 +641,91 @@ public struct WorkspaceGitService: WorkspaceGitInspecting, Sendable {
             throw WorkspaceError.gitCommandFailed("git did not register the new worktree")
         }
         return created
+    }
+
+    /// Removes one exact non-primary worktree after re-checking that Git still
+    /// knows it and that its working tree is clean. Branch deletion is a
+    /// separate, conservative step: `-d` refuses an unmerged branch and that
+    /// refusal is returned without pretending the already removed worktree
+    /// still exists.
+    public func removeWorktree(
+        repositoryRoot: URL,
+        at worktree: URL,
+        deletingBranch: Bool
+    ) async throws -> WorkspaceGitWorktreeRemovalResult {
+        let root = try await self.repositoryRoot(at: repositoryRoot)
+        let target = worktree.resolvingSymlinksInPath().standardizedFileURL
+        guard target.path != root.path else {
+            throw WorkspaceError.gitCommandFailed("The primary worktree cannot be deleted.")
+        }
+
+        let registered = try await worktrees(at: root)
+        guard let snapshot = registered.first(where: {
+            URL(fileURLWithPath: $0.path, isDirectory: true)
+                .resolvingSymlinksInPath()
+                .standardizedFileURL.path == target.path
+        }), !snapshot.isPrimary else {
+            throw WorkspaceError.gitCommandFailed(
+                "The selected folder is no longer a removable Git worktree. Refresh and try again."
+            )
+        }
+        if deletingBranch, let branch = snapshot.branch {
+            try Self.validateBranchName(branch)
+        }
+
+        let currentStatus = try await status(at: target, maxChanges: 1)
+        guard currentStatus.isClean else {
+            throw WorkspaceError.gitCommandFailed(
+                "This worktree has uncommitted or untracked changes. Commit or stash them first."
+            )
+        }
+
+        let removal = await runner.run(CommandSpec(
+            executable: gitExecutable,
+            arguments: ["-C", root.path, "worktree", "remove", target.path],
+            environment: ["LC_ALL": "C", "LANG": "C"],
+            workingDirectory: root.path,
+            timeout: 300
+        ))
+        guard removal.succeeded else {
+            let message = bounded(removal.output, limit: 2_048)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw WorkspaceError.gitCommandFailed(
+                message.isEmpty ? "Git could not remove the selected worktree." : message
+            )
+        }
+
+        guard deletingBranch else {
+            return WorkspaceGitWorktreeRemovalResult(
+                branch: snapshot.branch,
+                branchDeleted: false
+            )
+        }
+        guard let branch = snapshot.branch else {
+            return WorkspaceGitWorktreeRemovalResult(
+                branch: nil,
+                branchDeleted: false,
+                branchDeletionFailure:
+                    "The worktree was deleted, but it was detached and had no local branch to delete."
+            )
+        }
+
+        let branchRemoval = await git(
+            ["-C", root.path, "branch", "-d", "--", branch],
+            workingDirectory: root.path
+        )
+        guard branchRemoval.succeeded else {
+            let detail = bounded(branchRemoval.output, limit: 2_048)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return WorkspaceGitWorktreeRemovalResult(
+                branch: branch,
+                branchDeleted: false,
+                branchDeletionFailure: detail.isEmpty
+                    ? "The worktree was deleted, but Git kept the branch because it could not verify a safe deletion."
+                    : "The worktree was deleted, but Git kept branch \(branch): \(detail)"
+            )
+        }
+        return WorkspaceGitWorktreeRemovalResult(branch: branch, branchDeleted: true)
     }
 
     /// Delegates the rules to Git itself; a hand-rolled pattern would drift from

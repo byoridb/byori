@@ -24,8 +24,8 @@ Project
   생성…**은 이름을 정한 폴더를 만들고 `main` repository로 초기화한 뒤, remote나 첫 commit을
   추가하지 않고 등록한다. **폴더 열기…**는 기존 폴더를 모두 선택할 수 있으며, Git
   repository가 아니면 기존 파일을 그대로 둔 채 `git init`을 실행하기 전에 별도로 확인한다.
-- Source Tree나 Worktree는 코딩 CLI가 실행될 checkout을 나타낸다. 이 릴리스의
-  앱은 등록된 worktree를 표시할 수는 있지만 새로 생성하지는 않는다.
+- Source Tree나 Worktree는 코딩 CLI가 실행될 checkout을 나타낸다. 앱은 기존 또는
+  새 local branch에 Byori 관리 worktree를 만들 수 있다.
 - Task는 해당 checkout에서 연관된 session을 묶는다.
 - Session은 사용자가 고른 코딩 agent(Claude Code 또는 Codex) 정확히 하나와 model 선택
   하나를 기록한다. Model은 해당 agent CLI 기본값 또는 정확한 custom model identifier다.
@@ -35,7 +35,8 @@ Project
   terminal transcript를 저장하지 않는다.
 
 Byori는 같은 prompt를 여러 agent에게 자동으로 보내거나, 결과를 비교해 winner를
-고르거나, branch를 merge하거나, worktree를 정리하지 않는다. [멀티 CLI
+고르거나, branch를 merge하거나, worktree를 자동으로 정리하지 않는다. 관리 worktree
+정리는 항상 사용자가 명시적으로 확인한다. [멀티 CLI
 오케스트레이션](../orchestration.md)의 foreground `byori run` fan-out 명령은 별도
 prototype/호환 경로로 남아 있다.
 
@@ -48,6 +49,13 @@ prototype/호환 경로로 남아 있다.
   수정할 수 있으며, 이름이 없는 기존 session은 provider/model 이름으로 표시한다.
   종료된 session은 **Close**로 숨기고 해당 Task 행의
   **More Actions → Closed Sessions** 메뉴에서 복원할 수 있다.
+- Task 행의 **More Actions → Remove Task from Byori…**는 모든 session이 끝난 뒤
+  task/session metadata를 `~/.byori/archived-tasks`로 옮긴다. Repository 파일,
+  worktree와 branch, ByoriDB context는 변경하지 않는다.
+- Task가 남아 있지 않고 clean 상태인 Byori 관리 worktree는
+  **More Actions → Delete Managed Worktree…**에서 제거할 수 있다. 확인창에서 local
+  branch를 유지하거나 Git의 안전한 `-d` 삭제를 요청할 수 있으며, merge되지 않은
+  branch는 보존한다. Primary checkout과 외부 관리 worktree에는 삭제 동작을 제공하지 않는다.
 - 가운데는 선택한 session의 실제 대화형 PTY를 SwiftTerm으로 바로 표시한다. Claude Code나
   Codex는 해당 checkout에서 실행되며 인증은 각 CLI가 처리한다. 클립보드 이미지를 붙여넣으면
   권한이 제한된 임시 PNG로 저장하고 현재 terminal 입력에 안전하게 인용한 경로를 삽입한다.
