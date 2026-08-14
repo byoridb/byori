@@ -23,9 +23,15 @@ protocol WorkspaceDataSource: AnyObject {
     func initializeAndRegisterProject(at folderURL: URL) async throws
     func createProject(named name: String, in parentDirectoryURL: URL) async throws
     func removeProject(id: String) async throws
+    func archiveTask(id: String) async throws
     func branches(projectID: String) async throws -> [WorkspaceGitBranch]
     func createSourceTree(projectID: String, branch: String, startPoint: String?) async throws -> URL
     func hideSourceTree(projectID: String, sourceTreeID: String) async throws
+    func deleteManagedSourceTree(
+        projectID: String,
+        sourceTreeID: String,
+        deletingBranch: Bool
+    ) async throws -> WorkspaceGitWorktreeRemovalResult
     func restoreSourceTree(projectID: String, at url: URL) async throws
     func startSession(_ request: WorkspaceSessionLaunchRequest) async throws -> WorkspaceSessionLaunchResult
     func stopSession(id: String) async throws -> WorkspaceSessionItem
@@ -80,6 +86,10 @@ extension WorkspaceDataSource {
         throw WorkspaceAdapterError.unsupported("Project removal is not connected yet.")
     }
 
+    func archiveTask(id: String) async throws {
+        throw WorkspaceAdapterError.unsupported("Task removal is not connected yet.")
+    }
+
     func branches(projectID: String) async throws -> [WorkspaceGitBranch] {
         throw WorkspaceAdapterError.unsupported("Branch listing is not connected yet.")
     }
@@ -94,6 +104,14 @@ extension WorkspaceDataSource {
 
     func hideSourceTree(projectID: String, sourceTreeID: String) async throws {
         throw WorkspaceAdapterError.unsupported("Source-tree removal is not connected yet.")
+    }
+
+    func deleteManagedSourceTree(
+        projectID: String,
+        sourceTreeID: String,
+        deletingBranch: Bool
+    ) async throws -> WorkspaceGitWorktreeRemovalResult {
+        throw WorkspaceAdapterError.unsupported("Managed worktree deletion is not connected yet.")
     }
 
     func restoreSourceTree(projectID: String, at url: URL) async throws {
@@ -1271,6 +1289,82 @@ final class WorkspaceViewModel: ObservableObject {
         } catch {
             alert = WorkspaceAlert(
                 title: "Source tree could not be removed",
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    func archiveTask(_ task: WorkspaceTaskItem) async {
+        guard !isMutatingWorkspace,
+              let location = taskLocation(taskID: task.id) else { return }
+        guard !task.sessions.contains(where: { $0.state.isActive }) else {
+            alert = WorkspaceAlert(
+                title: "Task could not be removed",
+                message: "Stop its active session first. The task and its files were left unchanged."
+            )
+            return
+        }
+
+        isMutatingWorkspace = true
+        defer { isMutatingWorkspace = false }
+        do {
+            try await dataSource.archiveTask(id: task.id)
+            selection = .sourceTree(location.sourceTree.id)
+            await load(force: true)
+        } catch {
+            alert = WorkspaceAlert(
+                title: "Task could not be removed",
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    func deleteManagedSourceTree(
+        _ sourceTree: WorkspaceSourceTreeItem,
+        deletingBranch: Bool
+    ) async {
+        guard !isMutatingWorkspace else { return }
+        guard sourceTree.kind == .managedWorktree else {
+            alert = WorkspaceAlert(
+                title: "Worktree could not be deleted",
+                message: "Only a worktree created and managed by Byori can be deleted here."
+            )
+            return
+        }
+        guard !sourceTree.hasActiveWritingSession else {
+            alert = WorkspaceAlert(
+                title: "Worktree could not be deleted",
+                message: "Stop its active session first. No Git files were changed."
+            )
+            return
+        }
+        guard sourceTree.tasks.isEmpty else {
+            alert = WorkspaceAlert(
+                title: "Worktree could not be deleted",
+                message: "Remove this worktree's tasks from Byori first. No Git files were changed."
+            )
+            return
+        }
+
+        isMutatingWorkspace = true
+        defer { isMutatingWorkspace = false }
+        do {
+            let result = try await dataSource.deleteManagedSourceTree(
+                projectID: sourceTree.projectID,
+                sourceTreeID: sourceTree.id,
+                deletingBranch: deletingBranch
+            )
+            selection = .project(sourceTree.projectID)
+            await load(force: true)
+            if let failure = result.branchDeletionFailure {
+                alert = WorkspaceAlert(
+                    title: "Worktree deleted, branch kept",
+                    message: failure
+                )
+            }
+        } catch {
+            alert = WorkspaceAlert(
+                title: "Worktree could not be deleted",
                 message: error.localizedDescription
             )
         }

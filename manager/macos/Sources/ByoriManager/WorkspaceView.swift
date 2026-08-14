@@ -5,11 +5,15 @@ import SwiftUI
 private enum WorkspaceRemovalRequest: Identifiable {
     case project(WorkspaceProjectItem)
     case sourceTree(WorkspaceSourceTreeItem)
+    case task(WorkspaceTaskItem)
+    case managedWorktree(WorkspaceSourceTreeItem)
 
     var id: String {
         switch self {
         case let .project(project): return "project:\(project.id)"
         case let .sourceTree(sourceTree): return "source-tree:\(sourceTree.id)"
+        case let .task(task): return "task:\(task.id)"
+        case let .managedWorktree(sourceTree): return "managed-worktree:\(sourceTree.id)"
         }
     }
 
@@ -17,6 +21,8 @@ private enum WorkspaceRemovalRequest: Identifiable {
         switch self {
         case .project: return "Remove Project from Byori?"
         case let .sourceTree(sourceTree): return "Hide \(sourceTree.kind.removalLabel) from Byori?"
+        case .task: return "Remove Task from Byori?"
+        case .managedWorktree: return "Delete Managed Worktree?"
         }
     }
 
@@ -24,6 +30,8 @@ private enum WorkspaceRemovalRequest: Identifiable {
         switch self {
         case .project: return "Remove Project"
         case let .sourceTree(sourceTree): return "Hide \(sourceTree.kind.removalLabel)"
+        case .task: return "Remove Task"
+        case .managedWorktree: return "Delete Worktree"
         }
     }
 
@@ -33,6 +41,21 @@ private enum WorkspaceRemovalRequest: Identifiable {
             return "Stop the project's active writing session first."
         case let .sourceTree(sourceTree) where sourceTree.hasActiveWritingSession:
             return "Stop this source tree's active writing session first."
+        case let .task(task) where task.sessions.contains(where: { $0.state.isActive }):
+            return "Stop this task's active session first."
+        case let .managedWorktree(sourceTree) where sourceTree.hasActiveWritingSession:
+            return "Stop this worktree's active writing session first."
+        case let .managedWorktree(sourceTree) where !sourceTree.tasks.isEmpty:
+            return "Remove this worktree's tasks from Byori first."
+        case let .managedWorktree(sourceTree):
+            switch sourceTree.workingState {
+            case .clean:
+                return nil
+            case .modified:
+                return "Commit or stash this worktree's changes first."
+            case let .unavailable(reason):
+                return "Refresh this worktree before deleting it: \(reason)"
+            }
         default:
             return nil
         }
@@ -57,7 +80,18 @@ private enum WorkspaceRemovalRequest: Identifiable {
                 workState = " Its folder is currently unavailable; only Byori's visibility record will change."
             }
             return "Only \(sourceTree.name) will disappear from Byori's outline. Its folder, Git worktree, branch, task/session history, and ByoriDB context will not be deleted. Restore it later from the project menu.\(workState)"
+        case let .task(task):
+            return "\(task.title) and its session metadata will move out of the active workspace into Byori's archived task storage. Repository files, the Git worktree and branch, and ByoriDB context will not be deleted."
+        case let .managedWorktree(sourceTree):
+            return "Byori will delete only its managed worktree folder at \(sourceTree.url.path) and remove that checkout from Git. Choose whether to keep branch \(sourceTree.branch), or ask Git to delete it safely; an unmerged branch will be kept."
         }
+    }
+
+    var canDeleteBranch: Bool {
+        guard case let .managedWorktree(sourceTree) = self else { return false }
+        return !sourceTree.branch.isEmpty
+            && !sourceTree.branch.hasPrefix("detached@")
+            && sourceTree.branch != "unborn"
     }
 }
 
@@ -155,10 +189,23 @@ struct WorkspaceView<TerminalHost: View>: View {
             titleVisibility: .visible
         ) {
             if let request = removalRequest {
-                Button(request.actionTitle, role: .destructive) {
-                    performRemoval(request)
+                if case .managedWorktree = request {
+                    Button("Delete Worktree", role: .destructive) {
+                        performRemoval(request, deletingBranch: false)
+                    }
+                    .disabled(request.disabledReason != nil || model.isMutatingWorkspace)
+                    if request.canDeleteBranch {
+                        Button("Delete Worktree and Branch", role: .destructive) {
+                            performRemoval(request, deletingBranch: true)
+                        }
+                        .disabled(request.disabledReason != nil || model.isMutatingWorkspace)
+                    }
+                } else {
+                    Button(request.actionTitle, role: .destructive) {
+                        performRemoval(request)
+                    }
+                    .disabled(request.disabledReason != nil || model.isMutatingWorkspace)
                 }
-                .disabled(request.disabledReason != nil || model.isMutatingWorkspace)
             }
             Button("Cancel", role: .cancel) { removalRequest = nil }
         } message: {
@@ -328,7 +375,10 @@ struct WorkspaceView<TerminalHost: View>: View {
         )
     }
 
-    private func performRemoval(_ request: WorkspaceRemovalRequest) {
+    private func performRemoval(
+        _ request: WorkspaceRemovalRequest,
+        deletingBranch: Bool = false
+    ) {
         removalRequest = nil
         Task {
             switch request {
@@ -336,6 +386,13 @@ struct WorkspaceView<TerminalHost: View>: View {
                 await model.removeProject(project)
             case let .sourceTree(sourceTree):
                 await model.hideSourceTree(sourceTree)
+            case let .task(task):
+                await model.archiveTask(task)
+            case let .managedWorktree(sourceTree):
+                await model.deleteManagedSourceTree(
+                    sourceTree,
+                    deletingBranch: deletingBranch
+                )
             }
         }
     }
@@ -520,7 +577,8 @@ private struct WorkspaceSidebar: View {
                                 sourceTreeID: sourceTree.id,
                                 existingTaskID: task.id
                             ),
-                            quickSessionDisabledReason: taskDisabledReason
+                            quickSessionDisabledReason: taskDisabledReason,
+                            removalRequests: [.task(task)]
                         )
                     }
                     let sessions = visibleSessions.map { session in
@@ -543,8 +601,18 @@ private struct WorkspaceSidebar: View {
                             sourceTreeID: sourceTree.id,
                             existingTaskID: task.id
                         ),
-                        quickSessionDisabledReason: taskDisabledReason
+                        quickSessionDisabledReason: taskDisabledReason,
+                        removalRequests: [.task(task)]
                     )
+                }
+                let removalRequests: [WorkspaceRemovalRequest]
+                switch sourceTree.kind {
+                case .primary:
+                    removalRequests = [.project(project)]
+                case .managedWorktree:
+                    removalRequests = [.sourceTree(sourceTree), .managedWorktree(sourceTree)]
+                case .externalCheckout:
+                    removalRequests = [.sourceTree(sourceTree)]
                 }
                 return WorkspaceSidebarNode(
                     id: "source-tree:\(sourceTree.id)",
@@ -558,9 +626,7 @@ private struct WorkspaceSidebar: View {
                         existingTaskID: nil
                     ),
                     quickSessionDisabledReason: activeSessionReason,
-                    removalRequest: sourceTree.kind == .primary
-                        ? .project(project)
-                        : .sourceTree(sourceTree)
+                    removalRequests: removalRequests
                 )
             }
             return WorkspaceSidebarNode(
@@ -573,7 +639,7 @@ private struct WorkspaceSidebar: View {
                 // a thing, and gave every project a disclosure arrow even when
                 // it had nothing to disclose.
                 children: sourceTrees.isEmpty ? nil : sourceTrees,
-                removalRequest: .project(project),
+                removalRequests: [.project(project)],
                 restorableSourceTrees: project.hiddenSourceTrees,
                 addSourceTreeProjectID: project.id
             )
@@ -600,7 +666,7 @@ private struct WorkspaceSidebarNode: Identifiable {
     let children: [WorkspaceSidebarNode]?
     let quickSessionTarget: WorkspaceNewSessionTarget?
     let quickSessionDisabledReason: String?
-    let removalRequest: WorkspaceRemovalRequest?
+    let removalRequests: [WorkspaceRemovalRequest]
     let restorableSourceTrees: [WorkspaceHiddenSourceTreeItem]
     /// Set on projects: the row's + opens the branch picker instead of a session.
     let addSourceTreeProjectID: String?
@@ -623,7 +689,7 @@ private struct WorkspaceSidebarNode: Identifiable {
         children: [WorkspaceSidebarNode]?,
         quickSessionTarget: WorkspaceNewSessionTarget? = nil,
         quickSessionDisabledReason: String? = nil,
-        removalRequest: WorkspaceRemovalRequest? = nil,
+        removalRequests: [WorkspaceRemovalRequest] = [],
         restorableSourceTrees: [WorkspaceHiddenSourceTreeItem] = [],
         addSourceTreeProjectID: String? = nil
     ) {
@@ -635,7 +701,7 @@ private struct WorkspaceSidebarNode: Identifiable {
         self.children = children
         self.quickSessionTarget = quickSessionTarget
         self.quickSessionDisabledReason = quickSessionDisabledReason
-        self.removalRequest = removalRequest
+        self.removalRequests = removalRequests
         self.restorableSourceTrees = restorableSourceTrees
         self.addSourceTreeProjectID = addSourceTreeProjectID
     }
@@ -857,7 +923,7 @@ private struct WorkspaceSidebarRow: View {
     }
 
     private var hasRowActions: Bool {
-        node.removalRequest != nil || !node.restorableSourceTrees.isEmpty
+        !node.removalRequests.isEmpty || !node.restorableSourceTrees.isEmpty
     }
 
     @ViewBuilder
@@ -878,18 +944,21 @@ private struct WorkspaceSidebarRow: View {
             }
         }
 
-        if !node.restorableSourceTrees.isEmpty, node.removalRequest != nil {
+        if !node.restorableSourceTrees.isEmpty, !node.removalRequests.isEmpty {
             Divider()
         }
 
-        if let request = node.removalRequest {
+        ForEach(node.removalRequests) { request in
             Button(role: .destructive) {
                 requestRemoval(request)
             } label: {
-                Label(removalMenuTitle(for: request), systemImage: "minus.circle")
+                Label(
+                    removalMenuTitle(for: request),
+                    systemImage: removalMenuIcon(for: request)
+                )
             }
             .disabled(isMutatingWorkspace || request.disabledReason != nil)
-            .help(request.disabledReason ?? "Keeps files, Git branches, history, and ByoriDB context")
+            .help(request.disabledReason ?? removalMenuHelp(for: request))
         }
     }
 
@@ -898,6 +967,26 @@ private struct WorkspaceSidebarRow: View {
         switch request {
         case .project: return "Remove Project from Byori…"
         case let .sourceTree(sourceTree): return "Hide \(sourceTree.kind.removalLabel) from Byori…"
+        case .task: return "Remove Task from Byori…"
+        case .managedWorktree: return "Delete Managed Worktree…"
+        }
+    }
+
+    private func removalMenuIcon(for request: WorkspaceRemovalRequest) -> String {
+        switch request {
+        case .project, .sourceTree, .task: return "minus.circle"
+        case .managedWorktree: return "trash"
+        }
+    }
+
+    private func removalMenuHelp(for request: WorkspaceRemovalRequest) -> String {
+        switch request {
+        case .project, .sourceTree:
+            return "Keeps files, Git branches, history, and ByoriDB context"
+        case .task:
+            return "Archives task and session metadata without changing Git files"
+        case .managedWorktree:
+            return "Deletes this clean Byori-managed worktree after confirmation"
         }
     }
 

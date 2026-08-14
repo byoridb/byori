@@ -758,6 +758,7 @@ public protocol WorkspaceTaskPersisting: Sendable {
         nativeSessionID: String?
     ) async throws -> WorkspaceSession
     func updateTaskStatus(taskID: String, status: WorkspaceTaskStatus) async throws -> WorkspaceTask
+    func archiveTask(id: String) async throws -> WorkspaceTask
 }
 
 public actor WorkspaceTaskStore: WorkspaceTaskPersisting {
@@ -777,6 +778,7 @@ public actor WorkspaceTaskStore: WorkspaceTaskPersisting {
 
     private let home: URL
     private let tasksRoot: URL
+    private let archivedTasksRoot: URL
     private let idGenerator: @Sendable () -> String
     private let now: @Sendable () -> Date
 
@@ -789,6 +791,8 @@ public actor WorkspaceTaskStore: WorkspaceTaskPersisting {
     ) {
         self.home = home.standardizedFileURL
         self.tasksRoot = home.standardizedFileURL.appendingPathComponent("tasks", isDirectory: true)
+        self.archivedTasksRoot = home.standardizedFileURL
+            .appendingPathComponent("archived-tasks", isDirectory: true)
         self.idGenerator = idGenerator
         self.now = now
     }
@@ -936,6 +940,36 @@ public actor WorkspaceTaskStore: WorkspaceTaskPersisting {
         }
     }
 
+    /// Removes a task from the active workspace without destroying its task or
+    /// session record. Moving the exact directory preserves any bounded run
+    /// artifacts beside state.json and makes the operation recoverable.
+    public func archiveTask(id: String) async throws -> WorkspaceTask {
+        try WorkspaceValidation.identifier(id, label: "task id")
+        return try withTaskLock {
+            guard let task = try readTaskIfPresent(id: id) else {
+                throw WorkspaceError.taskNotFound(id)
+            }
+            guard task.sessions.allSatisfy({ $0.status.isTerminal }) else {
+                throw WorkspaceError.invalidTask(
+                    "Stop the active session before removing this task from Byori."
+                )
+            }
+
+            let source = taskDirectoryURL(id: id)
+            let destination = archivedTasksRoot.appendingPathComponent(id, isDirectory: true)
+            guard !FileManager.default.fileExists(atPath: destination.path) else {
+                throw WorkspaceError.persistence("an archived task with this id already exists")
+            }
+            try WorkspaceDisk.ensurePrivateDirectory(archivedTasksRoot)
+            do {
+                try FileManager.default.moveItem(at: source, to: destination)
+            } catch {
+                throw WorkspaceError.persistence("cannot archive task metadata")
+            }
+            return task
+        }
+    }
+
     private func withTaskLock<T>(_ body: () throws -> T) throws -> T {
         try WorkspaceDisk.withExclusiveLock(
             at: home.appendingPathComponent("locks/workspace-tasks.lock"),
@@ -1013,9 +1047,12 @@ public actor WorkspaceTaskStore: WorkspaceTaskPersisting {
     }
 
     private func taskStateURL(id: String) -> URL {
-        tasksRoot
-            .appendingPathComponent(id, isDirectory: true)
+        taskDirectoryURL(id: id)
             .appendingPathComponent("state.json")
+    }
+
+    private func taskDirectoryURL(id: String) -> URL {
+        tasksRoot.appendingPathComponent(id, isDirectory: true)
     }
 }
 

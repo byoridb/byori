@@ -26,7 +26,7 @@ Project
   Git repository, Byori asks for confirmation before running `git init` and keeps existing files
   in place.
 - A source tree or worktree identifies the checkout in which the coding CLI runs. The
-  app can display registered worktrees, but this release does not create them.
+  app can create a Byori-managed worktree for an existing or new local branch.
 - A task groups related sessions for that checkout.
 - Each session records exactly one user-selected coding agent—Claude Code or Codex—and one
   model choice: either that agent CLI's default or an exact custom model identifier. Byori
@@ -37,7 +37,8 @@ Project
   Byori does not persist prompts or terminal transcripts.
 
 Byori does not send the same prompt to several agents, compare their output, choose
-a winner, merge branches, or clean up worktrees automatically. The foreground `byori run`
+a winner, merge branches, or clean up worktrees automatically. Managed-worktree cleanup is
+always an explicit confirmed action. The foreground `byori run`
 fan-out command documented in [multi-CLI orchestration](orchestration.md) remains a separate
 prototype and compatibility path.
 
@@ -50,6 +51,13 @@ prototype and compatibility path.
   session name, while legacy unnamed sessions retain the provider/model fallback. An ended
   session can be hidden with **Close** and restored from its Task row's
   **More Actions → Closed Sessions** menu.
+- A task row's **More Actions → Remove Task from Byori…** moves its task/session metadata to
+  `~/.byori/archived-tasks` after every session has ended. It does not change repository files,
+  the worktree or branch, or ByoriDB context.
+- A clean Byori-managed worktree with no tasks can be removed through
+  **More Actions → Delete Managed Worktree…**. The confirmation can keep its local branch or ask
+  Git to delete it with safe `-d` semantics; unmerged branches are retained. Primary and externally
+  managed checkouts never expose this deletion action.
 - The center opens directly on the selected session's real interactive PTY rendered by
   SwiftTerm. Claude Code or Codex runs in that checkout and handles its own login. Pasting a
   clipboard image writes a private temporary PNG and inserts its quoted path into the current

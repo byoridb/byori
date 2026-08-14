@@ -451,6 +451,49 @@ final class WorkspacePersistenceTests: XCTestCase {
         XCTAssertTrue(list.isTruncated)
     }
 
+    func testArchivingTaskPreservesMetadataAndRemovesItFromActiveReads() async throws {
+        let store = WorkspaceTaskStore(home: byoriHome)
+        let task = try await store.createTask(
+            projectID: "project123",
+            checkout: WorkspaceCheckoutReference(kind: .worktree, id: "worktree123"),
+            title: "Archive completed work"
+        )
+        let session = try await store.createSession(
+            taskID: task.id,
+            provider: .claude,
+            model: "claude-sonnet"
+        )
+        let taskDirectory = byoriHome.appendingPathComponent("tasks/\(task.id)", isDirectory: true)
+        let evidence = taskDirectory.appendingPathComponent("session-summary.txt")
+        try Data("kept".utf8).write(to: evidence)
+
+        do {
+            _ = try await store.archiveTask(id: task.id)
+            XCTFail("A task with an open session must not be archived")
+        } catch let error as WorkspaceError {
+            guard case .invalidTask = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+
+        _ = try await store.updateSessionStatus(
+            taskID: task.id,
+            sessionID: session.id,
+            status: .cancelled
+        )
+        let archived = try await store.archiveTask(id: task.id)
+        let activeTask = try await store.task(id: task.id)
+        let activeTasks = try await store.tasks(projectID: "project123", limit: 20)
+
+        XCTAssertEqual(archived.id, task.id)
+        XCTAssertNil(activeTask)
+        XCTAssertTrue(activeTasks.tasks.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: taskDirectory.path))
+        let archivedEvidence = byoriHome
+            .appendingPathComponent("archived-tasks/\(task.id)/session-summary.txt")
+        XCTAssertEqual(try Data(contentsOf: archivedEvidence), Data("kept".utf8))
+    }
+
     func testProjectReadsDiscoverAllGitWorktreesWithStableIDsWithoutRegistryMutation() async throws {
         let linked = temporaryRoot.appendingPathComponent("repositories/linked", isDirectory: true)
         let managed = byoriHome.appendingPathComponent("worktrees/run/worker", isDirectory: true)

@@ -67,6 +67,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
     private struct RegisteredCheckout {
         let url: URL
         let kind: WorkspaceCheckoutKind
+        let isManaged: Bool
     }
 
     /// One of the two ways a session can be started, resolved once so the launch
@@ -156,7 +157,8 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
                 }
                 nextCheckouts[primaryKey] = RegisteredCheckout(
                     url: primaryURL,
-                    kind: .sourceTree
+                    kind: .sourceTree,
+                    isManaged: false
                 )
                 sourceItems.append(await makeSourceTreeItem(
                     id: sourceTree.id,
@@ -178,7 +180,8 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
                     }
                     nextCheckouts[worktreeKey] = RegisteredCheckout(
                         url: worktreeURL,
-                        kind: .worktree
+                        kind: .worktree,
+                        isManaged: worktree.isManaged
                     )
                     sourceItems.append(await makeSourceTreeItem(
                         id: worktree.id,
@@ -422,6 +425,22 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         }
     }
 
+    func archiveTask(id: String) async throws {
+        try await operationGate.perform { [self] in
+            guard let task = coreTasks[id] else {
+                throw WorkspaceAdapterError.invalidState(
+                    "Refresh the workspace before removing this task from Byori."
+                )
+            }
+            guard task.sessions.allSatisfy({ $0.status.isTerminal }) else {
+                throw WorkspaceAdapterError.invalidState(
+                    "Stop the active session before removing this task from Byori."
+                )
+            }
+            _ = try await taskStore.archiveTask(id: id)
+        }
+    }
+
     func branches(projectID: String) async throws -> [WorkspaceGitBranch] {
         try await operationGate.perform { [self] in
             guard let project = coreProjects[projectID] else {
@@ -508,6 +527,53 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
                 checkout: WorkspaceCheckoutReference(kind: .worktree, id: sourceTreeID)
             )
             try await checkoutVisibilityStore.hideCheckout(projectID: projectID, at: checkout.url)
+        }
+    }
+
+    func deleteManagedSourceTree(
+        projectID: String,
+        sourceTreeID: String,
+        deletingBranch: Bool
+    ) async throws -> WorkspaceGitWorktreeRemovalResult {
+        try await operationGate.perform { [self] in
+            let key = CheckoutKey(projectID: projectID, checkoutID: sourceTreeID)
+            guard let project = coreProjects[projectID], let checkout = checkouts[key] else {
+                throw WorkspaceAdapterError.invalidState(
+                    "Refresh the workspace before deleting this worktree."
+                )
+            }
+            guard checkout.kind == .worktree, checkout.isManaged else {
+                throw WorkspaceAdapterError.invalidState(
+                    "Only a worktree created and managed by Byori can be deleted here."
+                )
+            }
+
+            let taskList = try await taskStore.tasks(projectID: projectID, limit: 1_000)
+            guard !taskList.isTruncated else {
+                throw WorkspaceAdapterError.invalidState(
+                    "Byori could not safely inspect all task records. The worktree was left unchanged."
+                )
+            }
+            let checkoutReference = WorkspaceCheckoutReference(kind: .worktree, id: sourceTreeID)
+            guard !taskList.tasks.contains(where: { $0.checkout == checkoutReference }) else {
+                throw WorkspaceAdapterError.invalidState(
+                    "Remove this worktree's tasks from Byori before deleting the Git worktree."
+                )
+            }
+
+            let result = try await git.removeWorktree(
+                repositoryRoot: URL(fileURLWithPath: project.rootPath, isDirectory: true),
+                at: checkout.url,
+                deletingBranch: deletingBranch
+            )
+            // A checkout may have been hidden and restored before deletion.
+            // Stale visibility metadata is cleanup-only and must not turn a
+            // successful Git deletion into a reported failure.
+            try? await checkoutVisibilityStore.unhideCheckout(
+                projectID: projectID,
+                at: checkout.url
+            )
+            return result
         }
     }
 

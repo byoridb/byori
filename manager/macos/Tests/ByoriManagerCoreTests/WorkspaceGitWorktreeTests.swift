@@ -89,6 +89,111 @@ final class WorkspaceGitWorktreeTests: XCTestCase {
         XCTAssertTrue(after.contains { $0.name == "feature/fresh" })
     }
 
+    func testRemovesCleanWorktreeAndKeepsBranchWhenRequested() async throws {
+        let destination = root.deletingLastPathComponent()
+            .appendingPathComponent("byori-wt-\(UUID().uuidString)/feature-one", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
+        _ = try await git.addWorktree(
+            repositoryRoot: root,
+            at: destination,
+            branch: "feature/one",
+            creatingFrom: nil
+        )
+
+        let result = try await git.removeWorktree(
+            repositoryRoot: root,
+            at: destination,
+            deletingBranch: false
+        )
+        let remainingBranches = try await git.branches(at: root)
+
+        XCTAssertEqual(result.branch, "feature/one")
+        XCTAssertFalse(result.branchDeleted)
+        XCTAssertNil(result.branchDeletionFailure)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+        XCTAssertTrue(remainingBranches.contains { $0.name == "feature/one" })
+    }
+
+    func testRemovesCleanWorktreeAndSafelyDeletesMergedBranch() async throws {
+        let destination = root.deletingLastPathComponent()
+            .appendingPathComponent("byori-wt-\(UUID().uuidString)/feature-one", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
+        _ = try await git.addWorktree(
+            repositoryRoot: root,
+            at: destination,
+            branch: "feature/one",
+            creatingFrom: nil
+        )
+
+        let result = try await git.removeWorktree(
+            repositoryRoot: root,
+            at: destination,
+            deletingBranch: true
+        )
+        let remainingBranches = try await git.branches(at: root)
+
+        XCTAssertEqual(result.branch, "feature/one")
+        XCTAssertTrue(result.branchDeleted)
+        XCTAssertNil(result.branchDeletionFailure)
+        XCTAssertFalse(remainingBranches.contains { $0.name == "feature/one" })
+    }
+
+    func testRefusesDirtyWorktreeWithoutDeletingFiles() async throws {
+        let destination = root.deletingLastPathComponent()
+            .appendingPathComponent("byori-wt-\(UUID().uuidString)/feature-one", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
+        _ = try await git.addWorktree(
+            repositoryRoot: root,
+            at: destination,
+            branch: "feature/one",
+            creatingFrom: nil
+        )
+        let untracked = destination.appendingPathComponent("do-not-delete.txt")
+        try Data("important".utf8).write(to: untracked)
+
+        do {
+            _ = try await git.removeWorktree(
+                repositoryRoot: root,
+                at: destination,
+                deletingBranch: true
+            )
+            XCTFail("A dirty worktree must be refused")
+        } catch {
+            let remainingBranches = try await git.branches(at: root)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: untracked.path))
+            XCTAssertTrue(remainingBranches.contains {
+                $0.name == "feature/one" && $0.isCheckedOut
+            })
+        }
+    }
+
+    func testUnmergedBranchIsKeptAfterWorktreeRemoval() async throws {
+        let destination = root.deletingLastPathComponent()
+            .appendingPathComponent("byori-wt-\(UUID().uuidString)/feature-one", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
+        _ = try await git.addWorktree(
+            repositoryRoot: root,
+            at: destination,
+            branch: "feature/one",
+            creatingFrom: nil
+        )
+        try Data("branch-only".utf8).write(to: destination.appendingPathComponent("branch.txt"))
+        try run(["-C", destination.path, "add", "."])
+        try run(["-C", destination.path, "commit", "-m", "branch work"])
+
+        let result = try await git.removeWorktree(
+            repositoryRoot: root,
+            at: destination,
+            deletingBranch: true
+        )
+        let remainingBranches = try await git.branches(at: root)
+
+        XCTAssertFalse(result.branchDeleted)
+        XCTAssertNotNil(result.branchDeletionFailure)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+        XCTAssertTrue(remainingBranches.contains { $0.name == "feature/one" })
+    }
+
     func testRefusesToOverwriteAnExistingDirectory() async throws {
         let destination = root.deletingLastPathComponent()
             .appendingPathComponent("byori-wt-\(UUID().uuidString)", isDirectory: true)
