@@ -23,20 +23,22 @@ Byori installs and manages a validated engine release; the engine knows nothing 
 - 🟡 The 63-bit hash mask and documented VID range are in place. The canonical upstream
   planner fix for negative VIDs remains pending in the engine
 
-## P4 — Byori macOS App + Shared Management Core 🟡 (Workspace Implemented, Signed DMG Pending)
+## P4 — Byori macOS App + Shared Management Core 🟡 (Workspace and Signed Release Shipped, CLI Convergence Pending)
 
-The SwiftUI **Byori macOS app** is implemented and available to build from source. Its primary
-surface is a Project → Source Tree/Worktree → Task → Session workspace with a real interactive
-Claude Code or Codex PTY selected by the user for each session. A signed and notarized `.dmg`
-release is still pending. The shared management core handles installation, diagnostics,
-connections, and updates from Settings. The current cross-platform `byori` CLI implements the
+The SwiftUI **Byori macOS app** is implemented and distributed as a signed, notarized, stapled
+universal DMG on each release; the app installs its own updates after verifying that signature and
+notarization. Its primary surface is a Project → Source Tree/Worktree → Task → Session workspace
+with a real interactive Claude Code or Codex PTY selected by the user for each session. The shared
+management core handles installation, diagnostics, connections, and updates from Settings. The current cross-platform `byori` CLI implements the
 foreground compatibility slice (`provider / project / run / runs`); its broader management
 surface still needs to converge with the app core:
 `setup / doctor / connect claude / connect codex / project add . / status /
 backup / upgrade --plan / rollback / uninstall`.
 
-- ✅ The app persists project registrations, discovers source trees and linked worktrees, stores
-  tasks and session metadata, and retains live PTYs while the app process remains running
+- ✅ The app persists project registrations, discovers source trees and linked worktrees, creates
+  Byori-managed worktrees for an existing or new local branch, stores tasks and session metadata,
+  and retains live PTYs. With tmux 3.2 or later a session survives a full app quit and reattaches
+  on the next launch
 - ✅ Each session records one user-selected launch provider and model. The app does not
   automatically fan out prompts, select a winner, merge, or delete agent work
 - The app can detect Claude Code, Codex, Gemini CLI, Cursor CLI, and OpenCode and, with the
@@ -49,8 +51,7 @@ backup / upgrade --plan / rollback / uninstall`.
   maintenance, backups, and diagnostics remain supporting Settings surfaces
 - Its state model follows the `byoridb-tray` prototype without reusing its hard-coded paths
   or synchronous process execution
-- Remaining: PTY reattach after a full app quit, app-managed worktree creation, and the signed,
-  notarized public distribution
+- Remaining: convergence of the cross-platform `byori` CLI management surface with the app core
 
 ## P5 — Memory Schema Versioning + Migration 🟡 (Additive v2 + Structured MCP Complete)
 

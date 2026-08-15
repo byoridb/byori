@@ -6,8 +6,33 @@ The Byori macOS app is a native SwiftUI multi-agent coding workspace for running
 Code or Codex in local Git checkouts. Its primary surface is the workspace; Settings
 supports installation, integration, and diagnostics. ByoriDB provides the project-scoped
 shared knowledge graph beneath that workspace. ByoriDB continues to run as the existing
-launchd user service after you quit the app; interactive coding sessions do not. The app
-supports macOS 13 or later and can be built for both Apple Silicon and Intel.
+launchd user service after you quit the app. With tmux 3.2 or later, interactive coding
+sessions stay detached and reattach on the next launch; without a supported tmux they end
+with the app. The app supports macOS 13 or later and ships as one universal build for
+Apple Silicon and Intel.
+
+## Installing
+
+Download `Byori-<version>-universal.dmg` from the
+[latest release](https://github.com/byoridb/byori/releases/latest), open it, and drag
+**Byori** into Applications. The release DMG is signed with a Developer ID Application
+certificate, notarized by Apple, and stapled, so Gatekeeper opens it without an exception:
+
+```bash
+spctl -a -vvv -t open --context context:primary-signature ~/Downloads/Byori-*-universal.dmg
+# accepted
+# source=Notarized Developer ID
+```
+
+**Settings → Setup Overview** then reports the installed version and installs later
+releases itself, verifying the Developer ID signature and Apple notarization of a candidate
+before replacing the bundle and refusing the update when either check fails. The check runs
+every six hours and only reports; nothing is downloaded until you ask for it. Because the
+swap quits the app, it refuses while a session that is not backed by tmux is running.
+
+ByoriDB is installed separately, from **Settings → ByoriDB** or with the
+[shell installer](install.md). To build the app yourself, see
+[Building the .app and DMG](#building-the-app-and-dmg).
 
 ## Workspace model
 

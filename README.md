@@ -121,8 +121,49 @@ Codex. You can use the provider's CLI-default model or enter an exact launch mod
 Byori records that launch selection; provider-side model changes made inside the interactive CLI
 remain outside Byori's observation.
 
-The app discovers existing Git worktrees but does not create them yet. It also does not broadcast
-one prompt to several agents, compare their patches, select a winner, merge, or clean up worktrees.
+#### Install the app
+
+Download `Byori-<version>-universal.dmg` from the
+[latest release](https://github.com/byoridb/byori/releases/latest), open it, and drag **Byori**
+into Applications. The DMG is signed with a Developer ID Application certificate, notarized by
+Apple, and stapled, so it opens without a Gatekeeper exception. One universal build covers Apple
+Silicon and Intel, and the app requires macOS 13 or later.
+
+To confirm that before installing:
+
+```bash
+spctl -a -vvv -t open --context context:primary-signature ~/Downloads/Byori-*-universal.dmg
+# accepted
+# source=Notarized Developer ID
+```
+
+From then on the app updates itself: **Settings → Setup Overview** reports the installed version
+and installs a newer release only after verifying its Developer ID signature and Apple
+notarization, refusing the update if either check fails. Replacing the bundle quits the app, so it
+asks you to stop any session that is not backed by tmux first.
+
+ByoriDB is a separate install — either **Settings → ByoriDB** in the app, or the one-line installer
+below.
+
+<details>
+<summary>Build from source instead</summary>
+
+Requires Xcode Command Line Tools. The version defaults to the current git tag.
+
+```bash
+git clone https://github.com/byoridb/byori.git && cd byori
+scripts/build-macos-dmg.sh          # creates dist/Byori.app and a .dmg
+open "dist/Byori.app"
+```
+
+A local build is ad-hoc signed, which is fine on the machine that produced it; another Mac would
+need a Gatekeeper exception. See the [Byori macOS app documentation](docs/manager-macos.md) for
+`--universal`, `--sign`, and notarization options.
+
+</details>
+
+The app can create a Byori-managed worktree for an existing or new local branch. It does not
+broadcast one prompt to several agents, compare their patches, select a winner, merge, or clean up worktrees.
 Create another session explicitly when you want another agent.
 
 Closing the workspace window keeps its PTYs alive. With tmux 3.2 or later, quitting Byori detaches
@@ -132,24 +173,6 @@ other local requirements and can install or upgrade it with Homebrew. Prompts ar
 stored by Byori. Vendor login remains CLI-owned. An optional Claude model API setting stores only
 the credential the user explicitly enters in macOS Keychain and can be disabled to restore the
 ordinary Claude environment for future sessions.
-
-#### Build from source for now
-
-> [!NOTE]
-> There is no officially signed and notarized `.dmg` release yet. Developer ID signing requires
-> an Apple Developer Program membership. Until a signed build is available, build the app locally
-> with Xcode Command Line Tools.
-
-```bash
-git clone https://github.com/byoridb/byori.git && cd byori
-VERSION=0.2.0-dev scripts/build-macos-dmg.sh    # creates dist/Byori.app and a .dmg
-open "dist/Byori.app"
-```
-
-See the [Byori macOS app documentation](docs/manager-macos.md) for build options such as
-`--universal` and `--sign`, plus notarization instructions. An ad-hoc-signed development build is
-appropriate for local testing; sharing it with another Mac may require Gatekeeper workarounds
-until an officially signed release is available.
 
 ### `byori` foreground CLI prototype
 
@@ -339,8 +362,8 @@ ByoriDB repository documentation for the engine's feature set and constraints.
 - Capture is performed by the agent at checkpoints rather than extracted automatically on every turn.
 - The default `memory_recall` searches substrings in note names and bodies; it does not use the engine's vector search.
 - There is no checkpoint hook for Codex or NaraeClaw; the bundled reminder hook is Claude Code-only.
-- The macOS app discovers existing linked worktrees but does not create them, and its PTYs cannot
-  be reattached after the app process exits.
+- Interactive sessions survive quitting the macOS app only with tmux 3.2 or later; without a
+  supported tmux they end with it.
 - Multi-CLI orchestration is a foreground local MVP; it does not yet provide a daemon, remote UI,
   automatic patch comparison, merge, or worktree cleanup.
 - Public queries in engine temporal v1 are limited to vertex `FETCH ... AS OF`, and current/history dual writes are non-atomic.

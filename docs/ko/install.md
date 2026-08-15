@@ -20,8 +20,17 @@ curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh 
 ## Byori macOS 앱
 
 아래 shell 설치기는 ByoriDB, MCP 자산, 호환 CLI를 설치하며 `/Applications`에 앱을
-복사하지는 않는다. Byori macOS 앱은 `Byori-<version>-<arch>.dmg`로 배포한다.
-저장소에서 빌드하면 공개 산출물 `dist/Byori.app`과
+복사하지는 않는다. 앱은 [최신 릴리스](https://github.com/byoridb/byori/releases/latest)에서
+설치한다. `Byori-<version>-universal.dmg`를 열고 **Byori**를 Applications로 끌어다 놓으면 된다.
+이 DMG는 Developer ID Application 인증서로 서명하고 Apple 공증과 staple을 마쳤으므로 Gatekeeper
+우회 없이 열린다. universal 빌드 하나가 Apple Silicon과 Intel을 지원하며 macOS 13 이상이
+필요하다. 이후 업데이트는 앱이 **Settings → 설정 개요**에서 각 릴리스의 서명과 공증을 확인한
+뒤 설치한다.
+
+ByoriDB는 앱의 **Settings → ByoriDB**에서도 설치할 수 있다. 앱에 포함된 자산을 사용하고
+호환되는 엔진 릴리스를 내려받는다.
+
+저장소에서 빌드하면 같은 공개 산출물 `dist/Byori.app`과
 `dist/Byori-<version>-<arch>.dmg`를 만들며 앱 번들의 executable은 `Byori`다.
 
 앱의 메인 workspace는 **Project → Source Tree/Worktree → Task → Session** 순서다.

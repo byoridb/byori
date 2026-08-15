@@ -21,19 +21,21 @@ byoridb 저장소에서 분리된 2026-07-13에 처음 수립하고 2026-08-07�
   edge 삭제, cascade vertex 삭제까지 커버한다
 - 🟡 hash 63bit 마스킹과 VID 범위 문서화는 완료. 엔진의 음수 VID planner 정식 수정은 남음
 
-## P4 — Byori macOS 앱 + 공용 관리 코어 🟡 (워크스페이스 구현, signed DMG 릴리스 대기)
+## P4 — Byori macOS 앱 + 공용 관리 코어 🟡 (워크스페이스·서명 릴리스 완료, CLI 수렴 남음)
 
-SwiftUI **Byori macOS 앱**은 구현되어 source build로 사용할 수 있다. 핵심 화면은
+SwiftUI **Byori macOS 앱**은 구현되었고 릴리스마다 서명·공증·staple을 마친 universal DMG로
+배포한다. 앱은 새 릴리스의 서명과 공증을 확인한 뒤 스스로 업데이트한다. 핵심 화면은
 Project → Source Tree/Worktree → Task → Session 워크스페이스이며, 사용자가 세션마다
-Claude Code 또는 Codex를 골라 실제 대화형 PTY에서 작업한다. signed/notarized `.dmg`
-릴리스는 아직 남았다. 공용 코어는 Settings에서 설치·진단·연결·업데이트를 담당한다.
+Claude Code 또는 Codex를 골라 실제 대화형 PTY에서 작업한다. 공용 코어는 Settings에서
+설치·진단·연결·업데이트를 담당한다.
 현재 cross-platform `byori` CLI는 foreground 호환 slice
 (`provider / project / run / runs`)를 구현하며, 더 넓은 관리 표면은 앱 코어와 수렴해야 한다:
 `setup / doctor / connect claude / connect codex / project add . / status /
 backup / upgrade --plan / rollback / uninstall`.
 
-- ✅ 앱은 프로젝트 등록을 보존하고 source tree와 linked worktree를 탐색하며 task/session
-  metadata를 저장하고, 앱 process가 살아 있는 동안 실제 PTY를 유지한다
+- ✅ 앱은 프로젝트 등록을 보존하고 source tree와 linked worktree를 탐색하며, 기존/새 local
+  branch로 Byori 관리 worktree를 만들고, task/session metadata를 저장하고 실제 PTY를 유지한다.
+  tmux 3.2 이상이면 앱을 완전히 종료해도 세션이 유지되고 다음 실행에서 다시 attach된다
 - ✅ 세션마다 사용자가 고른 launch provider/model 하나를 기록한다. 앱은 prompt를 자동
   fan-out하거나 winner를 선택하고 agent 작업을 merge·삭제하지 않는다
 - 앱은 Claude Code, Codex, Gemini CLI, Cursor CLI, OpenCode를 감지하고 사용자의 명시적
@@ -45,7 +47,7 @@ backup / upgrade --plan / rollback / uninstall`.
   지원 기능인 Settings에 둔다
 - 상태 모델은 `byoridb-tray` prototype을 따르되 하드코딩 경로와 동기 process 실행은
   재사용하지 않았다
-- 남음: 앱 완전 종료 후 PTY reattach, 앱이 관리하는 worktree 생성, 서명·공증된 공개 배포
+- 남음: cross-platform `byori` CLI의 관리 표면을 앱 코어와 수렴
 
 ## P5 — memory schema versioning + migration 🟡 (additive v2 + structured MCP 완료)
 

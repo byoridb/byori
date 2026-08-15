@@ -9,6 +9,27 @@ SwiftUI 멀티 에이전트 코딩 워크스페이스다. 메인 화면은 워�
 이상이 있으면 대화형 코딩 세션도 분리된 채 유지되며 다음 앱 실행에서 다시 attach할 수 있다.
 지원 기준은 macOS 13 이상이며 Apple Silicon과 Intel 빌드를 만들 수 있다.
 
+## 설치
+
+[최신 릴리스](https://github.com/byoridb/byori/releases/latest)에서
+`Byori-<version>-universal.dmg`를 내려받아 열고 **Byori**를 Applications로 끌어다 놓는다.
+릴리스 DMG는 Developer ID Application 인증서로 서명하고 Apple 공증과 staple을 마쳤으므로
+Gatekeeper가 예외 없이 열어 준다.
+
+```bash
+spctl -a -vvv -t open --context context:primary-signature ~/Downloads/Byori-*-universal.dmg
+# accepted
+# source=Notarized Developer ID
+```
+
+이후 **Settings → 설정 개요**가 설치된 버전을 보고하고 다음 릴리스를 직접 설치한다. 후보
+릴리스의 Developer ID 서명과 Apple 공증을 확인한 뒤에만 번들을 교체하며, 어느 하나라도
+실패하면 설치하지 않는다. 확인은 6시간마다 보고만 하고 사용자가 요청할 때까지 아무것도
+내려받지 않는다. 교체를 위해 앱이 종료되므로 tmux로 유지되지 않는 세션이 실행 중이면 거부한다.
+
+ByoriDB는 별도로 설치한다. **Settings → ByoriDB** 또는 [shell 설치기](install.md)를 사용한다.
+직접 빌드하는 방법은 [.app과 DMG 만들기](#app과-dmg-만들기)에 있다.
+
 ## 워크스페이스 모델
 
 메인 계층은 다음과 같다.

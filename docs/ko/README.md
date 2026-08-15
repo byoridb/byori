@@ -120,7 +120,46 @@ CLI 기본 model을 사용하거나 정확한 launch model identifier를 입력�
 이 launch 선택을 기록하지만 대화형 CLI 안에서 일어난 provider-side model 변경은 관찰하지
 않습니다.
 
-앱은 기존 Git worktree를 찾아 보여 주지만 아직 새 worktree를 만들지는 않습니다. 하나의 prompt를
+#### 앱 설치
+
+[최신 릴리스](https://github.com/byoridb/byori/releases/latest)에서
+`Byori-<version>-universal.dmg`를 내려받아 열고 **Byori**를 Applications로 끌어다 놓으세요.
+이 DMG는 Developer ID Application 인증서로 서명하고 Apple 공증과 staple을 마쳤으므로 Gatekeeper
+우회 없이 열립니다. universal 빌드 하나가 Apple Silicon과 Intel을 모두 지원하며, 앱은 macOS 13
+이상이 필요합니다.
+
+설치 전에 직접 확인하려면:
+
+```bash
+spctl -a -vvv -t open --context context:primary-signature ~/Downloads/Byori-*-universal.dmg
+# accepted
+# source=Notarized Developer ID
+```
+
+이후 업데이트는 앱이 처리합니다. **Settings → 설정 개요**가 설치된 버전을 보고하고, 새 릴리스의
+Developer ID 서명과 Apple 공증을 확인한 뒤에만 교체하며 어느 하나라도 실패하면 설치하지 않습니다.
+교체를 위해 앱이 한 번 종료되므로, tmux로 유지되지 않는 세션은 먼저 종료하도록 요청합니다.
+
+ByoriDB는 별도 설치입니다. 앱의 **Settings → ByoriDB**를 쓰거나 아래 한 줄 설치기를 사용하세요.
+
+<details>
+<summary>대신 소스에서 빌드하기</summary>
+
+Xcode Command Line Tools가 필요합니다. 버전은 현재 git tag를 기본값으로 씁니다.
+
+```bash
+git clone https://github.com/byoridb/byori.git && cd byori
+scripts/build-macos-dmg.sh          # dist/Byori.app과 .dmg 생성
+open "dist/Byori.app"
+```
+
+로컬 빌드는 ad-hoc 서명이라 빌드한 기기에서는 문제없지만, 다른 Mac에서는 Gatekeeper 우회가
+필요합니다. `--universal`, `--sign`, 공증 옵션은 [Byori macOS 앱 문서](manager-macos.md)를
+참고하세요.
+
+</details>
+
+앱은 기존 local branch나 새 branch로 Byori 관리 worktree를 만들 수 있습니다. 하나의 prompt를
 여러 agent에 전파하거나 patch를 비교하고 winner를 고르거나 merge·정리하지도 않습니다. 다른
 agent가 필요하면 사용자가 새 세션을 명시적으로 엽니다.
 
@@ -132,22 +171,6 @@ Byori가 저장하지 않습니다. 벤더 로그인은 각 CLI가 관리합니�
 사용자가 직접 입력한 credential만 macOS Keychain에 저장하며, 비활성화하면 이후 세션에서 일반
 Claude 환경으로 돌아갑니다.
 
-#### 지금은 소스에서 빌드하세요
-
-> [!NOTE]
-> 정식 서명·공증된 `.dmg` 릴리스는 아직 없습니다. Developer ID 서명에는 Apple Developer
-> Program 멤버십이 필요합니다. 서명 빌드가 준비될 때까지 Xcode Command Line Tools로 로컬에서
-> 빌드하세요.
-
-```bash
-git clone https://github.com/byoridb/byori.git && cd byori
-VERSION=0.2.0-dev scripts/build-macos-dmg.sh    # dist/Byori.app과 .dmg 생성
-open "dist/Byori.app"
-```
-
-`--universal`, `--sign` 빌드 옵션과 공증 절차는
-[Byori macOS 앱 문서](manager-macos.md)를 참고하세요. ad-hoc 서명 개발 빌드는 로컬 테스트용이며,
-정식 서명 릴리스 전 다른 Mac에 전달하면 Gatekeeper 우회가 필요할 수 있습니다.
 
 ### `byori` foreground CLI 프로토타입
 
@@ -327,8 +350,8 @@ bitemporal history(`AS OF`), similarity recommendation을 제공합니다. 설�
 - capture는 매 턴 자동 추출이 아니라 체크포인트에서 에이전트가 수행합니다.
 - 기본 `memory_recall`은 note 이름·본문 substring 검색이며 엔진의 vector search를 사용하지 않습니다.
 - Codex·NaraeClaw용 체크포인트 hook은 없습니다(번들 reminder hook은 Claude Code 전용).
-- macOS 앱은 기존 linked worktree를 찾아 보여 주지만 새로 만들지는 않습니다. tmux 3.2 이상이면
-  앱 process 종료 후에도 PTY에 다시 attach할 수 있고, 없으면 세션이 앱과 함께 종료됩니다.
+- macOS 앱의 대화형 세션은 tmux 3.2 이상에서만 앱 종료 후에도 유지되며, 지원되는 tmux가 없으면
+  세션이 앱과 함께 종료됩니다.
 - 멀티 CLI 오케스트레이션은 foreground 로컬 MVP입니다. daemon, 원격 UI, 자동 patch 비교,
   merge, worktree 정리는 아직 제공하지 않습니다.
 - 엔진 temporal v1의 공개 조회는 vertex `FETCH ... AS OF`에 한정되며 current/history dual-write는 비원자적입니다.

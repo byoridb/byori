@@ -22,10 +22,19 @@ curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh 
 ## Byori macOS app
 
 The shell installer installs ByoriDB, MCP assets, and the compatibility CLI; it does
-not copy an app into `/Applications`. The Byori macOS app is distributed in
-`Byori-<version>-<arch>.dmg`. A repository build writes the public artifacts to
-`dist/Byori.app` and `dist/Byori-<version>-<arch>.dmg`; the app bundle executable is
-`Byori`.
+not copy an app into `/Applications`. Install the app from the
+[latest release](https://github.com/byoridb/byori/releases/latest): open
+`Byori-<version>-universal.dmg` and drag **Byori** into Applications. That DMG is signed
+with a Developer ID Application certificate, notarized by Apple, and stapled, so it opens
+without a Gatekeeper exception; one universal build covers Apple Silicon and Intel and
+requires macOS 13 or later. Afterwards the app installs its own updates from
+**Settings → Setup Overview**, verifying each release's signature and notarization first.
+
+ByoriDB can also be installed from the app itself, in **Settings → ByoriDB**, which uses the
+assets bundled in the app and downloads a compatible engine release.
+
+A repository build writes the same public artifacts to `dist/Byori.app` and
+`dist/Byori-<version>-<arch>.dmg`; the app bundle executable is `Byori`.
 
 The app's main workspace follows **Project → Source Tree/Worktree → Task → Session**.
 The user chooses one coding agent and model for each session. Settings supports agent,
