@@ -1067,12 +1067,14 @@ private struct WorkspaceSidebarRow: View {
         }
     }
 
+    /// The checkout kind — Primary, Worktree, External — is identity, not state,
+    /// so it is not tinted by the working tree. Colouring it left the same word
+    /// orange on one row and grey on the next for a reason the word itself never
+    /// mentions, and it reported uncommitted changes a second time next to the
+    /// dot that already carries them.
     private var metadataColor: Color {
         switch node.kind {
         case let .project(project) where project.registration != .trusted: return .orange
-        case let .sourceTree(sourceTree):
-            if case .modified = sourceTree.workingState { return .orange }
-            return .secondary
         default: return .secondary
         }
     }
@@ -1080,11 +1082,7 @@ private struct WorkspaceSidebarRow: View {
     private var statusColor: Color? {
         switch node.kind {
         case let .sourceTree(sourceTree):
-            switch sourceTree.workingState {
-            case .clean: return WorkspacePalette.running
-            case .modified: return .orange
-            case .unavailable: return .red
-            }
+            return WorkspacePalette.workingTreeColor(sourceTree.workingState)
         case let .session(session):
             return WorkspacePalette.statusColor(session.state)
         default:
@@ -2213,13 +2211,32 @@ private struct WorkspaceUnavailableView: View {
     }
 }
 
-private enum WorkspacePalette {
+/// The one place a workspace state becomes a colour.
+///
+/// Internal rather than file-private because the outline and the bottom status
+/// bar report the same facts. While each owned its own mapping they disagreed: a
+/// clean checkout was teal in the sidebar and green in the status bar.
+enum WorkspacePalette {
     static let running = Color(nsColor: .systemTeal)
     static let terminalBackground = Color(
         red: 0.055,
         green: 0.063,
         blue: 0.068
     )
+
+    /// Nil for a clean working tree.
+    ///
+    /// Clean is not a state that earns colour: it is the default. Giving it an
+    /// accent spent the running teal on something that is not running, so one
+    /// dot in one column answered two different questions depending on the row
+    /// it sat in.
+    static func workingTreeColor(_ state: WorkspaceWorkingTreeStatus) -> Color? {
+        switch state {
+        case .clean: return nil
+        case .modified: return .orange
+        case .unavailable: return .red
+        }
+    }
 
     static func statusColor(_ status: WorkspaceSessionItemStatus) -> Color {
         switch status {
