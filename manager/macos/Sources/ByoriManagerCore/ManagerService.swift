@@ -15,6 +15,10 @@ public actor ManagerService {
     private let graphProvider: any KnowledgeGraphProviding
     private let fileManager: FileManager
     private let serviceVerifier: LocalServiceVerifier
+    /// Settings' own tmux probe. Deliberately separate from the terminal
+    /// controller's: this one answers status questions, and both caches are
+    /// refreshed after an install so neither can keep reporting the old answer.
+    private let tmux: TmuxSessionService
 
     public init(
         paths: ManagerPaths = .applicationDefault(),
@@ -29,15 +33,79 @@ public actor ManagerService {
         self.graphProvider = graphProvider
         self.fileManager = fileManager
         serviceVerifier = LocalServiceVerifier(runner: runner)
+        // Takes the default FileManager rather than this service's: the status
+        // and install paths only run `tmux -V`, and handing a non-Sendable
+        // instance across the actor boundary is a data race the compiler is
+        // right to refuse.
+        tmux = TmuxSessionService(paths: paths, runner: runner)
     }
 
     public func snapshot() async -> ManagerSnapshot {
         let byori = await byoriStatus()
+        let tmuxStatus = await tmuxStatus()
         var agents: [AgentStatus] = []
         for kind in AgentKind.allCases {
             agents.append(await agentStatus(kind))
         }
-        return ManagerSnapshot(byori: byori, agents: agents)
+        return ManagerSnapshot(byori: byori, tmux: tmuxStatus, agents: agents)
+    }
+
+    public func tmuxStatus() async -> TmuxStatus {
+        TmuxStatus(
+            availability: await tmux.availability(),
+            install: paths.executable(named: "brew").map {
+                .homebrew(executablePath: $0.path)
+            }
+        )
+    }
+
+    /// Installs or upgrades tmux with Homebrew, then re-reads it.
+    ///
+    /// The two commands are not interchangeable: `brew install` refuses a
+    /// formula that is already installed, and `brew upgrade` refuses one that is
+    /// not, so the current state picks the command. Verification is the same in
+    /// both directions — a command that exits zero without producing a tmux
+    /// Byori will actually use has not finished the job.
+    public func installTmux() async throws -> OperationResult {
+        let status = await tmuxStatus()
+        guard let install = status.install else {
+            throw ManagerError.prerequisite(
+                "tmux 설치에는 Homebrew가 필요합니다. https://brew.sh 에서 Homebrew를 설치한 뒤 다시 시도해 주세요."
+            )
+        }
+        guard !status.isAvailable else {
+            return OperationResult(
+                summary: "tmux는 이미 사용 가능합니다",
+                detail: status.stateLabel
+            )
+        }
+
+        let subcommand = status.installSubcommand
+        var environment = commonEnvironment
+        // A status refresh must not turn into a full formula index update the
+        // user did not ask for, and tmux is a core formula either way.
+        environment["HOMEBREW_NO_AUTO_UPDATE"] = "1"
+        let result = await runner.run(CommandSpec(
+            executable: install.executablePath,
+            arguments: [subcommand, "tmux"],
+            environment: environment,
+            timeout: 900
+        ))
+        try require(result, label: "tmux \(subcommand == "upgrade" ? "업그레이드" : "설치")")
+
+        let refreshed = TmuxStatus(
+            availability: await tmux.refreshAvailability(),
+            install: install
+        )
+        guard case let .available(_, version) = refreshed.availability else {
+            throw ManagerError.verificationFailed(
+                "명령은 완료되었지만 Byori가 사용할 수 있는 tmux를 찾지 못했습니다. \(refreshed.stateLabel)"
+            )
+        }
+        return OperationResult(
+            summary: "tmux \(version) 준비 완료",
+            detail: result.output
+        )
     }
 
     /// Settings-only inventory. Keep this out of `snapshot()` because Claude's

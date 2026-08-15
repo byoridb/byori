@@ -38,13 +38,25 @@ public actor TmuxSessionService {
         self.fileManager = fileManager
     }
 
-    /// Cached after the first probe: it spawns a process, and the answer cannot
-    /// change without the user installing tmux, which a relaunch picks up.
+    /// Cached after the first probe: it spawns a process, and the answer only
+    /// changes when tmux itself is installed or upgraded.
     public func availability() async -> TmuxAvailability {
         if let cachedAvailability { return cachedAvailability }
         let resolved = await probeAvailability()
         cachedAvailability = resolved
         return resolved
+    }
+
+    /// Drops the cached probe and reads tmux again.
+    ///
+    /// Byori installs tmux itself now, so "the answer cannot change without a
+    /// relaunch" stopped being true. Without this, the session started right
+    /// after a successful install would still be launched without persistence,
+    /// and Settings would keep reporting the version it read beforehand.
+    @discardableResult
+    public func refreshAvailability() async -> TmuxAvailability {
+        cachedAvailability = nil
+        return await availability()
     }
 
     private func probeAvailability() async -> TmuxAvailability {

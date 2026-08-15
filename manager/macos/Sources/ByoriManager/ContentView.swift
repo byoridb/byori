@@ -272,7 +272,7 @@ struct ManagerSettingsView: View {
             case .agents:
                 return AnyView(IntegrationsView())
             case .byoriDB:
-                return AnyView(MaintenanceView())
+                return AnyView(ByoriDatabaseView())
             case .diagnostics:
                 return AnyView(ActivityView())
             }
@@ -365,14 +365,22 @@ private struct SettingsOperationBar: View {
     }
 }
 
+/// Names the settings page the sidebar selected.
+///
+/// `.title2` rather than `.largeTitle`: this is an administration surface inside
+/// Byori, and a marketing-sized heading claimed more authority here than the
+/// workspace's own panes have.
 struct PageHeader: View {
     let title: String
     let subtitle: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(title).font(.largeTitle.bold())
-            Text(subtitle).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.title2.weight(.semibold))
+            Text(subtitle)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -411,10 +419,10 @@ private struct OverviewView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 20) {
                 PageHeader(
-                    title: "Byori",
-                    subtitle: "워크스페이스를 지원하는 ByoriDB와 코딩 에이전트 연결 상태"
+                    title: "설정 개요",
+                    subtitle: "Byori 앱과 워크스페이스가 의존하는 로컬 구성 요소의 상태입니다."
                 )
 
                 // The app's own version belongs on the first screen Settings
@@ -422,7 +430,7 @@ private struct OverviewView: View {
                 // about the knowledge engine — nobody looking for the app
                 // version would think to open it.
                 GroupBox("Byori 앱") {
-                    VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 12) {
                         LabeledContent("현재 버전") {
                             Text(model.appVersion ?? "알 수 없음")
                         }
@@ -446,56 +454,69 @@ private struct OverviewView: View {
                     .padding(10)
                 }
 
-                if let snapshot = model.snapshot {
-                    HStack(spacing: 14) {
-                        StatusCard(
-                            title: "ByoriDB",
-                            value: byoriStatusLabel(snapshot.byori),
-                            detail: snapshot.byori.serverVersion ?? snapshot.byori.homePath,
-                            icon: "cylinder.split.1x2",
-                            healthy: snapshot.byori.isHealthy
-                        )
-                        ForEach(snapshot.agents) { agent in
-                            StatusCard(
-                                title: agent.kind.displayName,
-                                value: agent.isInstalled ? "설치됨" : "설치 필요",
-                                detail: agent.version ?? agent.executablePath ?? "CLI를 찾지 못했습니다.",
-                                icon: agent.kind == .claude ? "sparkles" : "terminal",
-                                healthy: agent.isInstalled
+                // One row per requirement, in the order they are needed. This
+                // replaced a status-card grid that put every agent CLI on the
+                // first screen at equal weight: the cards restated what the
+                // Agents page already lists, and a card grid is not part of this
+                // app's native pane grammar.
+                GroupBox("로컬 요건") {
+                    if let snapshot = model.snapshot {
+                        VStack(alignment: .leading, spacing: 0) {
+                            SettingsRequirementRow(
+                                title: "ByoriDB",
+                                state: byoriStatusLabel(snapshot.byori),
+                                detail: byoriDetail(snapshot.byori),
+                                isSatisfied: snapshot.byori.isHealthy,
+                                action: byoriAction(snapshot.byori)
                             )
-                        }
-                    }
-
-                    GroupBox("빠른 설정") {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("1. ByoriDB를 설치한 뒤 2. 사용할 에이전트의 MCP와 Skill을 연결하세요.")
+                            Divider().padding(.leading, 26)
+                            SettingsRequirementRow(
+                                title: "tmux",
+                                state: snapshot.tmux.stateLabel,
+                                detail: snapshot.tmux.detail,
+                                isSatisfied: snapshot.tmux.isAvailable,
+                                action: snapshot.tmux.actionTitle.map { title in
+                                    .init(title: title, isProminent: false) {
+                                        model.request(.installTmux, confirmation: true)
+                                    }
+                                }
+                            )
+                            Divider().padding(.leading, 26)
+                            SettingsRequirementRow(
+                                title: "Python 3",
+                                state: snapshot.byori.pythonAvailable ? "사용 가능" : "필요",
+                                detail: snapshot.byori.pythonAvailable
+                                    ? "ByoriDB MCP 런타임이 사용합니다."
+                                    : "ByoriDB MCP 런타임에 필요합니다. Python 3를 설치한 뒤 다시 확인하세요.",
+                                isSatisfied: snapshot.byori.pythonAvailable,
+                                action: nil
+                            )
+                            Divider()
+                                .padding(.top, 10)
+                            Text("ByoriDB를 먼저 설치한 뒤, 사용할 에이전트의 MCP와 Skill을 연결하세요.")
+                                .font(.caption)
                                 .foregroundStyle(.secondary)
-                            HStack {
-                                Button("ByoriDB 설치/복구") {
-                                    model.request(.installByori, confirmation: true)
-                                }
-                                .buttonStyle(.borderedProminent)
-                                Button("에이전트 연결 열기") {
-                                    model.selectedSection = .integrations
-                                }
-                                Button("로그 열기") { model.openLogs() }
-                            }
+                                .padding(.top, 10)
                         }
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-
-                    GroupBox("보안 경계") {
-                        Text("Byori는 에이전트 로그인이나 토큰을 읽지 않습니다. 에이전트 설치는 공식 설치 명령만 실행하고, MCP 설정은 지원되는 벤더 CLI를 통해 변경합니다. MCP 설정·Skill·runtime 변경 전에는 백업을 남깁니다.")
-                            .foregroundStyle(.secondary)
+                        .padding(10)
+                        .disabled(model.isBusy)
+                    } else {
+                        ProgressView("로컬 상태 확인 중…")
+                            .padding(10)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(8)
                     }
-                } else {
-                    ProgressView("로컬 상태 확인 중…")
+                }
+
+                GroupBox("보안 경계") {
+                    Text("Byori는 에이전트 로그인이나 토큰을 읽지 않습니다. 에이전트 설치는 공식 설치 명령만 실행하고, MCP 설정은 지원되는 벤더 CLI를 통해 변경합니다. MCP 설정·Skill·runtime 변경 전에는 백업을 남깁니다.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
                 }
             }
-            .padding(28)
+            .padding(24)
         }
     }
 
@@ -504,34 +525,87 @@ private struct OverviewView: View {
         if status.serviceLoaded { return "응답 없음" }
         return status.isInstalled ? "중지됨" : "설치 필요"
     }
+
+    /// The consequence, not the install path. A stopped engine does not fail
+    /// loudly — the agents simply run without memory — so the row has to say so.
+    private func byoriDetail(_ status: ByoriStatus) -> String {
+        if status.isHealthy {
+            return "에이전트가 프로젝트 메모리를 읽고 쓰는 로컬 지식 엔진입니다."
+        }
+        guard status.isInstalled else {
+            return "설치해야 에이전트가 프로젝트 메모리를 사용할 수 있습니다."
+        }
+        return "지금은 에이전트가 메모리 없이 동작합니다. ByoriDB 페이지에서 서비스를 시작하세요."
+    }
+
+    /// An uninstalled engine is the one thing this page should be able to fix
+    /// itself. Once it exists, every remaining action belongs to the ByoriDB
+    /// page, so the row points there instead of duplicating those controls.
+    private func byoriAction(_ status: ByoriStatus) -> SettingsRequirementRow.Action {
+        guard status.isInstalled else {
+            return .init(title: "설치", isProminent: true) {
+                model.request(.installByori, confirmation: true)
+            }
+        }
+        return .init(title: "자세히", isProminent: false) {
+            model.selectedSection = .maintenance
+        }
+    }
 }
 
-private struct StatusCard: View {
+/// One local dependency: its name, the bounded state Byori verified, and at most
+/// one action that changes that state.
+private struct SettingsRequirementRow: View {
+    struct Action {
+        let title: String
+        let isProminent: Bool
+        let perform: () -> Void
+    }
+
     let title: String
-    let value: String
+    let state: String
     let detail: String
-    let icon: String
-    let healthy: Bool
+    let isSatisfied: Bool
+    let action: Action?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Image(systemName: icon).font(.title2)
-                Spacer()
-                Circle()
-                    .fill(healthy ? Color.green : Color.orange)
-                    .frame(width: 9, height: 9)
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: isSatisfied ? "checkmark.circle.fill" : "exclamationmark.circle")
+                .foregroundStyle(isSatisfied ? .green : .orange)
+                .frame(width: 16)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 7) {
+                    Text(title).font(.body.weight(.medium))
+                    Text(state)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Text(title).font(.headline)
-            Text(value).font(.title3.bold())
-            Text(detail)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
+            // Combined so the state is read with the name it belongs to, and
+            // scoped to the text so the row's action stays its own element.
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(title) \(state)")
+            .accessibilityHint(detail)
+
+            Spacer(minLength: 16)
+
+            if let action {
+                if action.isProminent {
+                    Button(action.title, action: action.perform)
+                        .controlSize(.small)
+                        .buttonStyle(.borderedProminent)
+                } else {
+                    Button(action.title, action: action.perform)
+                        .controlSize(.small)
+                }
+            }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, minHeight: 150, alignment: .leading)
-        .background(.quaternary.opacity(0.7), in: RoundedRectangle(cornerRadius: 14))
+        .padding(.vertical, 9)
     }
 }
 
@@ -581,7 +655,7 @@ private struct IntegrationsView: View {
                     inventory: model.integrationInventory(selectedAgent)
                 )
             }
-            .padding(28)
+            .padding(24)
         }
         .task {
             if model.integrationInventories.isEmpty {
@@ -782,15 +856,27 @@ private struct AgentInventoryPane: View {
     }
 }
 
+/// Optional gateway configuration for Claude sessions.
+///
+/// Collapsed by default with its active state in the label: this is a long form
+/// that most users never touch, and inline it pushed the MCP and Skill inventory
+/// — the reason the Agents page exists — below the fold. It opens already
+/// expanded when a gateway is in effect, because that is a state worth seeing.
 private struct ClaudeGatewaySettingsView: View {
     @ObservedObject var settings: ClaudeGatewaySettingsController
+    @State private var isExpanded: Bool
     @State private var isShowingAdvanced = false
     @State private var isConfirmingCredentialDeletion = false
     @State private var errorMessage: String?
     @State private var savedMessage: String?
 
+    init(settings: ClaudeGatewaySettingsController) {
+        self.settings = settings
+        _isExpanded = State(initialValue: settings.activeConfiguration.isEnabled)
+    }
+
     var body: some View {
-        GroupBox("Claude 모델 API") {
+        DisclosureGroup(isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     VStack(alignment: .leading, spacing: 3) {
@@ -818,7 +904,7 @@ private struct ClaudeGatewaySettingsView: View {
 
                     compatibilityNotice
 
-                    LabeledContent("Gateway URL") {
+                    LabeledContent("게이트웨이 URL") {
                         TextField("https://gateway.example.com", text: $settings.draft.baseURL)
                             .textFieldStyle(.roundedBorder)
                             .frame(minWidth: 300)
@@ -827,7 +913,7 @@ private struct ClaudeGatewaySettingsView: View {
                     }
 
                     LabeledContent("기본 모델") {
-                        TextField("Gateway model name", text: $settings.draft.model)
+                        TextField("게이트웨이 모델 이름", text: $settings.draft.model)
                             .textFieldStyle(.roundedBorder)
                             .frame(minWidth: 300)
                     }
@@ -865,7 +951,7 @@ private struct ClaudeGatewaySettingsView: View {
                             .disabled(settings.draft.preset == .upstageSolar)
                             LabeledContent("빠른 모델") {
                                 TextField(
-                                    "Optional Haiku/fast model name",
+                                    "빠른 모델 이름 (선택)",
                                     text: $settings.draft.fastModel
                                 )
                                 .textFieldStyle(.roundedBorder)
@@ -898,13 +984,6 @@ private struct ClaudeGatewaySettingsView: View {
                 Divider()
 
                 HStack(spacing: 8) {
-                    Circle()
-                        .fill(settings.activeConfiguration.isEnabled ? Color.green : Color.secondary)
-                        .frame(width: 7, height: 7)
-                        .accessibilityHidden(true)
-                    Text(activeStatus)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                     if let savedMessage {
                         Text(savedMessage)
                             .font(.caption)
@@ -940,7 +1019,22 @@ private struct ClaudeGatewaySettingsView: View {
                     .disabled(!hasUnsavedChanges)
                 }
             }
-            .padding(10)
+            .padding(.top, 12)
+        } label: {
+            HStack(spacing: 7) {
+                Text("Claude 모델 API").font(.headline)
+                Circle()
+                    .fill(settings.activeConfiguration.isEnabled ? Color.green : Color.secondary)
+                    .frame(width: 7, height: 7)
+                    .accessibilityHidden(true)
+                Text(activeStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Claude 모델 API. \(activeStatus)")
         }
         .alert("설정을 적용하지 못했습니다", isPresented: errorPresentation) {
             Button("확인", role: .cancel) { errorMessage = nil }
@@ -999,7 +1093,7 @@ private struct ClaudeGatewaySettingsView: View {
     }
 
     private var credentialLabel: String {
-        settings.draft.preset == .upstageSolar ? "Upstage API key" : "Gateway credential"
+        settings.draft.preset == .upstageSolar ? "Upstage API 키" : "게이트웨이 인증 키"
     }
 
     private var credentialDetail: String {
@@ -1337,22 +1431,28 @@ private func displayPath(_ path: String) -> String {
     return path
 }
 
-private struct MaintenanceView: View {
+/// The engine's own page.
+///
+/// Split into what Byori observed, what runs the service, and what installs it.
+/// These were one row of five equally weighted buttons, where an ordinary
+/// restart and a destructive stop looked like the same kind of thing.
+private struct ByoriDatabaseView: View {
     @EnvironmentObject private var model: ManagerViewModel
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 20) {
                 PageHeader(
-                    title: "유지관리",
-                    subtitle: "ByoriDB 서비스와 앱이 관리하는 파일을 점검합니다."
+                    title: "ByoriDB",
+                    subtitle: "지식 엔진의 로컬 서비스와 설치를 관리합니다."
                 )
-                GroupBox("ByoriDB") {
-                    VStack(alignment: .leading, spacing: 14) {
+
+                GroupBox("상태") {
+                    VStack(alignment: .leading, spacing: 12) {
                         LabeledContent("설치") {
                             Text(model.snapshot?.byori.isInstalled == true ? "설치됨" : "설치 필요")
                         }
-                        LabeledContent("Health") {
+                        LabeledContent("서버 응답") {
                             Text(model.snapshot?.byori.isHealthy == true ? "정상" : "응답 없음")
                         }
                         LabeledContent("launchd") {
@@ -1361,23 +1461,51 @@ private struct MaintenanceView: View {
                         LabeledContent("Python 3") {
                             Text(model.snapshot?.byori.pythonAvailable == true ? "사용 가능" : "필요")
                         }
-                        Divider()
+                    }
+                    .padding(10)
+                }
+
+                GroupBox("서비스") {
+                    VStack(alignment: .leading, spacing: 10) {
                         HStack {
-                            Button("번들 자산 + 엔진 다운로드") {
+                            Button("시작") { model.request(.startByori) }
+                            Button("재시작") { model.request(.restartByori) }
+                            Spacer()
+                            Button("중지", role: .destructive) {
+                                model.request(.stopByori, confirmation: true)
+                            }
+                        }
+                        Text("에이전트 세션은 ByoriDB를 통해 프로젝트 메모리를 읽고 씁니다. 중지하면 세션은 계속 실행되지만 메모리 없이 동작합니다.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                GroupBox("설치") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Button("번들 자산으로 설치·복구") {
                                 model.request(.installByori, confirmation: true)
                             }
                             .buttonStyle(.borderedProminent)
                             Button("온라인 업데이트") {
                                 model.request(.updateByori, confirmation: true)
                             }
-                            Button("시작") { model.request(.startByori) }
-                            Button("중지") { model.request(.stopByori, confirmation: true) }
-                            Button("재시작") { model.request(.restartByori) }
+                            Spacer()
                         }
+                        Text("두 작업 모두 변경 전 runtime을 백업하며, 검증에 실패하면 이전 상태로 되돌립니다.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                GroupBox("파일 및 진단") {
+
+                GroupBox("파일") {
                     HStack {
                         Button("서버 로그 열기") { model.openLogs() }
                         Button("설정 백업 열기") { model.openBackups() }
@@ -1389,7 +1517,7 @@ private struct MaintenanceView: View {
                     .padding(10)
                 }
             }
-            .padding(28)
+            .padding(24)
         }
         .disabled(model.isBusy)
     }
@@ -1401,8 +1529,8 @@ private struct ActivityView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             PageHeader(
-                title: "작업 기록",
-                subtitle: "설치와 설정 변경 결과입니다. 인증정보는 기록하지 않습니다."
+                title: "진단",
+                subtitle: "설치와 설정 변경 작업의 기록입니다. 인증정보는 기록하지 않습니다."
             )
             if model.activities.isEmpty {
                 VStack(spacing: 12) {
@@ -1441,7 +1569,7 @@ private struct ActivityView: View {
                 }
             }
         }
-        .padding(28)
+        .padding(24)
     }
 
     private func icon(_ level: ActivityEntry.Level) -> String {

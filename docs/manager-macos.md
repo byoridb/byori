@@ -79,6 +79,8 @@ prototype and compatibility path.
   global graph browser. ByoriDB and agent administration are organized in
   **Settings → Setup Overview, Agents & Skill, ByoriDB, Diagnostics**. The workspace gear,
   menu bar action, and **Command-,** all reopen the same retained Settings window.
+  **Settings → Setup Overview** states the local requirements — ByoriDB, tmux, and Python 3 —
+  as one row each with the state Byori verified and at most one action.
   **Settings → ByoriDB** is for service installation and maintenance; shared project
   knowledge belongs in the Context inspector.
 
@@ -88,7 +90,10 @@ Closing the workspace window detaches it from the terminal view without ending a
 With tmux 3.2 or later, Byori uses its private tmux server so sessions can also survive a full app
 quit. Existing sessions created by older Byori builds on the default tmux server remain
 reattachable. Without a supported tmux, retention is limited to the current Byori process and the
-workspace surfaces that limitation before launch:
+workspace surfaces that limitation before launch. **Settings → Setup Overview** reports the same
+requirement and can install or upgrade tmux with Homebrew; when Homebrew is absent it states the
+requirement rather than offering an action it cannot complete. A successful install applies to the
+next session without relaunching Byori:
 
 - **Quit Byori** detaches tmux-backed sessions and stops only non-persistent fallback sessions.
 - A later app launch discovers retained sessions and offers to reattach to their existing PTYs.
@@ -264,5 +269,5 @@ shell environment variables, the app inspects the existing launchd plist and ren
   data and the root password. Health and authenticated session creation must both succeed;
   this prevents a different process on the same port from being reported as ready. On failure,
   the app restores the runtime files and re-verifies a previously working connection.
-- Failure details appear under **Settings → Diagnostics** in the app's **작업 기록**
-  (Activity Log). Database contents and credentials are never recorded there.
+- Failure details appear under **Settings → Diagnostics** as the app's activity log.
+  Database contents and credentials are never recorded there.

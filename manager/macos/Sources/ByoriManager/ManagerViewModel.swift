@@ -45,6 +45,7 @@ enum ManagerAction: Identifiable, Equatable {
     case installByori
     case updateByori
     case updateApp
+    case installTmux
     case startByori
     case stopByori
     case restartByori
@@ -59,6 +60,7 @@ enum ManagerAction: Identifiable, Equatable {
         case .installByori: return "install-byori"
         case .updateByori: return "update-byori"
         case .updateApp: return "update-app"
+        case .installTmux: return "install-tmux"
         case .startByori: return "start-byori"
         case .stopByori: return "stop-byori"
         case .restartByori: return "restart-byori"
@@ -74,6 +76,7 @@ enum ManagerAction: Identifiable, Equatable {
         case .installByori: return "번들 자산으로 ByoriDB를 설치할까요?"
         case .updateByori: return "최신 ByoriDB 설치기를 내려받아 업데이트할까요?"
         case .updateApp: return "Byori 앱을 최신 버전으로 업데이트할까요?"
+        case .installTmux: return "Homebrew로 tmux를 설치하거나 업그레이드할까요?"
         case .stopByori: return "ByoriDB 서비스를 중지할까요?"
         default: return "이 작업을 실행할까요?"
         }
@@ -89,6 +92,8 @@ enum ManagerAction: Identifiable, Equatable {
             return "최신 릴리스의 디스크 이미지를 내려받아 Apple 공증과 개발자 서명을 확인한 뒤 교체합니다. 확인에 실패하면 설치하지 않습니다. 교체를 위해 앱이 한 번 종료되었다가 다시 열립니다."
         case .installByori:
             return "앱에 포함된 MCP·Skill·서비스 자산을 사용하고, 호환되는 ByoriDB 엔진은 GitHub 릴리스에서 다운로드합니다. 기존 runtime은 먼저 백업합니다."
+        case .installTmux:
+            return "brew install tmux 또는 brew upgrade tmux를 실행합니다. Byori는 세션 유지에만 tmux를 사용하며, 사용자의 ~/.tmux.conf는 읽지도 변경하지도 않습니다."
         case .removeSkill:
             return "기존 파일은 ~/.byori-manager/backups에 백업한 뒤 제거합니다."
         default:
@@ -117,6 +122,7 @@ enum ManagerAction: Identifiable, Equatable {
         case .installByori: return "ByoriDB 설치·복구 중…"
         case .updateByori: return "ByoriDB 업데이트 중…"
         case .updateApp: return "앱 업데이트 확인·검증 중…"
+        case .installTmux: return "tmux 설치·업그레이드 중…"
         case .startByori: return "ByoriDB 시작 중…"
         case .stopByori: return "ByoriDB 중지 중…"
         case .restartByori: return "ByoriDB 재시작 중…"
@@ -544,6 +550,12 @@ final class ManagerViewModel: ObservableObject {
                 if case let .alreadyCurrent(version) = outcome {
                     updateAvailability = .upToDate(version)
                 }
+            case .installTmux:
+                result = try await service.installTmux()
+                // The controller probed tmux before this install and caches the
+                // answer, so the next session would still be started without
+                // persistence until the app was relaunched.
+                await TerminalSessionController.shared.refreshSessionPersistence()
             case .startByori:
                 result = try await service.startService()
             case .stopByori:
