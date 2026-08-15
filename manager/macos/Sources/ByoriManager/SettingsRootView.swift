@@ -22,7 +22,7 @@ enum WorkspaceSettingsSection: String, CaseIterable, Identifiable {
         case .general: return "로컬 워크스페이스와 서비스 상태"
         case .agents: return "코딩 CLI, MCP, Memory Skill 연결"
         case .byoriDB: return "지식 데이터베이스 설치와 유지관리"
-        case .diagnostics: return "설치 작업 기록, 로그와 백업"
+        case .diagnostics: return "설치와 설정 변경 작업의 기록"
         }
     }
 }
@@ -85,7 +85,7 @@ struct SettingsRootView: View {
                     .accessibilityHint(section.accessibilityDetail)
             }
             .listStyle(.sidebar)
-            .navigationTitle("Settings")
+            .navigationTitle("설정")
             .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 250)
         } detail: {
             destination(selection.wrappedValue)
@@ -119,9 +119,9 @@ private struct SettingsIntegrationPlaceholder: View {
                 .font(.system(size: 34))
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
-            Text("\(section.rawValue) Settings")
+            Text(section.rawValue)
                 .font(.title2.weight(.semibold))
-            Text("Connect the existing Byori settings view for this destination when the app Settings scene is composed.")
+            Text("이 설정 화면은 앱의 Settings scene이 구성될 때 연결됩니다.")
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)

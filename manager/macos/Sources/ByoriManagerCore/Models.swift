@@ -138,11 +138,20 @@ public enum ByoriAutostart {
 
 public struct ManagerSnapshot: Equatable, Sendable {
     public let byori: ByoriStatus
+    /// Session persistence is a local requirement like Python 3, so it is read
+    /// with the rest of the status rather than only when a session is created.
+    public let tmux: TmuxStatus
     public let agents: [AgentStatus]
     public let checkedAt: Date
 
-    public init(byori: ByoriStatus, agents: [AgentStatus], checkedAt: Date = Date()) {
+    public init(
+        byori: ByoriStatus,
+        tmux: TmuxStatus,
+        agents: [AgentStatus],
+        checkedAt: Date = Date()
+    ) {
         self.byori = byori
+        self.tmux = tmux
         self.agents = agents
         self.checkedAt = checkedAt
     }

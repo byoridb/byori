@@ -93,7 +93,7 @@ The fixed palette is intentionally small. The frontmatter defines only colors th
 
 ### Hierarchy
 
-- **Title:** `.title2` or `.title3` with semibold weight for focused sheet and terminal-unavailable headings.
+- **Title:** `.title2` or `.title3` with semibold weight for settings page headers, focused sheet headings, and terminal-unavailable headings. Settings is administration inside Byori, so it never uses a display-sized heading.
 - **Headline:** `.headline` for project, task, and Context record titles.
 - **Body:** `.body` for outline rows and ordinary actions.
 - **Callout:** `.callout` for status and Context summaries.
@@ -184,8 +184,12 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 ### Settings
 
 - Keep Setup Overview, Agents & Skill, ByoriDB, and Diagnostics outside primary navigation.
-- Workspace Settings, the menu bar action, and `Command-,` must reopen the same retained window; every visible entry point must work without relying on an implicit scene responder.
+- Give each page the same name in the sidebar and in its own header. A page whose heading renames its destination reads as a different screen than the one that was selected.
+- Group each page as titled native `GroupBox` sections in the order the work happens: what Byori observed, then what acts on it. Within a group, keep ordinary actions leading and separate a destructive one to the trailing edge; a row of equally weighted buttons hides which of them cannot be undone.
+- State local requirements — ByoriDB, tmux, Python 3 — as compact rows carrying name, verified state, consequence, and at most one action. Never restate them as a status-card grid: cards duplicate what the Agents and ByoriDB pages already list, and a card grid is not part of this app's pane grammar.
+- Offer an action only where Byori can actually complete it. tmux is installed or upgraded through Homebrew; without Homebrew, state the requirement and name it instead of showing a button whose only outcome is a failure. Say `install` or `upgrade` according to what is really on disk.
 - Keep ByoriDB installation separate from explicit per-provider MCP and Memory Skill actions.
+- Collapse an optional provider form, such as the Claude model API, behind a disclosure whose label carries its active state. An always-expanded optional form pushes the inventory the page exists for below the fold.
 - List each agent's bounded user-scoped MCP and Skill inventory in compact native rows. Never display raw command arguments, environment/header values, or tokens; cloud-owned connectors remain read-only.
 - Advanced MCP editing opens the agent's own configuration, while direct removal uses its official CLI and a prior backup. Skill editing opens `SKILL.md`; removal is restricted to validated direct children of known user Skill roots and is backed up first.
 - Keep long-running operations responsive with persistent progress, safe cancellation, and a durable Activity result.

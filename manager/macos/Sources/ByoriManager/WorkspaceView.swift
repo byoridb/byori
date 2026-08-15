@@ -1830,10 +1830,20 @@ private struct NewWorkspaceSessionSheet: View {
                         sessionOptions
 
                         if let warning = model.sessionPersistenceWarning {
-                            Label(warning, systemImage: "exclamationmark.triangle")
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                                .accessibilityHint("Sessions started now will end when Byori quits")
+                            VStack(alignment: .leading, spacing: 3) {
+                                Label(warning, systemImage: "exclamationmark.triangle")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                                // The warning used to end here, with nothing the
+                                // user could act on. Settings installs tmux now,
+                                // so it says where. Reopening this sheet re-reads
+                                // tmux, so the warning clears once it is done.
+                                Text("Settings → 설정 개요에서 tmux를 설치할 수 있습니다.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .accessibilityElement(children: .combine)
+                            .accessibilityHint("Sessions started now will end when Byori quits")
                         }
                     }
 

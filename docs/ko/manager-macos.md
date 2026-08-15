@@ -76,7 +76,9 @@ prototype/호환 경로로 남아 있다.
 - Settings는 메인 workspace나 별도 global graph browser가 아니라 관리 보조 화면이다.
   ByoriDB와 agent 관리는 **Settings → 설정 개요, 에이전트 · Skill, ByoriDB, 진단**에
   배치했다. Workspace의 톱니바퀴, 메뉴 막대, **Command-,**는 모두 하나의 보존된
-  Settings 창을 다시 연다. **Settings → ByoriDB**는 service 설치와 유지관리용이며
+  Settings 창을 다시 연다. **Settings → 설정 개요**는 로컬 요건인 ByoriDB, tmux,
+  Python 3을 각각 한 행으로 두고 Byori가 확인한 상태와 최대 하나의 동작만 제공한다.
+  **Settings → ByoriDB**는 service 설치와 유지관리용이며
   프로젝트 공유 지식은 Context inspector에서 본다.
 
 ## 세션 수명
@@ -85,6 +87,9 @@ prototype/호환 경로로 남아 있다.
 tmux 3.2 이상이면 Byori 전용 tmux server를 사용하므로 앱을 완전히 종료해도 세션이 유지된다.
 기존 Byori 빌드가 기본 tmux server에 만든 세션도 다시 attach할 수 있다. 지원되는 tmux가 없으면
 유지 범위는 현재 Byori 앱 process의 수명까지이며, workspace가 실행 전에 이 제한을 표시한다.
+**Settings → 설정 개요**도 같은 요건을 보고하며 Homebrew로 tmux를 설치하거나 업그레이드할 수 있다.
+Homebrew가 없으면 완료할 수 없는 동작을 제공하는 대신 요건만 알린다. 설치가 성공하면 앱을
+다시 실행하지 않아도 다음 세션부터 적용된다.
 
 - **Quit Byori**는 tmux 기반 세션에서는 client만 분리하고, 지속성이 없는 fallback 세션만 중지한다.
 - 앱을 다시 실행하면 유지된 세션을 찾아 기존 PTY에 다시 attach할 수 있다.
@@ -249,5 +254,5 @@ Finder에서 실행해 shell 환경변수를 상속받지 못해도 기존 launc
   보존한다. health와 실제 session 인증이 모두 성공해야 완료되므로 같은 port의 다른 process를
   정상으로 오판하지 않는다. 실패하면 runtime 파일을 되돌리고 이전 연결이 정상이었던 경우
   인증까지 다시 확인한다.
-- 실패 상세는 **Settings → Diagnostics**의 **작업 기록**에 표시된다.
+- 실패 상세는 **Settings → 진단**의 작업 기록에 표시된다.
   데이터베이스 내용이나 인증정보는 기록하지 않는다.

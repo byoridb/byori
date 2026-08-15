@@ -127,7 +127,8 @@ Create another session explicitly when you want another agent.
 
 Closing the workspace window keeps its PTYs alive. With tmux 3.2 or later, quitting Byori detaches
 from active sessions and a later launch can reattach; without a supported tmux, sessions end with
-the app and the UI says so before launch. Prompts are entered directly in the terminal and are not
+the app and the UI says so before launch. **Settings → Setup Overview** reports tmux alongside the
+other local requirements and can install or upgrade it with Homebrew. Prompts are entered directly in the terminal and are not
 stored by Byori. Vendor login remains CLI-owned. An optional Claude model API setting stores only
 the credential the user explicitly enters in macOS Keychain and can be disabled to restore the
 ordinary Claude environment for future sessions.

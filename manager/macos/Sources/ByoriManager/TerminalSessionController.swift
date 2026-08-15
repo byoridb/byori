@@ -350,6 +350,13 @@ final class TerminalSessionController: ObservableObject {
         await tmuxService.availability()
     }
 
+    /// Re-reads tmux after Settings installed it, so the next session is backed
+    /// by tmux without waiting for a relaunch.
+    @discardableResult
+    func refreshSessionPersistence() async -> TmuxAvailability {
+        await tmuxService.refreshAvailability()
+    }
+
     func terminalView(for sessionID: UUID) -> LocalProcessTerminalView? {
         retainedSessions[sessionID]?.terminalView
     }
