@@ -111,9 +111,15 @@ private struct WorkspaceStatusBar: View {
                             Text(sourceTree.branch)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
-                            Circle()
-                                .fill(workingTreeColor(sourceTree.workingState))
-                                .frame(width: 6, height: 6)
+                            // No dot for a clean tree: the label beside it
+                            // already says so, and the outline reports the same
+                            // fact the same way.
+                            if let workingTreeColor = WorkspacePalette
+                                .workingTreeColor(sourceTree.workingState) {
+                                Circle()
+                                    .fill(workingTreeColor)
+                                    .frame(width: 6, height: 6)
+                            }
                             Text(workingTreeLabel(sourceTree.workingState))
                                 .foregroundStyle(.secondary)
                         }
@@ -208,14 +214,6 @@ private struct WorkspaceStatusBar: View {
         case .clean: return "Clean"
         case let .modified(changeCount): return "\(changeCount) change\(changeCount == 1 ? "" : "s")"
         case .unavailable: return "Git unavailable"
-        }
-    }
-
-    private func workingTreeColor(_ state: WorkspaceWorkingTreeStatus) -> Color {
-        switch state {
-        case .clean: return .green
-        case .modified: return .orange
-        case .unavailable: return .red
         }
     }
 

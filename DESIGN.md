@@ -75,7 +75,9 @@ The fixed palette is intentionally small. The frontmatter defines only colors th
 
 ### Named Rules
 
-**The State Earns Color Rule.** Teal, blue, green, orange, and red appear only for real running, preparing, success, dirty, failure, timeout, or unavailable states.
+**The State Earns Color Rule.** Teal, blue, green, orange, and red appear only for real running, preparing, success, dirty, failure, timeout, or unavailable states. A clean working tree is the default rather than a state and takes no accent, which keeps teal reserved for running: one status column must not answer two different questions depending on the row it sits in.
+
+**One Mapping Per Fact Rule.** Every surface that reports the same state reads it from the same mapping in code. While the outline and the status bar each owned their own, a clean checkout was teal in one and green in the other.
 
 **The Terminal Stays Fixed Rule.** The terminal remains near-black in every system appearance so the coding surface retains visual authority.
 
@@ -136,7 +138,8 @@ Status dots stay small and circular. Pills are reserved for compact system contr
   separate confirmation that names the folder and explains `git init`; never initialize it as a
   side effect of choosing it.
 - Keep icons in one SF Symbols family and reserve secondary text for genuinely distinct metadata.
-- Show a single semantic status dot for clean, dirty, unavailable, or active state; never repeat a long branch as both title and metadata.
+- Show a single semantic status dot for dirty, unavailable, or active state, and leave the slot empty when a checkout is clean; never repeat a long branch as both title and metadata.
+- Keep the checkout kind — Primary, Worktree, External — as identity text in secondary tone. It names where the agent works, so state must not tint it; the status dot already carries the working tree.
 - Put removal behind a row context or overflow action with an explicit confirmation; do not place an easy-to-misclick trash control beside the session `+` action.
 - Removing a project archives its exact registration outside the active list. Re-adding the same canonical repository restores its stable project identity, graph space, and task/session linkage.
 - Removing a linked checkout hides that canonical path from the outline until the user restores it. The action must be described as hiding from Byori, not deleting a Git worktree.
