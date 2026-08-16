@@ -964,13 +964,37 @@ public actor ManagerService {
             // that some process answered the unauthenticated health endpoint.
             isHealthy: endpointHealthy && credentialVerified,
             serviceLoaded: await isServiceLoaded(),
-            // Read from what the installer recorded, never by asking the binary:
-            // engine v0.3.3 treats `--version` as a normal server launch, and a
-            // status refresh must not start a second database.
-            serverVersion: EngineBuildManifest.read(at: paths.engineManifest)?.displayIdentity,
+            serverVersion: await engineIdentity(),
             homePath: paths.byoriHome.path,
             pythonAvailable: paths.executable(named: "python3") != nil
         )
+    }
+
+    /// Which engine is installed, preferring the binary's own answer.
+    ///
+    /// The recorded manifest gates the probe rather than replacing it. Engines
+    /// before 0.4.0 ignore every argument, so `--version` would start a full
+    /// server against the live data directory — a status refresh must never do
+    /// that. With a tag at or above 0.4.0, `--version` parses first and touches
+    /// nothing, so the binary is asked and the file becomes the fallback for when
+    /// the probe fails or was never recorded.
+    private func engineIdentity() async -> String? {
+        let manifest = EngineBuildManifest.read(at: paths.engineManifest)
+        guard manifest?.allowsVersionProbe == true,
+              fileManager.isExecutableFile(atPath: paths.serverBinary.path) else {
+            return manifest?.displayIdentity
+        }
+        let result = await runner.run(CommandSpec(
+            executable: paths.serverBinary.path,
+            arguments: ["--version"],
+            environment: commonEnvironment,
+            timeout: 10
+        ))
+        guard result.succeeded,
+              let version = EngineBuildManifest.version(fromVersionOutput: result.output) else {
+            return manifest?.displayIdentity
+        }
+        return version
     }
 
     private func isServiceLoaded() async -> Bool {

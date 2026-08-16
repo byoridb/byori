@@ -154,10 +154,11 @@ file, preserves only `BYORIDB_ROOT_PASSWORD`, and restores the safe default.
 ### MCP server lifetime
 
 The server exits when stdin closes, which is the normal signal that its host is gone, and on
-`SIGTERM` or `SIGHUP` — each logging why it exited. It does not sign out of ByoriDB on the way out
-because the engine exposes login and query only; an authenticated session is released by its
-server-side TTL instead, and the exit line names the session so an abandoned one is traceable to
-the process that held it.
+`SIGTERM` or `SIGHUP` — each logging why it exited. On the way out it signs out of ByoriDB with
+`DELETE /api/v1/session` rather than leaving the session for its 24-hour TTL. The exit line names
+the session and the outcome, so a session that does outlive its process — an engine that was
+already gone, or one older than 0.4.0 without that route — stays traceable to the process that
+held it.
 
 Some hosts keep a server's stdin open for the lifetime of the host process rather than for the
 conversation that needed it, which leaves servers resident with a live parent. Set

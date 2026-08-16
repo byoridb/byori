@@ -2,12 +2,14 @@ import Foundation
 
 /// What the installer recorded about the engine binary it installed.
 ///
-/// `byoridb-server` exposes no `--version` and ignores its arguments, so the
-/// installed build cannot be identified by asking it. Probing is not an option
-/// either: on the pinned engine, `--version` starts a normal server, and a status
-/// refresh must never bring up a second database. The installer therefore writes
-/// this file next to the binary, and this is the only thing that answers "which
-/// engine is actually installed" without running `strings` over it.
+/// Engine 0.4.0 answers `--version` without starting a server, so the binary can
+/// finally identify itself. Older engines cannot: they ignore every argument, and
+/// `byoridb-server --version` boots a full server — which a status refresh must
+/// never do, because it would bring up a second database against the same data
+/// directory.
+///
+/// So the recorded tag is what decides whether probing is safe, and it remains
+/// the answer for engines that were installed before Byori recorded anything.
 public struct EngineBuildManifest: Equatable, Sendable {
     /// The engine release tag, absent when a local binary was installed with
     /// `--binary`.
@@ -37,6 +39,60 @@ public struct EngineBuildManifest: Equatable, Sendable {
         case let (nil, digest?): return "로컬 빌드 · \(digest)"
         case (nil, nil): return nil
         }
+    }
+
+    /// The first engine release that parses its arguments instead of ignoring
+    /// them. Below this, `--version` starts a server.
+    public static let versionFlagMinimum = "v0.4.0"
+
+    /// Whether `byoridb-server --version` can be run safely.
+    ///
+    /// Requires a recorded tag at or above `versionFlagMinimum`. An unrecorded or
+    /// older engine is never probed: the cost of guessing wrong is a second
+    /// database process started against the live data directory, which is far
+    /// worse than reporting the recorded identity instead.
+    public var allowsVersionProbe: Bool {
+        guard let tag, let found = AppVersion(tag),
+              let minimum = AppVersion(Self.versionFlagMinimum) else {
+            return false
+        }
+        return found >= minimum
+    }
+
+    /// Parses `byoridb-server --version`, which prints
+    /// `byoridb-server 0.4.0 (commit fbeb4ac55417, release)`.
+    ///
+    /// The binary's own name is dropped — the row it fills is already labelled
+    /// with it — and the commit and profile are kept, because those are what
+    /// distinguish two builds of one tag. Bounded and charset-checked: this
+    /// becomes UI text.
+    ///
+    /// The leading name is optional rather than required. clap prints it, but the
+    /// contract worth holding is "a version, with whatever build detail follows",
+    /// not the exact framing of one release.
+    public static func version(fromVersionOutput output: String) -> String? {
+        guard var line = output
+            .split(separator: "\n")
+            .map({ $0.trimmingCharacters(in: .whitespaces) })
+            .first(where: { !$0.isEmpty }),
+            line.utf8.count <= 200 else {
+            return nil
+        }
+        if let space = line.firstIndex(of: " "),
+           line[line.startIndex] .isLetter {
+            let name = line[line.startIndex..<space]
+            guard name.range(of: #"^[A-Za-z][A-Za-z0-9_-]*$"#, options: .regularExpression) != nil else {
+                return nil
+            }
+            line = String(line[line.index(after: space)...])
+        }
+        guard line.range(
+            of: #"^[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9 ().,+_-]*$"#,
+            options: .regularExpression
+        ) != nil else {
+            return nil
+        }
+        return line
     }
 
     /// Reads the manifest, or nil when it is missing, unreadable, or not the

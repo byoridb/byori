@@ -121,6 +121,53 @@ final class EngineBuildManifestTests: XCTestCase {
         XCTAssertEqual(paths.engineManifest.lastPathComponent, "engine.json")
     }
 
+    /// Running the wrong engine with `--version` starts a second database against
+    /// the live data directory. The recorded tag is the only thing that says
+    /// whether the probe is safe, so the gate is pinned in both directions.
+    func testVersionProbeIsAllowedOnlyFromRecordedZeroFourOrLater() {
+        func manifest(_ tag: String?) -> EngineBuildManifest {
+            EngineBuildManifest(tag: tag, target: nil, sha256: nil, installedAt: nil)
+        }
+
+        XCTAssertTrue(manifest("v0.4.0").allowsVersionProbe)
+        XCTAssertTrue(manifest("v0.4.1").allowsVersionProbe)
+        XCTAssertTrue(manifest("v1.0.0").allowsVersionProbe)
+        XCTAssertTrue(manifest("0.4.0").allowsVersionProbe, "a tag without the v prefix still counts")
+
+        XCTAssertFalse(manifest("v0.3.3").allowsVersionProbe)
+        XCTAssertFalse(manifest("v0.3.9").allowsVersionProbe)
+        XCTAssertFalse(manifest(nil).allowsVersionProbe, "a local binary was never recorded as a release")
+        XCTAssertFalse(manifest("nightly").allowsVersionProbe, "an unparsable tag must not authorize a probe")
+    }
+
+    /// The literal output of the shipped v0.4.0 binary, taken from running it
+    /// rather than from the release notes — which showed the version without the
+    /// binary name clap actually prints in front of it.
+    func testVersionOutputIsParsedAndBounded() {
+        XCTAssertEqual(
+            EngineBuildManifest.version(
+                fromVersionOutput: "byoridb-server 0.4.0 (commit fbeb4ac55417, release)\n"
+            ),
+            "0.4.0 (commit fbeb4ac55417, release)",
+            "the name is dropped; the commit and profile distinguish two builds of one tag"
+        )
+        XCTAssertEqual(
+            EngineBuildManifest.version(fromVersionOutput: "0.4.0 (commit 1a2b3c4, release)"),
+            "0.4.0 (commit 1a2b3c4, release)",
+            "a bare version stays acceptable if the framing ever changes"
+        )
+        XCTAssertEqual(EngineBuildManifest.version(fromVersionOutput: "  0.4.0  "), "0.4.0")
+
+        for output in ["", "\n", "byoridb-server", "not a version", "byoridb-server unknown",
+                       "0.4.0 \u{1b}[31mred", "byoridb-server 0.4.0 \u{1b}[31mred",
+                       String(repeating: "9", count: 300)] {
+            XCTAssertNil(
+                EngineBuildManifest.version(fromVersionOutput: output),
+                "refused: \(output.debugDescription)"
+            )
+        }
+    }
+
     private func write(_ contents: String) throws -> URL {
         let url = temporaryRoot.appendingPathComponent("engine-\(UUID().uuidString).json")
         try Data(contents.utf8).write(to: url)
