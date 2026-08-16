@@ -200,25 +200,81 @@ def _login():
     log(f"authenticated, session={sid}")
 
 
-def _raw_query(ngql):
-    """Run one nGQL statement in the current session; re-login on session loss."""
+def _logout():
+    """Releases the engine session instead of leaving it to its 24h TTL.
+
+    Returns a short outcome for the exit log. Never raises: this runs while the
+    process is already going away, and an engine that is gone, a session that
+    already expired, or an engine too old to have the route are all ordinary.
+    Engines before 0.4.0 have no `DELETE /api/v1/session` and answer 405.
+    """
+    session_id = _session["id"]
+    if session_id is None:
+        return None
+    _session["id"] = None
+    _session["ready"] = False
+    request = urllib.request.Request(
+        HTTP + "/api/v1/session",
+        method="DELETE",
+        # The id travels in the header for this route, not in a body.
+        headers={"X-ByoriDB-Session-Id": str(session_id)},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            response.read()
+        return "signed out"
+    except urllib.error.HTTPError as e:
+        return f"sign-out refused ({e.code}); left to its server-side TTL"
+    except Exception as e:  # noqa: BLE001 - exiting either way
+        return f"sign-out failed ({type(e).__name__}); left to its server-side TTL"
+
+
+def _is_session_lost(code, detail):
+    """Whether a failed query should be retried once on a fresh session.
+
+    Engine 0.4.0 separates the three failure classes by status, so the status
+    alone decides:
+
+      401 SESSION_EXPIRED   the session is gone — re-login, re-pin the space
+      403 PERMISSION_DENIED the session is valid and stays valid
+      400 QUERY_ERROR       the statement itself is wrong
+
+    403 is deliberately *not* retried. Re-authenticating cannot grant a role the
+    session does not have, and each attempt is spent against the engine's login
+    throttle. Before 0.4.0 an authorization denial arrived as
+    `400 "…Authentication failed: Permission denied…"`, which the previous
+    `"auth" in body` rule retried for exactly that reason.
+
+    The `session` marker on a 400 is kept for engines older than 0.4.0, where a
+    restart surfaces a stale session that way. `auth` is not: it is the word that
+    made permission denials look recoverable.
+    """
+    if code == 401:
+        return True
+    if code == 400:
+        return "session" in detail.lower()
+    return False
+
+
+def _raw_query(ngql, read_only=False):
+    """Run one nGQL statement in the current session; re-login on session loss.
+
+    `read_only` asks the engine to refuse a statement that would write, which is
+    a second, authoritative check for the tool that accepts model-supplied nGQL.
+    Engines before 0.4.0 ignore the unknown field, so the Python gate remains the
+    one that must be correct.
+    """
     if _session["id"] is None:
         _login()
     payload = {"session_id": _session["id"], "query": ngql}
+    if read_only:
+        payload["read_only"] = True
     try:
         status, body = _post("/api/v1/query", payload)
         return body
     except urllib.error.HTTPError as e:
         detail = e.read().decode(errors="replace") if hasattr(e, "read") else str(e)
-        # An expired/invalid session surfaces as 401/403 OR as 400 with a session/auth
-        # error body (e.g. after the server restarts). Re-login once, re-pin the memory
-        # space on the fresh session, then retry. Genuine query errors (syntax, etc.)
-        # also return 400 but without a session marker, so they are NOT retried.
-        low = detail.lower()
-        session_lost = e.code in (401, 403) or (
-            e.code == 400 and ("session" in low or "auth" in low)
-        )
-        if session_lost:
+        if _is_session_lost(e.code, detail):
             _login()
             _post("/api/v1/query", {"session_id": _session["id"], "query": f"USE {SPACE}"})
             payload["session_id"] = _session["id"]
@@ -718,7 +774,11 @@ def tool_query_read(args):
     _reject_extra_fields(args, {"ngql"}, "memory_query_read")
     _ensure_ready()
     query = _validate_read_only_query(args.get("ngql"))
-    return _stringify_vid_fields(_raw_query(query))
+    # Asks the engine to enforce the same promise this tool's name makes. The
+    # Python gate above still has to be right — an older engine ignores the flag
+    # — but on 0.4.0 a statement that slipped past it is refused by the server
+    # rather than executed with the session's write authority.
+    return _stringify_vid_fields(_raw_query(query, read_only=True))
 
 
 def tool_wiki_upsert(args):
@@ -1347,15 +1407,15 @@ def main():
     except KeyboardInterrupt:
         reason = "interrupted"
     finally:
-        # The engine exposes login and query only — there is no sign-out
-        # endpoint to call — so an authenticated session is released by its
-        # server-side TTL rather than here. Naming it on the way out is what
-        # makes an abandoned session traceable to the process that held it.
+        # Release the session rather than leaving it for its TTL. The id is named
+        # in the log either way, so a session that outlives its process stays
+        # traceable to the process that held it.
         held = _session["id"]
+        outcome = _logout()
         log(
             f"exiting ({reason}); "
             + (
-                f"ByoriDB session {held} left to its server-side TTL"
+                f"ByoriDB session {held}: {outcome}"
                 if held is not None
                 else "no ByoriDB session was opened"
             )

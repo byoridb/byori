@@ -9,7 +9,7 @@ Byori 호환성과 무관하게 바뀌어도 된다. 반대로 이 문서의 표
 - 근거 코드: `mcp/byoridb_mcp.py`, `tests/test_mcp_contract.py`,
   `tests/smoke_mcp.py`, `manager/macos/Sources/ByoriManagerCore/ByoriGraphClient.swift`,
   `install.sh`, `templates/run-server.sh`
-- 검증 조합: **byori v0.2.x ↔ engine `v0.3.3`** (`install.sh`의 `ENGINE_TAG_DEFAULT`)
+- 검증 조합: **byori v0.2.x ↔ engine `v0.4.0`** (`install.sh`의 `ENGINE_TAG_DEFAULT`)
 - 검증은 두 층으로 구성한다:
   - `python3 -m unittest tests/test_mcp_contract.py`는 엔진 없이 profile, 닫히고 크기가
     제한된 tool schema, read-query gate, canonical identity, relation 규칙, lifecycle 값,
@@ -38,7 +38,8 @@ Project의 모든 Source Tree/Worktree, Task, Session, agent 선택은 그 graph
 |---|---|
 | `GET /health` | 서버 준비되면 200. 설치기가 최대 30초 폴링 |
 | `POST /api/v1/session` | body `{"username","password"}` → `{"session_id": <decimal string or signed INT64>}` |
-| `POST /api/v1/query` | body `{"session_id","query"}` → 아래 결과 JSON. 오류는 4xx + `{"error","code"}` |
+| `POST /api/v1/query` | body `{"session_id","query"}` → 아래 결과 JSON. 오류는 4xx + `{"error","code"}`. 선택 `"read_only": true`를 주면 엔진이 쓰기 문장을 거부한다 |
+| `DELETE /api/v1/session` | `X-ByoriDB-Session-Id` header의 session을 sign out. Byori는 MCP 종료 시 TTL에 맡기지 않고 이를 호출한다 |
 
 - 최신 엔진 표면의 **`session_id`는 decimal string**이다. 다만 기존 v0.3.3 배포
   artifact는 signed INT64 JSON number를 반환하고 query에도 같은 표현을 요구할 수 있다.
@@ -72,22 +73,30 @@ IEEE-754 `Double`을 거치지 말고 `Int64`로 decode해야 한다.
 
 ### 세션 상실 시맨틱 (재로그인 규칙)
 
-클라이언트는 다음을 "세션 상실"로 판정하고 **재로그인 → `USE <space>` 재-pin →
-1회 재시도**한다:
+엔진 0.4.0은 query 실패를 status로 구분한다. 따라서 status만으로 동작이 결정된다.
 
-- HTTP `401` / `403`
-- HTTP `400` **이면서** 오류 본문(lowercase)에 `session` 또는 `auth` 포함
-  (서버 재기동 후 stale session이 `400 "Invalid session"`으로 나타나는 사례)
+| status | code | 의미 | 클라이언트 동작 |
+|---:|---|---|---|
+| `401` | `SESSION_EXPIRED` | 세션이 사라졌다 | **재로그인 → `USE <space>` 재-pin → 1회 재시도** |
+| `403` | `PERMISSION_DENIED` | 세션은 유효하고 계속 유효하다 | 그대로 노출. **재로그인 금지** |
+| `400` | `QUERY_ERROR` | 문장 자체가 잘못됐다 | 재시도 안 함 |
+| `413` | `QUERY_TOO_LARGE` | 1 MiB 초과 | 재시도 안 함 |
 
-그 외 400(문법 오류 등)은 재시도하지 않는다. 엔진이 이 오류 문자열 마커를 바꾸면
-클라이언트 재로그인이 깨진다 — **`session`/`auth` 단어를 오류 본문에 유지할 것**.
+`403`은 재시도해서는 안 된다. 재인증으로 세션에 없는 role을 줄 수 없고, 시도마다 아래
+throttle을 소모한다. 0.4.0 이전에는 권한 거부가
+`400 "…Authentication failed: Permission denied…"`로 도착했고, 400 본문에 `auth`가 있으면
+재시도하던 규칙이 바로 그 때문에 있었다. 그 규칙은 삭제했다.
+
+`400`의 `session` 마커는 계속 인정한다. 0.4.0 이전 엔진은 재기동된 서버의 stale session을
+그렇게 보고하며, 재설치 전까지 그런 엔진을 쓰는 사용자가 있을 수 있다.
+**그 오류 본문에는 `session` 단어를 유지할 것.** `auth`는 의도적으로 마커가 아니다.
 
 ### 로그인 lockout
 
-엔진은 연속 로그인 실패 시 계정을 잠근다. **query** endpoint의 401/403은 위의
-단 한 번 session recovery를 시작하지만, 새 **login** 요청이 401/403을 반환하면
-로그인을 다시 재시도하지 말고 즉시 실패해야 한다
-(`byoridb_mcp.py._ensure_ready` 참조).
+엔진은 연속 실패 시 로그인 검증을 throttle한다. **query** endpoint의 `401`은 위의 단 한 번
+session recovery를 시작하지만, 새 **login** 요청이 `401`을 반환하면 로그인을 다시 재시도하지
+말고 즉시 실패해야 한다(`byoridb_mcp.py._ensure_ready` 참조). `403`은 애초에 로그인 시도를
+유발하지 않는다.
 
 ## 2. nGQL 부분집합
 
@@ -324,28 +333,40 @@ instance와 credential을 분리한다.
 
 ## 7. 최소 엔진 버전과 빌드 식별
 
-**최소 `v0.3.3`**이며 `ENGINE_TAG_DEFAULT`와 같다. 위의 모든 surface를 제공하는 가장 오래된
-태그다. 십진 문자열 `session_id`, §1의 session-loss marker, §2의 63bit VID 범위, §4의
-`FETCH ... AS OF`가 모두 필요하다. 더 오래된 엔진은 시작 시점에 실패하지 않고 해당 surface에
-의존하는 첫 read에서 실패한다.
+**최소 `v0.4.0`**이며 `ENGINE_TAG_DEFAULT`와 같다. `v0.4.0` 미만은 이 클라이언트가 지원하지
+않으며, 취향 문제가 아니다.
 
-이 클라이언트가 원하는 두 가지는 **어떤 릴리스에도 들어 있지 않다.** 엔진 `main`에만 있고
-최신 릴리스가 그보다 앞선다.
+| 0.4.0이 제공하는 것 | 이 클라이언트가 필요한 이유 |
+|---|---|
+| `400 QUERY_ERROR`와 구분되는 `403 PERMISSION_DENIED` | 없으면 권한 거부와 잘못된 문장을 구분할 수 없고, 유일한 판별 수단이 `auth` 부분문자열 매칭이어서 권한 거부까지 재시도했다(§1) |
+| 비어 있지 않은 `BYORIDB_ROOT_PASSWORD` 게이트 | root 비밀번호를 스스로 생성하는 엔진은 그것을 **`logs/server.log`에 기록한다.** `templates/run-server.sh`도 변수 없이는 시작을 거부하므로 양쪽에서 강제한다 |
+| 로그인 throttling | 반복 실패 로그인을 제한한다 |
+| `--version` / `--help`, 알 수 없는 flag 거부 | 설치된 빌드가 스스로를 식별할 수 있다(아래) |
+| `type(e)` MATCH edge accessor, batch destination projection | relation type마다 쿼리를 보내지 않고 untyped `MATCH` 하나로 모든 relation을 읽는다 |
+| `IN` / `NOT IN` | seed VID OR-체인 대신 집합 멤버십 |
+| 요청별 `read_only` | `memory_query_read`의 약속을 엔진이 강제한다. 그 게이트 하나에만 의존하지 않는다 |
 
-| 엔진 변경 | 반영 | `v0.3.3` 포함 | 여기서의 결과 |
-|---|---|---|---|
-| 비어 있지 않은 `BYORIDB_ROOT_PASSWORD` 게이트 | 2026-08-08 | 아니오 | 변수 없이 시작하면 엔진이 root 비밀번호를 생성해 **`logs/server.log`에 기록한다.** 그래서 `templates/run-server.sh`는 변수가 비어 있으면 시작을 거부한다. 키가 존재하기만 하는 것에 의존하지 않는다 |
-| 로그인 throttling | — | 아니오 | 반복 실패 로그인을 엔진이 지연시키지 않는다 |
-| `type(e)` MATCH edge accessor, batch destination projection | 2026-08-03 | 아니오 | `_read_edge_records`가 relation type마다 쿼리를 하나씩 보내야 한다. 단일 untyped `MATCH`로 합치는 것은 이 변경이 포함된 릴리스를 기다린다 |
+오래된 엔진은 시작 시점에 실패하지 않는다. 위 항목에 의존하는 첫 read에서 실패한다. 그래서
+최소 버전을 발견하게 두지 않고 여기에 명시한다.
 
 `ENGINE_TAG_DEFAULT`를 릴리스되지 않은 commit으로 올리지 말 것. `install.sh`는 릴리스 asset을
 내려받으므로 `main`에만 있는 빌드는 사용자가 설치할 수 없다.
 
 ### 빌드 식별
 
-`byoridb-server`는 `--version`을 노출하지 않고 인자를 무시하며, `v0.3.3`에서 `--version`은
-일반 서버 실행이 된다. 따라서 상태 확인이 이를 probe해서는 안 된다. `install.sh`가 설치한
-내용을 `$BYORIDB_HOME/engine.json`(`tag`, `target`, `source`, `sha256`, `installed_at`)에
-기록하고 macOS 앱이 ByoriDB 페이지의 엔진 행에서 읽는다. Byori가 이를 기록하기 전에 설치한
-경우 파일이 없으며, 검증된 빌드가 아니라 "기록 없음"으로 보고한다. 엔진이 `--version`을
-제공하면 바이너리에서 직접 확인하고 이 파일은 fallback으로 둔다.
+`install.sh`가 설치한 내용을 `$BYORIDB_HOME/engine.json`(`tag`, `target`, `source`, `sha256`,
+`installed_at`)에 기록하고 macOS 앱이 ByoriDB 페이지에 표시한다.
+
+0.4.0부터는 바이너리도 스스로를 식별한다. 설정을 읽거나 디스크를 건드리기 전에 인자를 파싱한다.
+
+```console
+$ byoridb-server --version
+byoridb-server 0.4.0 (commit fbeb4ac55417, release)
+```
+
+앱은 이 답을 우선하며 앞의 바이너리 이름은 떼고, 파일은 fallback으로 둔다.
+
+**probe 여부는 기록된 tag가 결정한다.** 0.4.0 이전 엔진은 모든 인자를 무시하므로 `--version`이
+살아 있는 데이터 디렉터리에 대해 전체 서버를 시작한다. 상태 확인이 절대 해서는 안 되는 일이다.
+그래서 Byori는 기록된 tag가 `v0.4.0` 이상일 때만 `--version`을 실행하고, 그 외에는 기록된
+식별자를 보고한다. Byori가 기록하기 전에 설치한 경우 파일이 없으며 "기록 없음"으로 보고한다.

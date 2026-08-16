@@ -16,7 +16,7 @@ set -euo pipefail
 
 ASSET_REPO="byoridb/byori"        # install.sh / MCP / skill / templates
 ENGINE_REPO="byoridb/byoridb"     # byoridb-server binary releases
-ENGINE_TAG_DEFAULT="v0.3.3"       # engine version this byori version is tested against
+ENGINE_TAG_DEFAULT="v0.4.0"       # engine version this byori version is tested against
 BYORIDB_HOME="${BYORIDB_HOME:-$HOME/.byoridb}"
 HTTP_PORT="${BYORIDB_HTTP_PORT:-19669}"
 GRAPH_PORT="${BYORIDB_GRAPH_PORT:-9669}"

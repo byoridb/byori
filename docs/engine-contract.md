@@ -10,7 +10,7 @@ if a surface documented here changes, Byori must be updated before the engine ta
   `tests/smoke_mcp.py`,
   `manager/macos/Sources/ByoriManagerCore/ByoriGraphClient.swift`, `install.sh`, and
   `templates/run-server.sh`
-- Validated pairing: **byori v0.2.x ↔ engine `v0.3.3`**
+- Validated pairing: **byori v0.2.x ↔ engine `v0.4.0`**
   (`ENGINE_TAG_DEFAULT` in `install.sh`)
 - Validation has two layers:
   - `python3 -m unittest tests/test_mcp_contract.py` checks profiles, closed and bounded
@@ -44,7 +44,8 @@ share that graph space.
 |---|---|
 | `GET /health` | Returns 200 when the server is ready. The installer polls for up to 30 seconds |
 | `POST /api/v1/session` | body `{"username","password"}` → `{"session_id": <decimal string or signed INT64>}` |
-| `POST /api/v1/query` | body `{"session_id","query"}` → the result JSON below. Errors are 4xx + `{"error","code"}` |
+| `POST /api/v1/query` | body `{"session_id","query"}` → the result JSON below. Errors are 4xx + `{"error","code"}`. Optional `"read_only": true` makes the engine refuse a statement that would write |
+| `DELETE /api/v1/session` | session id in the `X-ByoriDB-Session-Id` header → signs that session out. Byori calls it on MCP exit instead of leaving the session to its TTL |
 
 - The current engine surface returns **`session_id` as a decimal string**. However, existing
   v0.3.3 release artifacts may return it as a signed INT64 JSON number and may require the same
@@ -79,22 +80,31 @@ An `id()` projection is a **signed INT64 represented as a JSON number**. Because
 
 ### Session-Loss Semantics (Re-login Rules)
 
-A client classifies the following as “session lost” and performs exactly one
-**re-login → `USE <space>` re-pin → retry** sequence:
+Engine 0.4.0 makes the three query failure classes distinct by status, so the status alone decides
+what a client does:
 
-- HTTP `401` / `403`
-- HTTP `400` **whose** lowercase error body contains `session` or `auth`
-  (for example, after a server restart, a stale session appears as `400 "Invalid session"`)
+| Status | Code | Meaning | Client action |
+|---:|---|---|---|
+| `401` | `SESSION_EXPIRED` | The session is gone | Exactly one **re-login → `USE <space>` re-pin → retry** |
+| `403` | `PERMISSION_DENIED` | The session is valid and stays valid | Surface it. **Never re-login** |
+| `400` | `QUERY_ERROR` | The statement itself is wrong | Do not retry |
+| `413` | `QUERY_TOO_LARGE` | Over 1 MiB | Do not retry |
 
-Other 400 responses, including syntax errors, are not retried. If the engine changes these error
-markers, client re-login will break. **Keep the words `session`/`auth` in the error body.**
+`403` must not be retried. Re-authenticating cannot grant a role the session does not have, and
+each attempt is spent against the login throttle below. Before 0.4.0 an authorization denial
+arrived as `400 "…Authentication failed: Permission denied…"`, and the client rule that retried any
+400 containing `auth` existed for exactly that reason; it is gone.
+
+The `session` marker on a `400` is still honoured, because an engine older than 0.4.0 reports a
+restarted server's stale session that way and a user can be on one until they reinstall. **Keep the
+word `session` in that error body.** `auth` is deliberately not a marker.
 
 ### Login Lockout
 
-The engine locks an account after consecutive failed login attempts. A 401/403 from the
-**query** endpoint triggers the single session-recovery sequence above, but a 401/403 from the
-fresh **login** request must fail immediately without another login retry (see
-`byoridb_mcp.py._ensure_ready`).
+The engine throttles login verification after consecutive failures. A `401` from the **query**
+endpoint triggers the single session-recovery sequence above, but a `401` from the fresh **login**
+request must fail immediately without another login retry (see `byoridb_mcp.py._ensure_ready`).
+A `403` never causes a login attempt at all.
 
 ## 2. nGQL Subset
 
@@ -340,29 +350,42 @@ and credentials across trust boundaries.
 
 ## 7. Minimum Engine Version and Build Identity
 
-**Minimum: `v0.3.3`**, which is also `ENGINE_TAG_DEFAULT`. It is the oldest tag that provides
-every surface above: decimal-string `session_id`, the session-loss markers in §1, the 63-bit VID
-range in §2, and `FETCH ... AS OF` in §4. An older engine does not fail at startup — it fails at
-the first read that depends on one of them.
+**Minimum: `v0.4.0`**, which is also `ENGINE_TAG_DEFAULT`. Everything below `v0.4.0` is
+unsupported by this client, and the reason is not a preference:
 
-Two things this client wants are **not in any released engine**. They exist only on the engine's
-`main`, and the newest release predates them:
+| What 0.4.0 provides | Why this client needs it |
+|---|---|
+| `403 PERMISSION_DENIED`, distinct from `400 QUERY_ERROR` | Without it an authorization denial is indistinguishable from a bad statement, and the client's only way to tell was a substring match on `auth` that also retried permission denials (§1) |
+| Non-blank `BYORIDB_ROOT_PASSWORD` gate | An engine that generates its own root password **writes it to `logs/server.log`**. `templates/run-server.sh` also refuses to start without the variable, so both sides enforce it |
+| Login throttling | Bounds repeated failed logins |
+| `--version` / `--help`, and unknown flags rejected | Lets the installed build identify itself (below) |
+| `type(e)` MATCH edge accessor and batch destination projection | One untyped `MATCH` reads every relation type, instead of one query per type |
+| `IN` / `NOT IN` | Set membership instead of an OR-chain over seed VIDs |
+| Per-request `read_only` | The engine enforces the promise `memory_query_read` makes, rather than that gate standing alone |
 
-| Engine change | Landed | In `v0.3.3` | Consequence here |
-|---|---|---|---|
-| Non-blank `BYORIDB_ROOT_PASSWORD` gate | 2026-08-08 | no | Started without the variable, the engine generates a root password **and writes it to `logs/server.log`**. `templates/run-server.sh` therefore refuses to start when the variable is empty, rather than relying on it merely being present |
-| Login throttling | — | no | Repeated failed logins are not slowed by the engine |
-| `type(e)` MATCH edge accessor, batch destination projection | 2026-08-03 | no | `_read_edge_records` must keep issuing one query per relation type; collapsing it into a single untyped `MATCH` waits on a release that contains these |
+An older engine does not fail at startup. It fails at the first read that depends on one of these,
+which is why the minimum is stated here rather than discovered.
 
 Do not advance `ENGINE_TAG_DEFAULT` to an unreleased commit: `install.sh` downloads a release
 asset, so a build that exists only on `main` cannot be installed by a user.
 
 ### Build identity
 
-`byoridb-server` exposes no `--version` and ignores its arguments, and on `v0.3.3` passing
-`--version` starts a normal server — so a status check must never probe it. `install.sh` records
-what it installed in `$BYORIDB_HOME/engine.json` (`tag`, `target`, `source`, `sha256`,
-`installed_at`), which the macOS app reads for the ByoriDB page's engine row. An install performed
-before Byori recorded this has no file, which is reported as "not recorded" rather than as a
-verified build. Once the engine ships `--version`, verify against the binary itself and treat this
-file as a fallback.
+`install.sh` records what it installed in `$BYORIDB_HOME/engine.json` (`tag`, `target`, `source`,
+`sha256`, `installed_at`), and the macOS app shows it on the ByoriDB page.
+
+From 0.4.0 the binary can also identify itself, parsing arguments before it loads configuration or
+touches disk:
+
+```console
+$ byoridb-server --version
+byoridb-server 0.4.0 (commit fbeb4ac55417, release)
+```
+
+The app prefers that answer, drops the leading binary name, and keeps the file as the fallback.
+
+**The recorded tag gates the probe.** Engines before 0.4.0 ignore every argument, so `--version`
+starts a full server against the live data directory — which a status refresh must never do. Byori
+therefore runs `--version` only when the recorded tag is `v0.4.0` or later, and reports the recorded
+identity otherwise. An install performed before Byori recorded anything has no file, which is
+reported as "not recorded" rather than as a verified build.

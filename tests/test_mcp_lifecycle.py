@@ -8,7 +8,9 @@ rather than a return value. None of them needs a running ByoriDB: startup
 validates configuration and reads stdin without connecting.
 """
 
+import contextlib
 import importlib.util
+import io
 import os
 import pathlib
 import signal
@@ -16,6 +18,7 @@ import subprocess
 import sys
 import time
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -123,6 +126,111 @@ class RequestReaderTests(unittest.TestCase):
 
     def test_without_a_timeout_the_default_reader_is_used(self):
         self.assertEqual(self._read(b'{"a":1}\n', None), ['{"a":1}\n'])
+
+
+class SessionLossClassificationTests(unittest.TestCase):
+    """Engine 0.4.0 separates the failure classes by status. Retrying the wrong
+    one is not a harmless retry: a 403 cannot be fixed by re-authenticating, and
+    every attempt is spent against the engine's login throttle."""
+
+    def test_expired_session_is_retried(self):
+        self.assertTrue(MCP._is_session_lost(401, '{"code":"SESSION_EXPIRED"}'))
+
+    def test_permission_denied_is_not_retried(self):
+        self.assertFalse(
+            MCP._is_session_lost(403, '{"error":"Permission denied: requires Write","code":"PERMISSION_DENIED"}'),
+            "re-authenticating cannot grant a role, and burns a throttled attempt",
+        )
+
+    def test_query_error_is_not_retried_even_when_it_mentions_auth(self):
+        """The pre-0.4.0 rule retried any 400 whose body contained `auth`, which
+        is exactly how a permission denial arrived back then."""
+        self.assertFalse(
+            MCP._is_session_lost(400, '{"error":"Query execution failed: Authentication failed: Permission denied","code":"QUERY_ERROR"}')
+        )
+        self.assertFalse(MCP._is_session_lost(400, '{"error":"syntax error near AUTH","code":"QUERY_ERROR"}'))
+
+    def test_stale_session_on_an_older_engine_is_still_retried(self):
+        """Engines before 0.4.0 report a restarted server's stale session as a
+        400 carrying `session`, and users can be on one until they reinstall."""
+        self.assertTrue(MCP._is_session_lost(400, '{"error":"Invalid session","code":"QUERY_ERROR"}'))
+
+    def test_other_statuses_are_not_retried(self):
+        for code in (404, 413, 500, 503):
+            with self.subTest(code=code):
+                self.assertFalse(MCP._is_session_lost(code, "{}"))
+
+
+class SignOutTests(unittest.TestCase):
+    """`DELETE /api/v1/session` releases the session instead of leaving it for the
+    24h TTL. It runs while the process is already exiting, so it must never raise."""
+
+    def test_no_session_means_nothing_to_release(self):
+        MCP._session["id"] = None
+        self.assertIsNone(MCP._logout())
+
+    def test_sends_the_id_in_the_documented_header_and_clears_it(self):
+        captured = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured["method"] = request.get_method()
+            captured["url"] = request.full_url
+            captured["header"] = request.get_header("X-byoridb-session-id")
+            return contextlib.closing(io.BytesIO(b""))
+
+        MCP._session["id"] = "734817462937615829"
+        MCP._session["ready"] = True
+        with mock.patch.object(MCP.urllib.request, "urlopen", fake_urlopen):
+            self.assertEqual(MCP._logout(), "signed out")
+
+        self.assertEqual(captured["method"], "DELETE")
+        self.assertTrue(captured["url"].endswith("/api/v1/session"))
+        self.assertEqual(captured["header"], "734817462937615829")
+        self.assertIsNone(MCP._session["id"], "a released session must not be reused")
+        self.assertFalse(MCP._session["ready"])
+
+    def test_an_engine_without_the_route_is_reported_not_raised(self):
+        """Engines before 0.4.0 answer 405 here."""
+        def refuse(request, timeout=None):
+            raise MCP.urllib.error.HTTPError(request.full_url, 405, "Method Not Allowed", {}, None)
+
+        MCP._session["id"] = "1"
+        with mock.patch.object(MCP.urllib.request, "urlopen", refuse):
+            outcome = MCP._logout()
+        self.assertIn("405", outcome)
+        self.assertIn("TTL", outcome)
+
+    def test_an_unreachable_engine_is_reported_not_raised(self):
+        def fail(request, timeout=None):
+            raise OSError("connection refused")
+
+        MCP._session["id"] = "1"
+        with mock.patch.object(MCP.urllib.request, "urlopen", fail):
+            outcome = MCP._logout()
+        self.assertIn("sign-out failed", outcome)
+
+
+class ReadOnlyRequestTests(unittest.TestCase):
+    def test_read_only_queries_ask_the_engine_to_enforce_it(self):
+        """The Python gate still has to be right, but on 0.4.0 a statement that
+        slips past it is refused by the engine instead of being executed with the
+        session's write authority."""
+        sent = []
+
+        def fake_post(path, payload, timeout=30):
+            sent.append((path, dict(payload)))
+            return 200, {"data": []}
+
+        MCP._session["id"] = "1"
+        with mock.patch.object(MCP, "_post", fake_post):
+            MCP._raw_query("MATCH (n) RETURN n", read_only=True)
+            MCP._raw_query("INSERT VERTEX note() VALUES 1:()")
+
+        self.assertTrue(sent[0][1]["read_only"])
+        self.assertNotIn(
+            "read_only", sent[1][1],
+            "a writing path must not send a flag that would refuse it",
+        )
 
 
 class ProcessExitTests(unittest.TestCase):
