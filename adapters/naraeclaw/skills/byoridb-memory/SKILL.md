@@ -8,9 +8,11 @@ description: >-
 
 # ByoriDB Memory for NaraeClaw
 
-Run the MCP server with `BYORIDB_MCP_PROFILE=safe` and give each project a stable,
-valid `BYORIDB_MEMORY_SPACE` (`^[A-Za-z_][A-Za-z0-9_]{0,63}$`). Set these values in
-the MCP process configuration, not `~/.byoridb/env`, which the installer rewrites.
+Run the MCP server with `BYORIDB_MCP_PROFILE=safe`. Left unset, the server resolves
+each project's space from the project itself (docs/install.md, "Memory space"); pass a
+stable, valid `BYORIDB_MEMORY_SPACE` (`^[A-Za-z_][A-Za-z0-9_]{0,63}$`) when this host
+launches the server outside the project directory, or to pin a name of your own. Set
+these values in the MCP process configuration, not `~/.byoridb/env`, which the installer rewrites.
 Spaces prevent accidental mixing but are not authorization boundaries; use separate
 instances and credentials across trust domains. Never use the unrestricted legacy
 query tool. Tool names below are the logical MCP names; use any prefix shown by the host.

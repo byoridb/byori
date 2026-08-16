@@ -17,11 +17,15 @@ final class KnowledgeGraphViewModel: ObservableObject {
     @Published var selectedKind = ""
 
     private let service: ManagerService
+    /// The project whose memory this view shows. Required, not defaulted: a graph
+    /// view with an implicit space showed one shared space for every project.
+    private let space: String
     private var bodies: [Int64: String] = [:]
     private var bodyTask: Task<Void, Never>?
 
-    init(service: ManagerService) {
+    init(service: ManagerService, space: String) {
         self.service = service
+        self.space = space
     }
 
     var kinds: [String] {
@@ -64,7 +68,7 @@ final class KnowledgeGraphViewModel: ObservableObject {
         isLoading = true
         errorMessage = nil
         do {
-            let loaded = try await service.loadKnowledgeGraph(limit: 200)
+            let loaded = try await service.loadKnowledgeGraph(space: space, limit: 200)
             snapshot = loaded
             bodies.removeAll(keepingCapacity: true)
             selectedBody = nil
@@ -126,7 +130,7 @@ final class KnowledgeGraphViewModel: ObservableObject {
         bodyTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let body = try await service.loadKnowledgeBody(nodeID: nodeID, tag: tag)
+                let body = try await service.loadKnowledgeBody(nodeID: nodeID, tag: tag, space: space)
                 guard !Task.isCancelled else { return }
                 bodies[nodeID] = body
                 if selectedNodeID == nodeID { selectedBody = body }

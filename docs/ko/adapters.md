@@ -67,8 +67,9 @@ cp -R adapters/claude/skills/byori-design/. \
 ### NaraeClaw 및 기타 수동 MCP host
 
 이 저장소는 NaraeClaw 전용 MCP 설정 문법이나 live skill 경로를 정의·가정하지 않는다.
-host의 일반 MCP process 설정에서 설치된 runner를 reduced raw-query profile과 안정적인
-프로젝트 namespace로 실행한다.
+host의 일반 MCP process 설정에서 설치된 runner를 reduced raw-query profile로 실행한다.
+아래 space는 override다. 설정하지 않으면 서버가 프로젝트의 space를 직접 해석하므로
+(docs/ko/install.md "Memory space"), 프로젝트 디렉터리에서 서버를 띄우는 host는 그 편이 맞다.
 
 ```sh
 env BYORIDB_MCP_PROFILE=safe \

@@ -78,7 +78,9 @@ The current hook snippet is specific to Claude Code.
 
 This repository does not define or assume NaraeClaw-specific MCP configuration syntax or a live
 skill directory. In the host's normal MCP process configuration, launch the installed runner with
-a reduced raw-query profile and a stable project namespace:
+a reduced raw-query profile. The space below is an override: unset, the server resolves the
+project's space itself (docs/install.md, "Memory space"), which is what a host that starts the
+server in the project directory should rely on.
 
 ```sh
 env BYORIDB_MCP_PROFILE=safe \

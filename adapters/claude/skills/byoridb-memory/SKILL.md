@@ -16,8 +16,8 @@ description: >-
 # ByoriDB Memory
 
 A local, always-on ByoriDB instance is your long-term memory. You reach it through
-the **`byoridb` MCP server** over the configured memory space (default:
-`claude_memory`). Both layers below are bootstrapped automatically: on startup the
+the **`byoridb` MCP server** over this project's memory space, which the server
+resolves from the project itself. Both layers below are bootstrapped automatically: on startup the
 MCP server migrates the space to the current memory schema (v2 = notes + typed wiki),
 recording the version in the reserved note `byori:schema-version`.
 

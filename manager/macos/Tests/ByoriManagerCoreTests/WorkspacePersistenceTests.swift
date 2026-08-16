@@ -210,6 +210,86 @@ final class WorkspacePersistenceTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: databaseSentinel), Data("database-history".utf8))
     }
 
+    /// The same vectors are asserted in Python (tests/test_memory_space.py). A
+    /// change on one side that is not mirrored on the other splits a project's
+    /// memory across two spaces, which is what deriving the name prevents.
+    func testDerivedMemorySpaceMatchesTheCrossLanguageVectors() {
+        let vectors: [(String, String)] = [
+            ("/Users/teo/byori", "byori_byori_89107dac"),
+            ("/Users/teo/My Project!", "byori_my_project_c7270d6a"),
+            // A slug that does not start with a letter takes the `p_` prefix.
+            ("/Users/teo/2048", "byori_p_2048_5123ef0f"),
+            // Nothing ASCII-alphanumeric survives, so the slug falls back.
+            ("/Users/teo/프로젝트", "byori_project_3d2e3680"),
+            // Cut to 36 characters, then any trailing underscore removed.
+            (
+                "/Users/teo/" + String(repeating: "a", count: 35) + "-b",
+                "byori_" + String(repeating: "a", count: 35) + "_31597749"
+            ),
+            ("/", "byori_project_8a5edab2"),
+            ("/tmp/repo.git", "byori_repo_git_148929e4"),
+        ]
+        for (rootPath, expected) in vectors {
+            XCTAssertEqual(
+                WorkspaceProjectRegistry.defaultMemorySpace(rootPath: rootPath),
+                expected,
+                "derived space for \(rootPath)"
+            )
+        }
+    }
+
+    func testRegistrationDerivesTheMemorySpaceFromTheRootPath() async throws {
+        let registry = WorkspaceProjectRegistry(
+            home: byoriHome,
+            git: StubWorkspaceGit(root: repositoryRoot),
+            idGenerator: { "derived12345" }
+        )
+        let project = try await registry.registerProject(at: repositoryRoot, memorySpace: nil)
+
+        let canonicalRoot = repositoryRoot.resolvingSymlinksInPath().standardizedFileURL.path
+        XCTAssertEqual(project.rootPath, canonicalRoot)
+        XCTAssertEqual(
+            project.memorySpace,
+            WorkspaceProjectRegistry.defaultMemorySpace(rootPath: canonicalRoot)
+        )
+        // The name must not depend on the project id, or nothing could recompute it.
+        XCTAssertFalse(project.memorySpace.contains("derived12345"))
+    }
+
+    func testRegistrationRefusesAMemorySpaceAnotherProjectAlreadyUses() async throws {
+        let registryURL = byoriHome.appendingPathComponent("projects.json")
+        let otherRoot = temporaryRoot.appendingPathComponent("repositories/other", isDirectory: true)
+        try FileManager.default.createDirectory(at: otherRoot, withIntermediateDirectories: true)
+        let canonicalRoot = repositoryRoot.resolvingSymlinksInPath().standardizedFileURL.path
+        let collidingSpace = WorkspaceProjectRegistry.defaultMemorySpace(rootPath: canonicalRoot)
+        try writeJSONObject([
+            "schema_version": 1,
+            "projects": [[
+                "id": "collision123",
+                "name": "other",
+                "root": otherRoot.path,
+                "space": collidingSpace,
+                "remote": "",
+                "added_at": "2026-08-06T01:02:03Z",
+            ]],
+        ], to: registryURL)
+        let unchanged = try Data(contentsOf: registryURL)
+
+        let registry = WorkspaceProjectRegistry(
+            home: byoriHome,
+            git: StubWorkspaceGit(root: repositoryRoot)
+        )
+        do {
+            _ = try await registry.registerProject(at: repositoryRoot, memorySpace: nil)
+            XCTFail("A memory space shared with another project must fail closed")
+        } catch let error as WorkspaceError {
+            guard case .invalidProject = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+        XCTAssertEqual(try Data(contentsOf: registryURL), unchanged)
+    }
+
     func testProjectMutationsFailClosedForDuplicateIdentityMissingProjectAndSchema() async throws {
         let registryURL = byoriHome.appendingPathComponent("projects.json")
         let otherRoot = temporaryRoot.appendingPathComponent("repositories/other", isDirectory: true)

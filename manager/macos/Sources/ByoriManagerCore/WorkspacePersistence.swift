@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import CoreFoundation
 import Foundation
@@ -163,7 +164,18 @@ public actor WorkspaceProjectRegistry:
             }
             let name = root.lastPathComponent.isEmpty ? "project" : root.lastPathComponent
             let space = try memorySpace.map(Self.validateMemorySpace)
-                ?? Self.defaultMemorySpace(projectName: name, projectID: projectID)
+                ?? Self.defaultMemorySpace(rootPath: root.path)
+            // Two roots resolving to one space would merge two projects' memory
+            // into a single graph with nothing to show it happened. Refuse, and
+            // let the caller name a space, rather than silently lengthening the
+            // digest into something no other component could recompute.
+            if let collision = (state.projects + state.removedProjects).first(where: {
+                $0.memorySpace == space
+            }) {
+                throw WorkspaceError.invalidProject(
+                    "memory space \(space) is already used by \(collision.rootPath)"
+                )
+            }
             let addedAt = now()
             var rawProject: [String: Any] = [
                 "id": projectID,
@@ -370,16 +382,55 @@ public actor WorkspaceProjectRegistry:
         return value
     }
 
-    private static func defaultMemorySpace(projectName: String, projectID: String) -> String {
-        let scalars = projectName.lowercased().unicodeScalars.map { scalar -> Character in
-            if (48...57).contains(scalar.value) || (97...122).contains(scalar.value) {
-                return Character(String(scalar))
+    /// Deterministic memory space name for a canonical project root.
+    ///
+    /// Derived from the root path rather than from the project's random id so
+    /// that a component that was not handed the name can recompute it: an MCP
+    /// server started outside this app resolves the same space, and losing
+    /// `~/.byori/projects.json` does not orphan a project's memory.
+    ///
+    /// One spec, three implementations — this, `memory_space_for_root` in
+    /// `cli/byori.py`, and `_memory_space_for_root` in `mcp/byoridb_mcp.py`.
+    /// See docs/install.md ("Memory space"); each language pins it with tests,
+    /// because changing one alone re-splits a project's memory.
+    static func defaultMemorySpace(rootPath: String) -> String {
+        let digest = SHA256.hash(data: Data(rootPath.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let name = URL(fileURLWithPath: rootPath).lastPathComponent
+        return "byori_\(memorySpaceSlug(name))_\(digest.prefix(8))"
+    }
+
+    /// Mirrors `slugify` in `cli/byori.py`: runs of non-alphanumerics collapse to
+    /// a single underscore, leading and trailing ones are dropped, the result is
+    /// lowercased, a slug that does not start with a letter gets a `p_` prefix,
+    /// and the slug is cut to 36 characters with trailing underscores removed
+    /// after the cut.
+    static func memorySpaceSlug(_ name: String) -> String {
+        var collapsed = ""
+        var pendingSeparator = false
+        for scalar in name.unicodeScalars {
+            let isAlphanumeric = (48...57).contains(scalar.value)
+                || (65...90).contains(scalar.value)
+                || (97...122).contains(scalar.value)
+            guard isAlphanumeric else {
+                pendingSeparator = true
+                continue
             }
-            return "_"
+            if pendingSeparator, !collapsed.isEmpty {
+                collapsed.append("_")
+            }
+            pendingSeparator = false
+            collapsed.unicodeScalars.append(scalar)
         }
-        let slug = String(scalars).split(separator: "_").filter { !$0.isEmpty }.joined(separator: "_")
-        let boundedSlug = String((slug.isEmpty ? "project" : slug).prefix(36))
-        return "byori_\(boundedSlug)_\(projectID.prefix(8))"
+        var slug = collapsed.isEmpty ? "project" : collapsed.lowercased()
+        if let first = slug.unicodeScalars.first,
+           !((65...90).contains(first.value) || (97...122).contains(first.value)) {
+            slug = "p_" + slug
+        }
+        var bounded = String(slug.prefix(36))
+        while bounded.hasSuffix("_") { bounded.removeLast() }
+        return bounded
     }
 
     private static func sanitizeRemote(_ value: String) -> String {
