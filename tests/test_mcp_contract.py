@@ -192,6 +192,100 @@ class NoteToolContractTests(unittest.TestCase):
                 MCP.tool_recall({"limit": 1, "unexpected": True})
 
 
+class EdgeReadContractTests(unittest.TestCase):
+    """Reading a node's edges used to cost one round trip per relation type — nine
+    — each re-evaluating the same seed filter, and each new type in the ontology
+    added another. Engine 0.4.0 makes one statement enough, so what is pinned here
+    is that it stays one, and that the rows are interpreted exactly as the loop
+    interpreted them."""
+
+    MIXED_ROWS = [
+        {"src": 1, "dst": 2, "edge_type": "affects", "relation": None},
+        {"src": 2, "dst": 3, "edge_type": "rel", "relation": "relates_to"},
+        {"src": 3, "dst": 4, "edge_type": "rel", "relation": None},
+        {"src": 4, "dst": 5, "edge_type": "about", "relation": None},
+        {"src": 5, "dst": 6, "edge_type": "handmade", "relation": None},
+    ]
+
+    def _read(self, vids, rows=None, source_only=False):
+        queries = []
+
+        def fake_raw_query(ngql, read_only=False):
+            queries.append(ngql)
+            return {"results": self.MIXED_ROWS if rows is None else rows}
+
+        with mock.patch.object(MCP, "_raw_query", fake_raw_query):
+            return MCP._read_edge_records(vids, source_only=source_only), queries
+
+    def test_one_round_trip_regardless_of_relation_count(self):
+        _, queries = self._read(["1", "2"])
+
+        self.assertEqual(len(queries), 1, "one query per edge read")
+        self.assertGreater(
+            len(MCP.TYPED_RELATIONS), 1,
+            "the point of the assertion is that this count no longer matters",
+        )
+
+    def test_query_uses_untyped_match_type_accessor_and_set_membership(self):
+        _, queries = self._read(["10", "20"])
+        query = queries[0]
+
+        self.assertIn("MATCH (a)-[e]->(b)", query, "an empty type list means every type")
+        self.assertIn("type(e) AS edge_type", query)
+        self.assertIn("e.rel.kind AS relation", query, "legacy rows carry kind, not a type")
+        self.assertIn("id(a) IN [10, 20]", query)
+        self.assertIn("id(b) IN [10, 20]", query)
+        for relation in MCP.TYPED_RELATIONS:
+            self.assertNotIn(f"[e:{relation}]", query, "no per-type query may remain")
+
+    def test_typed_and_legacy_rows_keep_their_previous_shape(self):
+        edges, _ = self._read(["1"])
+        by_pair = {(e["source_vid"], e["target_vid"]): e for e in edges}
+
+        self.assertEqual(
+            by_pair[("1", "2")], 
+            {"edge_type": "affects", "relation": "affects", "source_vid": "1", "target_vid": "2"},
+            "a typed edge's relation is its type",
+        )
+        self.assertEqual(by_pair[("2", "3")]["relation"], "relates_to")
+        self.assertEqual(by_pair[("2", "3")]["edge_type"], "rel")
+        self.assertEqual(
+            by_pair[("3", "4")]["relation"], "relates_to",
+            "a legacy edge with no kind is the plain association the loop defaulted to",
+        )
+
+    def test_edge_types_outside_the_ontology_are_dropped(self):
+        edges, _ = self._read(["1"])
+
+        self.assertNotIn(
+            "handmade", {edge["edge_type"] for edge in edges},
+            "an untyped MATCH also returns edges Byori never created",
+        )
+
+    def test_duplicates_are_collapsed_and_order_is_stable(self):
+        duplicated = self.MIXED_ROWS + self.MIXED_ROWS
+        edges, _ = self._read(["1"], rows=duplicated)
+        again, _ = self._read(["1"], rows=list(reversed(duplicated)))
+
+        keys = [(e["edge_type"], e["relation"], e["source_vid"], e["target_vid"]) for e in edges]
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertEqual(keys, sorted(keys))
+        self.assertEqual(edges, again, "row order from the engine must not change the result")
+
+    def test_source_only_filters_one_endpoint(self):
+        _, queries = self._read(["7"], source_only=True)
+
+        self.assertIn("id(a) IN [7]", queries[0])
+        # `id(b) AS dst` stays in the projection; only the filter narrows.
+        self.assertNotIn("id(b) IN", queries[0])
+
+    def test_no_seeds_issues_no_query(self):
+        edges, queries = self._read([])
+
+        self.assertEqual(edges, [])
+        self.assertEqual(queries, [], "an empty seed set must not reach the engine")
+
+
 class StructuredToolContractTests(unittest.TestCase):
     def test_canonical_wiki_identity(self):
         for node_type in MCP.WIKI_TYPES:
