@@ -151,6 +151,21 @@ Pass both variables in each separately configured MCP client's process configura
 installer persists the safe profile in `~/.byoridb/env`; on reinstall or upgrade it rewrites that
 file, preserves only `BYORIDB_ROOT_PASSWORD`, and restores the safe default.
 
+### MCP server lifetime
+
+The server exits when stdin closes, which is the normal signal that its host is gone, and on
+`SIGTERM` or `SIGHUP` — each logging why it exited. It does not sign out of ByoriDB on the way out
+because the engine exposes login and query only; an authenticated session is released by its
+server-side TTL instead, and the exit line names the session so an abandoned one is traceable to
+the process that held it.
+
+Some hosts keep a server's stdin open for the lifetime of the host process rather than for the
+conversation that needed it, which leaves servers resident with a live parent. Set
+`BYORIDB_MCP_IDLE_TIMEOUT` to a number of seconds (minimum 60) to have such a server exit after
+that much inactivity. It is unset by default: a host is free to keep an idle server open, and
+exiting under one that still expects it would be reported as a failed MCP server rather than as
+the reclaimed process it is.
+
 ## Management
 
 ```sh

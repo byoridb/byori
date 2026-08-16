@@ -22,11 +22,15 @@ Env:
   BYORIDB_PASSWORD / BYORIDB_ROOT_PASSWORD   root password
   BYORIDB_MEMORY_SPACE   default claude_memory; validated nGQL identifier
   BYORIDB_MCP_PROFILE    safe (default) | legacy (enables unrestricted memory_query) | readonly
+  BYORIDB_MCP_IDLE_TIMEOUT  seconds of inactivity after which the server exits;
+                            unset/0 disables it (default). See `main()`.
 """
 import hashlib
 import json
 import os
 import re
+import select
+import signal
 import sys
 import time
 import urllib.error
@@ -38,6 +42,7 @@ USER = os.environ.get("BYORIDB_USER", "root")
 # stray inherited BYORIDB_PASSWORD cannot shadow it with a stale/wrong value.
 PASSWORD = os.environ.get("BYORIDB_ROOT_PASSWORD") or os.environ.get("BYORIDB_PASSWORD", "")
 SPACE = os.environ.get("BYORIDB_MEMORY_SPACE", "claude_memory")
+IDLE_TIMEOUT_RAW = os.environ.get("BYORIDB_MCP_IDLE_TIMEOUT", "")
 PROFILE = os.environ.get("BYORIDB_MCP_PROFILE", "safe")
 
 SPACE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
@@ -148,6 +153,33 @@ def _validate_profile(profile):
             "BYORIDB_MCP_PROFILE must be 'legacy', 'safe', or 'readonly'"
         )
     return profile
+
+
+def _validate_idle_timeout(raw):
+    """Seconds of inactivity before the server exits, or None when disabled.
+
+    Off by default. A host is free to keep an MCP server open with no traffic for
+    as long as it likes, and exiting under it would be reported as a failed
+    server rather than as the reclaimed process it is. Opting in is for hosts
+    that never close stdin.
+
+    A floor of 60s keeps a mistyped value from turning into a server that exits
+    between two requests.
+    """
+    value = (raw or "").strip()
+    if not value or value == "0":
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        raise ValueError(
+            "BYORIDB_MCP_IDLE_TIMEOUT must be a number of seconds (>= 60), or 0 to disable"
+        ) from None
+    if seconds < 60:
+        raise ValueError(
+            "BYORIDB_MCP_IDLE_TIMEOUT must be at least 60 seconds, or 0 to disable"
+        )
+    return seconds
 
 
 def _post(path, payload, timeout=30):
@@ -1230,22 +1262,104 @@ def handle(msg):
         _error(id_, -32601, f"method not found: {method}")
 
 
+class _Terminated(SystemExit):
+    """Raised from a signal handler so the exit path is the ordinary one."""
+
+
+def _install_termination_handlers():
+    """Turn SIGTERM/SIGHUP into an orderly exit.
+
+    Both would already end the process by default, but through a disposition
+    that runs nothing: no final log line, and no chance to say what became of
+    the ByoriDB session. Handling them makes `kill` deterministic and leaves a
+    record of why a server went away.
+    """
+    def handle(signum, _frame):
+        raise _Terminated(f"signal:{signal.Signals(signum).name}")
+
+    for name in ("SIGTERM", "SIGHUP"):
+        number = getattr(signal, name, None)
+        if number is not None:
+            signal.signal(number, handle)
+
+
+def _requests(idle_timeout):
+    """Yield one JSON-RPC line at a time until the host goes away.
+
+    With no idle timeout this stays on the buffered iterator, which is the
+    long-standing behaviour and blocks until EOF.
+
+    With one, it reads the descriptor directly with `os.read` instead. Mixing
+    `select` with Python's own buffering would be a bug: the wrapper can hold a
+    complete line while `select` still reports nothing to read, so the server
+    would sit on a pending request until the timeout fired.
+    """
+    if idle_timeout is None:
+        yield from sys.stdin
+        return
+
+    stream = sys.stdin.buffer
+    descriptor = stream.fileno()
+    pending = b""
+    while True:
+        newline = pending.find(b"\n")
+        while newline == -1:
+            readable, _, _ = select.select([descriptor], [], [], idle_timeout)
+            if not readable:
+                log(f"idle for {idle_timeout:g}s with no request; exiting")
+                return
+            chunk = os.read(descriptor, 65536)
+            if not chunk:
+                if pending.strip():
+                    yield pending.decode("utf-8", "replace")
+                return
+            pending += chunk
+            newline = pending.find(b"\n")
+        line, pending = pending[:newline], pending[newline + 1:]
+        yield line.decode("utf-8", "replace")
+
+
 def main():
     _validate_space_name(SPACE)
     _validate_profile(PROFILE)
-    log(f"starting; ByoriDB at {HTTP}, space={SPACE}, profile={PROFILE}")
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            msg = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        try:
-            handle(msg)
-        except Exception as e:  # noqa: BLE001 - never crash the loop
-            log(f"handler error: {e}")
+    idle_timeout = _validate_idle_timeout(IDLE_TIMEOUT_RAW)
+    _install_termination_handlers()
+    log(
+        f"starting; ByoriDB at {HTTP}, space={SPACE}, profile={PROFILE}, "
+        f"idle-timeout={'off' if idle_timeout is None else f'{idle_timeout:g}s'}"
+    )
+    reason = "stdin closed"
+    try:
+        for line in _requests(idle_timeout):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            try:
+                handle(msg)
+            except Exception as e:  # noqa: BLE001 - never crash the loop
+                log(f"handler error: {e}")
+    except _Terminated as terminated:
+        reason = str(terminated)
+    except KeyboardInterrupt:
+        reason = "interrupted"
+    finally:
+        # The engine exposes login and query only — there is no sign-out
+        # endpoint to call — so an authenticated session is released by its
+        # server-side TTL rather than here. Naming it on the way out is what
+        # makes an abandoned session traceable to the process that held it.
+        held = _session["id"]
+        log(
+            f"exiting ({reason}); "
+            + (
+                f"ByoriDB session {held} left to its server-side TTL"
+                if held is not None
+                else "no ByoriDB session was opened"
+            )
+        )
 
 
 if __name__ == "__main__":
