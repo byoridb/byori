@@ -129,13 +129,70 @@ process는 startup에서 login, `USE <space>`, schema-version read만 수행하�
 version으로 space를 미리 준비하지 않았으면 실패한다. 설정된 engine credential은 계속
 가지므로 신뢰 영역이 다르면 instance와 credential을 분리한다.
 
-`BYORIDB_MEMORY_SPACE`는 논리 memory namespace를 선택하며(기본 `claude_memory`),
-`^[A-Za-z_][A-Za-z0-9_]{0,63}$`을 만족해야 한다. 프로젝트가 우연히 섞이지 않게 할 뿐
-모든 space가 같은 엔진 credential을 쓰므로 authorization/tenant 경계가 아니다. 신뢰 영역이
-다르면 별도 instance와 credential을 사용한다.
+`BYORIDB_MEMORY_SPACE`는 논리 memory namespace를 덮어쓰며
+`^[A-Za-z_][A-Za-z0-9_]{0,63}$`을 만족해야 한다. 설정하지 않으면 서버가 프로젝트에서
+space를 해석한다 — [Memory space](#memory-space) 참고. 모든 space가 같은 엔진 credential을
+쓰므로 프로젝트가 섞이지 않게 할 뿐 authorization/tenant 경계가 아니다. 신뢰 영역이 다르면
+별도 instance와 credential을 사용한다.
 
 두 변수는 MCP client별 process 설정에 전달한다. `~/.byoridb/env`를 편집해 영속화하지
 말 것. 재설치·upgrade 시 설치기가 해당 파일을 다시 쓰며 `BYORIDB_ROOT_PASSWORD`만 보존한다.
+설치기는 `BYORIDB_MEMORY_SPACE`를 그 파일에 쓰지 않는다. 모든 프로젝트가 공유하는 파일에
+값 하나를 두는 것이 애초에 memory가 프로젝트 단위이기를 그만둔 원인이다.
+
+### Memory space
+
+memory space는 프로젝트에 속하며, 모든 구성 요소가 같은 순서로 해석한다.
+
+1. **`BYORIDB_MEMORY_SPACE`** — 설정되어 있으면 명시적 override. macOS 앱은 선택한 프로젝트의
+   space를 이렇게 전달하므로, 앱이 task worktree에서 띄운 세션은 discovery가 필요 없다.
+2. **프로젝트 레지스트리**(`~/.byori/projects.json`) — canonical project root로 조회. 이미
+   등록된 프로젝트는 기존 이름을 유지한다(파생 규칙이 생기기 전에 배정된 이름 포함).
+3. **project root에서 파생** — 등록되지 않은 프로젝트.
+
+공유 기본값은 없다. 아무도 등록하지 않은 디렉터리도 다른 모든 프로젝트와 공유하는 버킷이 아니라
+자기 space를 갖는다. 이전에는 macOS 앱만 space를 전달하고 나머지는 전부 `claude_memory` 하나로
+떨어졌기 때문에, 세션이 어느 프로젝트의 기억을 보는지가 무엇으로 띄웠는지에 달려 있었다.
+
+project 디렉터리는 호스트가 `CLAUDE_PROJECT_DIR`를 내보내면 그 값, 아니면 작업 디렉터리다.
+linked Git worktree는 **main** worktree로 해석한다. byori는 한 프로젝트의 worktree에서 task를
+실행하므로, checkout마다 space를 주면 한 프로젝트의 기억이 지금까지 돌린 모든 task로 흩어진다.
+worktree 자체를 별도 프로젝트로 등록했다면 그 등록이 우선한다.
+
+파생 이름은 `byori_<slug>_<digest>`다.
+
+- `<slug>`: root의 디렉터리 이름을 소문자로, 알파넘이 아닌 연속 문자를 `_` 하나로 접고, 앞뒤 `_`를
+  제거하고, 첫 글자가 letter가 아니면 `p_`를 붙이고, 36자로 자른 뒤 다시 뒤쪽 `_`를 제거한다.
+  ASCII 알파넘이 하나도 남지 않으면 `project`가 된다.
+- `<digest>`: `sha256(<canonical root path>)`의 앞 8자리 hex.
+
+project id가 아니라 경로에서 파생하므로 어떤 구성 요소든 저장소만으로 이름을 다시 계산할 수 있다.
+`~/.byori/projects.json`을 잃어도 프로젝트의 기억이 고아가 되어서는 안 된다. 그 대가로 저장소를
+옮기면 파생 이름이 바뀐다. 이름이 이동을 견뎌야 하면 프로젝트를 등록하거나 space를 명시한다.
+파생 이름이 기존 프로젝트와 충돌하는 두 번째 프로젝트 등록은 두 프로젝트의 그래프를 조용히
+합치는 대신 거부한다.
+
+명세는 하나, 구현은 셋이다. `mcp/byoridb_mcp.py`의 `_memory_space_for_root`, `cli/byori.py`의
+`memory_space_for_root`, macOS 앱 `WorkspacePersistence.swift`의 `defaultMemorySpace`.
+같은 벡터를 `tests/test_memory_space.py`와 `WorkspacePersistenceTests.swift`에서 단정한다.
+
+#### space가 프로젝트 단위가 되기 전에 쓴 기억
+
+그 이전 세션은 모두 `claude_memory` 하나에 썼기 때문에 그 space에는 무관한 여러 프로젝트가 나란히
+들어 있다. 데이터는 그대로 있지만 프로젝트 space에서는 읽히지 않으며, 자동으로 이관하지도 않는다.
+어느 행이 어느 프로젝트에 속하는지는 판단이 필요한 문제다. 그 space가 아직 있으면 MCP 서버가
+startup 로그로 알린다. 프로젝트에 속한 것만 복사하려면:
+
+```sh
+# 무엇이 옮겨지는지
+scripts/migrate-legacy-memory.py --name-prefix module:my-project
+
+# 현재 프로젝트로 해석된 space로 실제 복사
+scripts/migrate-legacy-memory.py --name-prefix module:my-project --apply
+```
+
+원본 space는 수정하지 않는다. 옮기는 것이 아니라 복사한다. 대상 space는 이미 있어야 한다.
+해당 프로젝트에서 agent 세션을 한 번 띄우면 그 MCP 서버가 bootstrap한다.
 
 ### MCP 서버 수명
 

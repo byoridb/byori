@@ -125,25 +125,19 @@ public actor ManagerService {
         AgentCommandCatalogScanner(home: paths.home, fileManager: fileManager).scan()
     }
 
-    public func loadKnowledgeGraph(limit: Int = 200) async throws -> KnowledgeGraphSnapshot {
-        try await loadKnowledgeGraph(space: nil, limit: limit)
-    }
-
+    /// The space is required: reading "the" knowledge graph without naming a
+    /// project is what put every project's memory in one shared space.
     public func loadKnowledgeGraph(
-        space: String?,
+        space: String,
         limit: Int = 200
     ) async throws -> KnowledgeGraphSnapshot {
         try await graphProvider.loadGraph(paths: paths, nodeLimit: limit, space: space)
     }
 
-    public func loadKnowledgeBody(nodeID: Int64, tag: String) async throws -> String {
-        try await loadKnowledgeBody(nodeID: nodeID, tag: tag, space: nil)
-    }
-
     public func loadKnowledgeBody(
         nodeID: Int64,
         tag: String,
-        space: String?
+        space: String
     ) async throws -> String {
         try await graphProvider.loadBody(
             paths: paths,

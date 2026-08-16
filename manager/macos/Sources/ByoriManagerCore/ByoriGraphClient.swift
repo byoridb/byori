@@ -1,35 +1,25 @@
 import Foundation
 
+/// `space` is required rather than optional throughout: a memory space belongs to
+/// a project, and an implicit one is how every project's memory ended up in a
+/// single shared space. The caller always knows which project it is reading.
 public protocol KnowledgeGraphProviding: Sendable {
     /// Verifies that the configured local endpoint accepts the configured
     /// credential. A health response alone is insufficient because another
     /// ByoriDB process can own the same port while using a different data set.
+    /// Space-independent by design: connectivity is not a property of a project.
     func verifyConnection(paths: ManagerPaths) async throws
     func loadGraph(
         paths: ManagerPaths,
         nodeLimit: Int,
-        space: String?
+        space: String
     ) async throws -> KnowledgeGraphSnapshot
     func loadBody(
         paths: ManagerPaths,
         nodeID: Int64,
         tag: String,
-        space: String?
+        space: String
     ) async throws -> String
-}
-
-public extension KnowledgeGraphProviding {
-    func verifyConnection(paths: ManagerPaths) async throws {
-        _ = try await loadGraph(paths: paths, nodeLimit: 1, space: nil)
-    }
-
-    func loadGraph(paths: ManagerPaths, nodeLimit: Int) async throws -> KnowledgeGraphSnapshot {
-        try await loadGraph(paths: paths, nodeLimit: nodeLimit, space: nil)
-    }
-
-    func loadBody(paths: ManagerPaths, nodeID: Int64, tag: String) async throws -> String {
-        try await loadBody(paths: paths, nodeID: nodeID, tag: tag, space: nil)
-    }
 }
 
 public enum KnowledgeGraphClientError: LocalizedError, Sendable {
@@ -85,7 +75,6 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
 
     private struct Credentials: Sendable {
         let password: String
-        let space: String
     }
 
     private struct SessionRequest: Encodable {
@@ -255,7 +244,7 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
     public func loadGraph(
         paths: ManagerPaths,
         nodeLimit: Int = 200,
-        space: String? = nil
+        space: String
     ) async throws -> KnowledgeGraphSnapshot {
         let limit = min(max(nodeLimit, 1), 200)
         let edgeLimit = min(limit * 3, 500)
@@ -263,7 +252,7 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
             throw KnowledgeGraphClientError.untrustedService
         }
         let credentials = try credentials(at: paths.byoriHome.appendingPathComponent("env"))
-        let selectedSpace = try validatedSpace(space ?? credentials.space)
+        let selectedSpace = try validatedSpace(space)
         let baseURL = try localBaseURL(port: paths.httpPort)
         let sessionID = try await createSession(baseURL: baseURL, password: credentials.password)
         defer { Task { await deleteSession(baseURL: baseURL, sessionID: sessionID) } }
@@ -421,13 +410,13 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
         paths: ManagerPaths,
         nodeID: Int64,
         tag: String,
-        space: String? = nil
+        space: String
     ) async throws -> String {
         guard await serviceVerifier.verify(paths: paths) else {
             throw KnowledgeGraphClientError.untrustedService
         }
         let credentials = try credentials(at: paths.byoriHome.appendingPathComponent("env"))
-        let selectedSpace = try validatedSpace(space ?? credentials.space)
+        let selectedSpace = try validatedSpace(space)
         let baseURL = try localBaseURL(port: paths.httpPort)
         let sessionID = try await createSession(baseURL: baseURL, password: credentials.password)
         defer { Task { await deleteSession(baseURL: baseURL, sessionID: sessionID) } }
@@ -496,19 +485,11 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
               !password.isEmpty else {
             throw KnowledgeGraphClientError.missingConfiguration
         }
-        let space = values["BYORIDB_MEMORY_SPACE"] ?? "claude_memory"
-        guard isIdentifier(space) else { throw KnowledgeGraphClientError.invalidConfiguration }
-        return Credentials(password: password, space: space)
-    }
-
-    private func isIdentifier(_ value: String) -> Bool {
-        guard let first = value.unicodeScalars.first,
-              CharacterSet.letters.union(CharacterSet(charactersIn: "_")).contains(first) else {
-            return false
-        }
-        return value.unicodeScalars.dropFirst().allSatisfy {
-            CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_")).contains($0)
-        }
+        // Deliberately no space here. A memory space belongs to a project, and
+        // the caller is the only thing that knows which project it is asking
+        // about; reading a space out of the runtime's env file used to answer
+        // that question with a single shared space for every project.
+        return Credentials(password: password)
     }
 
     private func localBaseURL(port: Int) throws -> URL {

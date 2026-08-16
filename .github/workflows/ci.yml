@@ -21,8 +21,9 @@ jobs:
 
       - name: Test Python contracts
         run: |
-          python -m py_compile cli/byori.py mcp/byoridb_mcp.py scripts/next_release_tag.py
-          python -m unittest tests/test_cli.py tests/test_mcp_contract.py tests/test_mcp_lifecycle.py tests/test_release_workflow.py
+          python -m py_compile cli/byori.py mcp/byoridb_mcp.py scripts/next_release_tag.py \
+            scripts/migrate-legacy-memory.py
+          python -m unittest tests/test_cli.py tests/test_mcp_contract.py tests/test_mcp_lifecycle.py tests/test_release_workflow.py tests/test_memory_space.py
 
   smoke:
     name: Engine contract smoke
@@ -38,6 +39,9 @@ jobs:
 
       - name: Test MCP contract
         run: python3 -m unittest tests/test_mcp_contract.py
+
+      - name: Test memory space resolution
+        run: python3 -m unittest tests/test_memory_space.py
 
       # Downloads the pinned ENGINE_TAG release from byoridb/byoridb and installs
       # this checkout's assets — exactly what a user install does, minus agent wiring.

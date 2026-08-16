@@ -329,7 +329,7 @@ The reserved schema-version note is excluded, and included links are outgoing fr
 | `BYORIDB__STORAGE__DATA_PATHS` | Server | Data path (double-`__` configuration-tree pattern) |
 | `BYORIDB__SERVER__HTTP_ADDR` / `BYORIDB__SERVER__GRAPH_ADDR` | Server | Bind addresses |
 | `BYORIDB_HTTP` / `BYORIDB_USER` / `BYORIDB_PASSWORD` | MCP | Engine connection (`ROOT_PASSWORD` takes precedence over `PASSWORD`) |
-| `BYORIDB_MEMORY_SPACE` | MCP | Logical memory-space name (default: `claude_memory`); must match `^[A-Za-z_][A-Za-z0-9_]{0,63}$` |
+| `BYORIDB_MEMORY_SPACE` | MCP | Overrides the logical memory-space name; must match `^[A-Za-z_][A-Za-z0-9_]{0,63}$`. Unset = resolved from the project (docs/install.md, "Memory space") |
 | `BYORIDB_MCP_PROFILE` | MCP | Case-sensitive `safe` (default, 8 tools; hides only `memory_query`), opt-in `legacy` (9 tools), or `readonly` (4 read tools) |
 
 Note: the single-`_` secret convention and double-`__` configuration-tree convention coexist;

@@ -2,7 +2,7 @@
 """ByoriDB memory MCP server (stdio, JSON-RPC 2.0, stdlib-only).
 
 Bridges Claude Code (and any MCP client) to a local ByoriDB instance and exposes
-a small "memory" surface on top of a dedicated `claude_memory` space:
+a small "memory" surface on top of a per-project memory space:
 
   compatibility tools:
     - memory_remember(name, kind?, body, relates_to?) -> upsert a memory note (+ edges)
@@ -20,7 +20,11 @@ Env:
   BYORIDB_HTTP           default http://127.0.0.1:19669
   BYORIDB_USER           default root
   BYORIDB_PASSWORD / BYORIDB_ROOT_PASSWORD   root password
-  BYORIDB_MEMORY_SPACE   default claude_memory; validated nGQL identifier
+  BYORIDB_MEMORY_SPACE   overrides the resolved project space; validated nGQL
+                         identifier. Unset = resolve from the project (see
+                         `_resolve_memory_space`).
+  BYORI_HOME             default ~/.byori; holds the project registry
+  CLAUDE_PROJECT_DIR     project directory, when the host exports one; else cwd
   BYORIDB_MCP_PROFILE    safe (default) | legacy (enables unrestricted memory_query) | readonly
   BYORIDB_MCP_IDLE_TIMEOUT  seconds of inactivity after which the server exits;
                             unset/0 disables it (default). See `main()`.
@@ -28,9 +32,11 @@ Env:
 import hashlib
 import json
 import os
+import pathlib
 import re
 import select
 import signal
+import subprocess
 import sys
 import time
 import urllib.error
@@ -41,7 +47,9 @@ USER = os.environ.get("BYORIDB_USER", "root")
 # The installer sets BYORIDB_ROOT_PASSWORD as the canonical secret; prefer it so a
 # stray inherited BYORIDB_PASSWORD cannot shadow it with a stale/wrong value.
 PASSWORD = os.environ.get("BYORIDB_ROOT_PASSWORD") or os.environ.get("BYORIDB_PASSWORD", "")
-SPACE = os.environ.get("BYORIDB_MEMORY_SPACE", "claude_memory")
+# SPACE is resolved from the project further down, once its helpers exist.
+BYORI_HOME = pathlib.Path(os.environ.get("BYORI_HOME", "~/.byori")).expanduser()
+LEGACY_SHARED_SPACE = "claude_memory"
 IDLE_TIMEOUT_RAW = os.environ.get("BYORIDB_MCP_IDLE_TIMEOUT", "")
 PROFILE = os.environ.get("BYORIDB_MCP_PROFILE", "safe")
 
@@ -145,6 +153,175 @@ def _validate_space_name(space):
             "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
         )
     return space
+
+
+# ---- memory space resolution ------------------------------------------------
+# A memory space belongs to a project, so which space a session gets must depend
+# on the repository and not on which launcher started the agent. It used to
+# depend on the launcher: only the manager app passed BYORIDB_MEMORY_SPACE, and
+# everything else fell back to a single shared `claude_memory` space that
+# accumulated unrelated projects side by side.
+#
+# The rules below are one spec with three implementations — here, in
+# `cli/byori.py`, and in the manager's `WorkspacePersistence.swift`. They are
+# documented in docs/install.md ("Memory space") and pinned by tests in each
+# language. Changing one without the others re-splits a project's memory.
+
+
+def _space_slug(name):
+    """Project-name component of a derived space name.
+
+    Mirrors `slugify` in cli/byori.py, including the `p_` prefix for a name that
+    does not start with a letter: the slug is only ever embedded after `byori_`,
+    but the three implementations have to agree character for character.
+    """
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").lower() or "project"
+    if not slug[0].isalpha():
+        slug = "p_" + slug
+    return slug[:36].rstrip("_")
+
+
+def _memory_space_for_root(root):
+    """Deterministic space name for a canonical project root.
+
+    Derived from the root path rather than from a random project id so that any
+    component can recompute it from the repository alone: losing
+    ~/.byori/projects.json must not orphan a project's memory.
+    """
+    canonical = str(root)
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:8]
+    return _validate_space_name(
+        "byori_%s_%s" % (_space_slug(pathlib.Path(canonical).name or "project"), digest)
+    )
+
+
+def _git_output(start, *args):
+    """`git -C start ...` stdout, or "" when git cannot answer.
+
+    Space discovery must not be able to fail the server: a directory that is not
+    a repository, or a machine without git, still gets a space of its own.
+    """
+    try:
+        result = subprocess.run(
+            ("git", "-C", str(start)) + args,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _resolve_path(path, base=None):
+    """`path` as a canonical absolute path, or None when it cannot be resolved."""
+    try:
+        candidate = pathlib.Path(path).expanduser()
+        if base is not None and not candidate.is_absolute():
+            candidate = base / candidate
+        return candidate.resolve()
+    except OSError:
+        return None
+
+
+def _project_roots(start):
+    """(registry lookup candidates, root to derive a name from) for `start`.
+
+    Both halves are needed because a linked worktree has two defensible roots.
+    The lookup tries the worktree's own toplevel first, so a checkout registered
+    as a project in its own right wins over the repository it was cut from; the
+    derived name always comes from the main worktree, because byori runs tasks in
+    worktrees of one project and a name per checkout would scatter that project's
+    memory across every task it ever ran.
+    """
+    candidates = []
+
+    def add(path):
+        if path is not None and path not in candidates:
+            candidates.append(path)
+
+    # One git invocation for both answers, in argument order: the checkout's own
+    # toplevel, then its common .git directory — which in a linked worktree belongs
+    # to the main repository, so its parent is the main worktree.
+    lines = _git_output(start, "rev-parse", "--show-toplevel", "--git-common-dir").splitlines()
+    toplevel = lines[0].strip() if lines else ""
+    common = lines[1].strip() if len(lines) > 1 else ""
+    add(_resolve_path(toplevel) if toplevel else None)
+    main_root = None
+    if common:
+        resolved = _resolve_path(common, base=start)
+        if resolved is not None:
+            main_root = resolved.parent if resolved.name == ".git" else resolved
+            add(main_root)
+    add(start)
+    return candidates, main_root or candidates[0]
+
+
+def _registry_space(roots):
+    """Space recorded for one of `roots` in ~/.byori/projects.json, else None.
+
+    Registered projects keep the name they already have — including the random
+    ids handed out before names were derived — so this lookup precedes
+    derivation. Removed projects are matched too: un-trusting a project in the
+    manager archives the record, it does not delete the space, and re-adding it
+    restores the same name.
+    """
+    path = BYORI_HOME / "projects.json"
+    try:
+        if path.stat().st_size > 4 * 1024 * 1024:
+            log(f"ignoring oversized project registry: {path}")
+            return None
+        with path.open(encoding="utf-8") as handle:
+            document = json.load(handle)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        log(f"ignoring unreadable project registry ({exc})")
+        return None
+    if not isinstance(document, dict):
+        return None
+    wanted = [str(root) for root in roots]
+    for key in ("projects", "removed_projects"):
+        entries = document.get(key)
+        if not isinstance(entries, list):
+            continue
+        for root in wanted:
+            for entry in entries:
+                if isinstance(entry, dict) and entry.get("root") == root:
+                    space = entry.get("space")
+                    if isinstance(space, str) and SPACE_RE.fullmatch(space):
+                        return space
+                    log(f"ignoring invalid space in project registry for {root}")
+    return None
+
+
+def _resolve_memory_space():
+    """The space this server reads and writes.
+
+    1. BYORIDB_MEMORY_SPACE — explicit override; the manager app passes the
+       project's space this way so a task worktree needs no discovery.
+    2. the project registry, keyed by project root.
+    3. derived from the project root.
+
+    There is deliberately no shared default. A directory nobody registered gets
+    its own derived space rather than a bucket shared with every other project.
+    """
+    override = os.environ.get("BYORIDB_MEMORY_SPACE", "").strip()
+    if override:
+        return _validate_space_name(override)
+    start = _resolve_path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    if start is None:
+        start = pathlib.Path(os.getcwd())
+    candidates, derive_from = _project_roots(start)
+    registered = _registry_space(candidates)
+    if registered:
+        return registered
+    return _memory_space_for_root(derive_from)
+
+
+SPACE = _resolve_memory_space()
 
 
 def _validate_profile(profile):
@@ -283,6 +460,39 @@ def _raw_query(ngql, read_only=False):
         raise RuntimeError(f"query failed ({e.code}): {detail}")
 
 
+def _report_legacy_shared_space():
+    """Say so, once per process, when the pre-per-project space still exists.
+
+    Sessions that predate project scoping wrote every project into
+    `claude_memory`. Nothing moves that data automatically — the space is
+    genuinely multi-project and splitting it is a judgement call — so the one
+    thing this can do is stop the data from being silently unreachable.
+
+    Writer profiles only: a `readonly` worker pins and checks the space its
+    coordinator prepared and issues nothing else, and the coordinator has
+    already reported this.
+    """
+    if SPACE == LEGACY_SHARED_SPACE:
+        return
+    try:
+        body = _raw_query("SHOW SPACES", read_only=True)
+        names = {
+            row.get("Name")
+            for row in (body.get("results") or [])
+            if isinstance(row, dict)
+        }
+    except Exception as exc:  # noqa: BLE001 - a hint must never fail startup
+        log(f"could not check for the legacy shared space ({exc})")
+        return
+    if LEGACY_SHARED_SPACE in names:
+        log(
+            f"note: the shared '{LEGACY_SHARED_SPACE}' space still holds data written "
+            "before memory was scoped per project; it is not read from this space. "
+            "Migrate what belongs here with scripts/migrate-legacy-memory.py "
+            "(docs/install.md, 'Memory space')."
+        )
+
+
 def _ensure_ready():
     """Bootstrap the memory space + schema (idempotent). Waits for the server."""
     _validate_space_name(SPACE)
@@ -327,6 +537,7 @@ def _ensure_ready():
             _migrate()
             _session["ready"] = True
             log(f"memory space '{SPACE}' ready (schema v{SCHEMA_VERSION})")
+            _report_legacy_shared_space()
             return
         except urllib.error.HTTPError as e:
             # Fail fast on auth errors: retrying a wrong password would trip the
