@@ -613,49 +613,72 @@ def _validate_relation(relation, source_type, target_type):
 
 
 def _edge_filter(vids, source_only):
-    source = " OR ".join(f"id(a) == {vid}" for vid in vids)
+    """Set membership rather than an OR-chain, which engine 0.4.0 added.
+
+    The chain grew with the number of seed VIDs and had to be re-parsed and
+    re-evaluated for each of them.
+    """
+    seeds = ", ".join(str(vid) for vid in vids)
     if source_only:
-        return f"({source})"
-    target = " OR ".join(f"id(b) == {vid}" for vid in vids)
-    return f"({source}) OR ({target})"
+        return f"id(a) IN [{seeds}]"
+    return f"id(a) IN [{seeds}] OR id(b) IN [{seeds}]"
 
 
 def _read_edge_records(vids, source_only=False):
+    """Every edge touching `vids`, in one round trip.
+
+    This was one query for the legacy `rel` edge plus one per entry in
+    `TYPED_RELATIONS` — nine — each re-evaluating the same seed filter, and each
+    new relation type in the ontology added another. Engine 0.4.0 makes one
+    statement enough:
+
+    - an empty edge-type list means "every type", so `-[e]->` traverses all of them
+    - `type(e)` projects which type produced the row, instead of it being implied
+      by the loop iteration that ran the query
+
+    The legacy edge still needs `kind` projected, because for those rows `type(e)`
+    is only `rel`. Typed rows return NULL for it, which is one extra column rather
+    than an extra query.
+
+    Two deliberate differences from the loop it replaces:
+
+    - Rows whose type is outside the ontology are dropped. An untyped MATCH also
+      returns edges Byori never created, and passing them into the graph
+      projection would be new behaviour, not a fix.
+    - The legacy query constrained both endpoints to `:note`; one untyped MATCH
+      cannot express "only when the type is rel". Byori writes `rel` between notes
+      only, so this differs only for an edge made by hand outside Byori.
+    """
     if not vids:
         return []
     numeric_vids = [int(vid) for vid in vids]
     where = _edge_filter(numeric_vids, source_only)
-    edges = []
 
-    legacy_query = (
-        "MATCH (a:note)-[e:rel]->(b:note) "
-        f"WHERE {where} "
-        "RETURN id(a) AS src, id(b) AS dst, e.rel.kind AS relation"
+    query = (
+        f"MATCH (a)-[e]->(b) WHERE {where} "
+        "RETURN id(a) AS src, id(b) AS dst, type(e) AS edge_type, "
+        "e.rel.kind AS relation"
     )
-    for row in _result_rows(_raw_query(legacy_query)):
+    known_types = {"rel", *TYPED_RELATIONS}
+    edges = []
+    for row in _result_rows(_raw_query(query)):
+        edge_type = row.get("edge_type")
+        if edge_type not in known_types:
+            continue
+        if edge_type == "rel":
+            # A legacy edge with no kind recorded is a plain association, which
+            # is what the per-relation loop defaulted it to.
+            relation = row.get("relation") or "relates_to"
+        else:
+            relation = edge_type
         edges.append(
             {
-                "edge_type": "rel",
-                "relation": row.get("relation", "relates_to"),
+                "edge_type": edge_type,
+                "relation": relation,
                 "source_vid": str(row.get("src")),
                 "target_vid": str(row.get("dst")),
             }
         )
-
-    for relation in TYPED_RELATIONS:
-        query = (
-            f"MATCH (a)-[e:{relation}]->(b) WHERE {where} "
-            "RETURN id(a) AS src, id(b) AS dst"
-        )
-        for row in _result_rows(_raw_query(query)):
-            edges.append(
-                {
-                    "edge_type": relation,
-                    "relation": relation,
-                    "source_vid": str(row.get("src")),
-                    "target_vid": str(row.get("dst")),
-                }
-            )
 
     unique = {
         (
