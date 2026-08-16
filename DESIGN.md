@@ -192,6 +192,10 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 - State local requirements — ByoriDB, tmux, Python 3 — as compact rows carrying name, verified state, consequence, and at most one action. Never restate them as a status-card grid: cards duplicate what the Agents and ByoriDB pages already list, and a card grid is not part of this app's pane grammar.
 - Offer an action only where Byori can actually complete it. tmux is installed or upgraded through Homebrew; without Homebrew, state the requirement and name it instead of showing a button whose only outcome is a failure. Say `install` or `upgrade` according to what is really on disk.
 - Keep ByoriDB installation separate from explicit per-provider MCP and Memory Skill actions.
+- Keep user-registered CLIs in their own section rather than in the built-in provider picker, and
+  state on the row that they are launch-only. The picker's pane is built from install, MCP, and
+  Skill state that cannot exist for them, so a registered CLI placed there would be surrounded by
+  controls that could only refuse.
 - Collapse an optional provider form, such as the Claude model API, behind a disclosure whose label carries its active state. An always-expanded optional form pushes the inventory the page exists for below the fold.
 - List each agent's bounded user-scoped MCP and Skill inventory in compact native rows. Never display raw command arguments, environment/header values, or tokens; cloud-owned connectors remain read-only.
 - Advanced MCP editing opens the agent's own configuration, while direct removal uses its official CLI and a prior backup. Skill editing opens `SKILL.md`; removal is restricted to validated direct children of known user Skill roots and is backed up first.

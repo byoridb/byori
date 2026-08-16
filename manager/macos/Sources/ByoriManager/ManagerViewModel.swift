@@ -234,6 +234,12 @@ final class ManagerViewModel: ObservableObject {
     @Published private(set) var integrationInventories: [AgentIntegrationInventory] = []
     @Published private(set) var agentCommandCatalog: [AgentCommandGroup] = []
     @Published private(set) var isRefreshingIntegrations = false
+    /// CLIs the user registered themselves. Byori launches these and nothing
+    /// more, so they are kept apart from the built-in providers rather than
+    /// mixed into `snapshot.agents`, which carries MCP and Skill state that
+    /// cannot exist for them.
+    @Published private(set) var customProviders: [CustomAgentProvider] = []
+    @Published var pendingCustomProviderRemoval: CustomAgentProvider?
     let claudeGatewaySettings: ClaudeGatewaySettingsController
 
     /// Absent when running outside an app bundle, which is also when the
@@ -254,6 +260,7 @@ final class ManagerViewModel: ObservableObject {
     }
 
     let service: ManagerService
+    private let customAgentStore: CustomAgentProviderStore
     private var operationTask: Task<Void, Never>?
     private var activeActivityID: UUID?
     private var lastOperationHadRollbackFailure = false
@@ -280,6 +287,11 @@ final class ManagerViewModel: ObservableObject {
     ) {
         self.service = service
         self.claudeGatewaySettings = claudeGatewaySettings
+        // Reads the same file the workspace's own store reads. That is safe
+        // because the store keeps no state between calls: every read hits the
+        // file, so a registration made here is visible to the next launch
+        // without either side holding a stale list.
+        customAgentStore = CustomAgentProviderStore(paths: service.paths)
         Task { [weak self] in
             await self?.refresh()
             await self?.refreshAgentCommands()
@@ -357,6 +369,69 @@ final class ManagerViewModel: ObservableObject {
 
     func integrationInventory(_ kind: AgentKind) -> AgentIntegrationInventory? {
         integrationInventories.first { $0.kind == kind }
+    }
+
+    func refreshCustomProviders() async {
+        customProviders = await customAgentStore.providers()
+    }
+
+    /// Registers a user-supplied CLI and reports whether it was accepted, so the
+    /// sheet closes only on success and an invalid entry stays on screen next to
+    /// the reason it was refused.
+    ///
+    /// Not routed through `ManagerAction`: this writes one small file rather than
+    /// running an installer, and taking over the shared progress bar for it would
+    /// block the rest of Settings for no reason.
+    func addCustomProvider(
+        name: String,
+        executablePath: String,
+        argumentLine: String
+    ) async -> String? {
+        do {
+            let provider = try await customAgentStore.add(
+                displayName: name,
+                executablePath: executablePath,
+                // The same splitter the new-session sheet uses, so a quoted path
+                // behaves identically in both places. Nothing is passed through a
+                // shell either way.
+                defaultArguments: TerminalLaunchDescriptorFactory.splitArguments(argumentLine)
+            )
+            customProviders = await customAgentStore.providers()
+            activities.insert(ActivityEntry(
+                date: Date(),
+                title: "CLI 등록 완료: \(provider.displayName)",
+                detail: "\(provider.executablePath)\n실행 전용 · MCP와 Skill은 연결하지 않습니다.",
+                level: .success
+            ), at: 0)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    func removeCustomProvider(_ provider: CustomAgentProvider) {
+        pendingCustomProviderRemoval = nil
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await customAgentStore.remove(id: provider.id)
+                customProviders = await customAgentStore.providers()
+                activities.insert(ActivityEntry(
+                    date: Date(),
+                    title: "CLI 등록 해제: \(provider.displayName)",
+                    detail: "실행 파일은 그대로 두고 Byori의 목록에서만 제거했습니다.",
+                    level: .success
+                ), at: 0)
+            } catch {
+                activities.insert(ActivityEntry(
+                    date: Date(),
+                    title: "CLI 등록 해제 실패",
+                    detail: error.localizedDescription,
+                    level: .failure
+                ), at: 0)
+                selectedSection = .activity
+            }
+        }
     }
 
     func commandGroups(for kind: AgentKind?) -> [AgentCommandGroup] {

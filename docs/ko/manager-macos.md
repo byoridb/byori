@@ -128,6 +128,10 @@ Homebrew가 없으면 완료할 수 없는 동작을 제공하는 대신 요건�
 - ByoriDB 시작·중지·재시작, 서버 로그 열기
 - Claude Code, Codex, Gemini CLI, Cursor CLI, OpenCode 탐지와 각 벤더의 공식 설치 명령을
   통한 설치·업데이트
+- 그 밖의 코딩 CLI는 실행 파일 경로로 직접 등록한다. 기본 인자는 셸을 거치지 않고 `argv`로
+  전달한다. 등록한 CLI는 실행 전용이며 Settings가 이를 그대로 알린다. 처음 보는 CLI의 설치
+  명령이나 MCP 인터페이스는 검증할 수 없으므로 설치·MCP 연결·Skill 동기화를 하지 않는다.
+  등록 해제는 Byori 목록에서만 제거하며 실행 파일과 기존 세션 기록은 그대로 둔다
 - 각 CLI의 공식 `mcp add/remove` 명령을 통한 `byoridb` stdio MCP 설정
 - Claude의 `~/.claude/skills`, Codex의 `~/.agents/skills`에 Memory Skill 동기화
 - Settings에서 각 agent의 사용자 범위 MCP·Skill 목록을 제한된 크기로 조회하고,

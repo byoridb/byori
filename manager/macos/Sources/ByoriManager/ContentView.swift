@@ -652,10 +652,15 @@ private struct IntegrationsView: View {
                     status: model.snapshot?.agent(selectedAgent),
                     inventory: model.integrationInventory(selectedAgent)
                 )
+
+                Divider()
+
+                CustomAgentSection()
             }
             .padding(24)
         }
         .task {
+            await model.refreshCustomProviders()
             if model.integrationInventories.isEmpty {
                 await model.refreshIntegrations()
             }
@@ -851,6 +856,236 @@ private struct AgentInventoryPane: View {
 
     private func removeAction(for skill: ManagedSkill) -> ManagerAction {
         .removeSkill(kind, skill)
+    }
+}
+
+/// The second provider tier: CLIs Byori launches but knows nothing else about.
+///
+/// Kept as its own section rather than another entry in the agent picker. The
+/// picker's pane is built around install, MCP, and Skill state, none of which
+/// exists here, and a registered CLI that appeared there would be surrounded by
+/// controls that could only refuse.
+private struct CustomAgentSection: View {
+    @EnvironmentObject private var model: ManagerViewModel
+    @State private var isPresentingRegistration = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            InventorySectionHeader(
+                title: "등록한 CLI",
+                count: model.customProviders.count,
+                actionTitle: "CLI 등록…",
+                action: { isPresentingRegistration = true }
+            )
+
+            if model.customProviders.isEmpty {
+                InventoryMessageRow(
+                    icon: "tray",
+                    title: "등록한 CLI가 없습니다.",
+                    detail: "실행 명령만 등록하면 새 세션에서 고를 수 있습니다. Byori는 이 CLI를 실행만 하며 설치·MCP·Skill은 다루지 않습니다."
+                )
+            } else {
+                ForEach(Array(model.customProviders.enumerated()), id: \.element.id) { index, provider in
+                    if index > 0 { Divider().padding(.leading, 36) }
+                    CustomAgentInventoryRow(provider: provider) {
+                        model.pendingCustomProviderRemoval = provider
+                    }
+                }
+                Divider().padding(.leading, 36)
+                Label(
+                    "등록한 CLI는 실행만 지원합니다. 설치, MCP 연결, Skill 동기화는 정식 지원 CLI에서만 제공합니다.",
+                    systemImage: "info.circle"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.vertical, 9)
+            }
+        }
+        .sheet(isPresented: $isPresentingRegistration) {
+            CustomAgentRegistrationSheet()
+                .environmentObject(model)
+        }
+        .alert(item: $model.pendingCustomProviderRemoval) { provider in
+            Alert(
+                title: Text("\(provider.displayName) 등록을 해제할까요?"),
+                message: Text("Byori의 CLI 목록에서만 제거합니다. 실행 파일과 이 CLI로 만든 기존 세션 기록은 그대로 남습니다."),
+                primaryButton: .destructive(Text("등록 해제")) {
+                    model.removeCustomProvider(provider)
+                },
+                secondaryButton: .cancel(Text("취소"))
+            )
+        }
+    }
+}
+
+private struct CustomAgentInventoryRow: View {
+    @EnvironmentObject private var model: ManagerViewModel
+    let provider: CustomAgentProvider
+    let remove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "terminal")
+                .foregroundStyle(.secondary)
+                .frame(width: 26)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 7) {
+                    Text(provider.displayName)
+                        .font(.body.weight(.medium))
+                        .lineLimit(1)
+                    Text("실행 전용 · 사용자 등록")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text(commandSummary)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(commandSummary)
+            }
+            Spacer(minLength: 16)
+            Button(role: .destructive, action: remove) {
+                Label("등록 해제", systemImage: "trash")
+            }
+            .labelStyle(.iconOnly)
+            .controlSize(.small)
+            .help("\(provider.displayName) 등록 해제")
+        }
+        .padding(.vertical, 8)
+    }
+
+    /// The executable with its default arguments, which is what actually runs.
+    /// Showing the path alone would hide flags the user cannot see anywhere else.
+    private var commandSummary: String {
+        ([displayPath(provider.executablePath)] + provider.defaultArguments)
+            .joined(separator: " ")
+    }
+}
+
+/// Registers one CLI by its executable path.
+///
+/// Byori asks for nothing it cannot verify: a name, a real executable, and
+/// optional arguments. It does not probe the CLI for an MCP or model interface,
+/// because a guess written into a user's configuration is worse than an absent
+/// feature.
+private struct CustomAgentRegistrationSheet: View {
+    @EnvironmentObject private var model: ManagerViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var name = ""
+    @State private var executablePath = ""
+    @State private var argumentLine = ""
+    @State private var errorMessage: String?
+    @State private var isRegistering = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("CLI 등록")
+                        .font(.title2.weight(.semibold))
+                    Text("실행 파일을 직접 지정합니다. 세션 실행에만 사용하며 Byori가 설치하거나 설정을 바꾸지 않습니다.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+            }
+            .padding(20)
+
+            Divider()
+
+            Form {
+                Section {
+                    TextField("이름", text: $name)
+                        .accessibilityHint("세션 목록과 실행 선택에 표시되는 이름")
+
+                    LabeledContent("실행 파일") {
+                        HStack(spacing: 8) {
+                            TextField("/opt/homebrew/bin/example", text: $executablePath)
+                                .textFieldStyle(.roundedBorder)
+                            Button("선택…", action: chooseExecutable)
+                        }
+                    }
+
+                    TextField("기본 인자 (선택)", text: $argumentLine)
+                        .accessibilityHint("모든 세션에 항상 전달되는 인자")
+
+                    Text("인자는 셸을 거치지 않고 argv로 그대로 전달됩니다. 공백이 들어간 값은 큰따옴표로 묶으세요.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let errorMessage {
+                    Label(errorMessage, systemImage: "xmark.octagon")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                }
+            }
+            .formStyle(.grouped)
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button("취소") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("등록") { register() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canRegister)
+            }
+            .padding(20)
+        }
+        .frame(minWidth: 520, minHeight: 380)
+    }
+
+    private var canRegister: Bool {
+        !isRegistering
+            && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !executablePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func register() {
+        isRegistering = true
+        Task {
+            let failure = await model.addCustomProvider(
+                name: name,
+                executablePath: executablePath.trimmingCharacters(in: .whitespacesAndNewlines),
+                argumentLine: argumentLine
+            )
+            isRegistering = false
+            // Stays open on failure: the entry that was refused is still on
+            // screen next to the reason, so it can be corrected rather than
+            // retyped.
+            if let failure {
+                errorMessage = failure
+            } else {
+                dismiss()
+            }
+        }
+    }
+
+    private func chooseExecutable() {
+        let panel = NSOpenPanel()
+        panel.title = "코딩 CLI 실행 파일 선택"
+        panel.prompt = "선택"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.resolvesAliases = true
+        // Coding CLIs commonly live in dot-directories such as ~/.local/bin.
+        panel.showsHiddenFiles = true
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                executablePath = url.path
+                errorMessage = nil
+            }
+        }
     }
 }
 
