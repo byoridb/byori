@@ -18,6 +18,9 @@ public struct ManagerPaths: Sendable {
     public var managerHome: URL { home.appendingPathComponent(".byori-manager", isDirectory: true) }
     public var backups: URL { managerHome.appendingPathComponent("backups", isDirectory: true) }
     public var serverBinary: URL { byoriHome.appendingPathComponent("bin/byoridb-server") }
+    /// What the installer recorded about the engine it installed. The binary
+    /// itself cannot be asked.
+    public var engineManifest: URL { byoriHome.appendingPathComponent("engine.json") }
     public var mcpRunner: URL { byoriHome.appendingPathComponent("bin/run-mcp.sh") }
     public var logs: URL { byoriHome.appendingPathComponent("logs", isDirectory: true) }
     public var launchAgent: URL {

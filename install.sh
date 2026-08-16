@@ -123,6 +123,14 @@ render() { # <src-template> <dest>
 }
 
 TARGET="$(detect_target)"
+# Both tags are interpolated into download URLs, and the engine tag is recorded
+# in the engine manifest. Keep them to a charset that cannot alter either.
+for candidate in "$TAG" "$ENGINE_TAG"; do
+  case "$candidate" in
+    "") ;;
+    *[!A-Za-z0-9._+-]*) die "invalid tag: $candidate" ;;
+  esac
+done
 mkdir -p "$BYORIDB_HOME/bin" "$BYORIDB_HOME/data" "$BYORIDB_HOME/logs"
 chmod 700 "$BYORIDB_HOME" "$BYORIDB_HOME/data" "$BYORIDB_HOME/logs" 2>/dev/null || true
 # Resolve and validate every Byori-owned asset before replacing the live runtime.
@@ -168,6 +176,39 @@ cp "$WORK/engine/byoridb-server" "$BYORIDB_HOME/bin/byoridb-server"
 [ -f "$WORK/engine/byoridb-cli" ] && cp "$WORK/engine/byoridb-cli" "$BYORIDB_HOME/bin/byoridb-cli"
 chmod +x "$BYORIDB_HOME/bin/byoridb-server" 2>/dev/null || true
 [ -f "$BYORIDB_HOME/bin/byoridb-cli" ] && chmod +x "$BYORIDB_HOME/bin/byoridb-cli"
+
+# 1b) record which engine this is. byoridb-server exposes no --version and
+#     ignores its arguments, so without this file identifying an installed
+#     engine means running `strings` over the binary.
+if command -v shasum >/dev/null 2>&1; then
+  engine_sha="$(shasum -a 256 "$BYORIDB_HOME/bin/byoridb-server" | awk '{print $1}')"
+elif command -v sha256sum >/dev/null 2>&1; then
+  engine_sha="$(sha256sum "$BYORIDB_HOME/bin/byoridb-server" | awk '{print $1}')"
+else
+  engine_sha=""
+fi
+if [ -n "$BINARY" ]; then engine_source="local-binary"; engine_ref=""; else engine_source="$url"; engine_ref="$ENGINE_TAG"; fi
+# Written by python rather than a heredoc: the values include a path and a URL,
+# and a hand-rolled JSON string is one stray quote away from an unreadable file.
+"$PYTHON" -c '
+import json, sys
+path, tag, target, source, digest, installed_at, binary = sys.argv[1:8]
+json.dump(
+    {
+        "tag": tag,
+        "target": target,
+        "source": source,
+        "binary_path": binary,
+        "sha256": digest,
+        "installed_at": installed_at,
+    },
+    open(path, "w"),
+    indent=2,
+    sort_keys=True,
+)
+' "$BYORIDB_HOME/engine.json" "$engine_ref" "$TARGET" "$engine_source" "$engine_sha" \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$BYORIDB_HOME/bin/byoridb-server"
+log "recorded engine build: ${engine_ref:-local} (${engine_sha:0:12})"
 
 # 2) MCP server + multi-agent CLI + rendered wrappers
 log "installing MCP server + multi-agent CLI + service wrappers"
@@ -353,6 +394,7 @@ fi
 printf '\n%sByoriDB runtime and agent integrations installed.%s\n' "$c_blue" "$c_off"
 printf '  home     : %s\n' "$BYORIDB_HOME"
 printf '  server   : http://%s  (health: curl -s http://%s/health)\n' "$HTTP_ADDR" "$HTTP_ADDR"
+printf '  engine   : %s  (recorded in %s/engine.json)\n' "${engine_ref:-local binary}" "$BYORIDB_HOME"
 printf '  mcp      : %s/bin/run-mcp.sh\n' "$BYORIDB_HOME"
 printf '  cli      : %s/bin/byori  (try: %s/bin/byori --help)\n' "$BYORIDB_HOME" "$BYORIDB_HOME"
 case ":${PATH}:" in

@@ -964,9 +964,10 @@ public actor ManagerService {
             // that some process answered the unauthenticated health endpoint.
             isHealthy: endpointHealthy && credentialVerified,
             serviceLoaded: await isServiceLoaded(),
-            // Engine v0.3.3 treats `--version` as a normal server launch. Do not
-            // probe it here: a status refresh must never start a second database.
-            serverVersion: nil,
+            // Read from what the installer recorded, never by asking the binary:
+            // engine v0.3.3 treats `--version` as a normal server launch, and a
+            // status refresh must not start a second database.
+            serverVersion: EngineBuildManifest.read(at: paths.engineManifest)?.displayIdentity,
             homePath: paths.byoriHome.path,
             pythonAvailable: paths.executable(named: "python3") != nil
         )

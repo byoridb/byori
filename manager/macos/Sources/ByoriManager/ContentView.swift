@@ -1694,6 +1694,26 @@ private struct ByoriDatabaseView: View {
                         LabeledContent("Python 3") {
                             Text(model.snapshot?.byori.pythonAvailable == true ? "사용 가능" : "필요")
                         }
+                        // The engine binary answers no version question, so this
+                        // is what the installer recorded. "기록 없음" is a real
+                        // state, not a failure: engines installed before Byori
+                        // began recording it have no entry.
+                        LabeledContent("엔진 빌드") {
+                            if let identity = model.snapshot?.byori.serverVersion {
+                                Text(identity)
+                                    .font(.body.monospaced())
+                                    .textSelection(.enabled)
+                            } else {
+                                Text("기록 없음")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        if model.snapshot?.byori.serverVersion == nil {
+                            Text("설치·업데이트를 한 번 실행하면 어떤 엔진이 설치되어 있는지 기록합니다.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                     .padding(10)
                 }

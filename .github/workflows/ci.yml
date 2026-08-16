@@ -31,7 +31,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Lint installer
-        run: bash -n install.sh templates/run-byori.sh
+        run: bash -n install.sh templates/run-byori.sh templates/run-server.sh templates/run-mcp.sh
 
       - name: Test multi-agent CLI
         run: python3 -m unittest tests/test_cli.py
@@ -46,6 +46,9 @@ jobs:
           export BYORIDB_HOME="$RUNNER_TEMP/byoridb-home"
           ./install.sh --assets . --no-claude --no-codex --no-service
           "$BYORIDB_HOME/bin/byori" --help
+          # The engine binary answers no version question, so the installer's
+          # record is the only build identity there is. Assert it was written.
+          python3 -c 'import json, os; m = json.load(open(os.environ["BYORIDB_HOME"] + "/engine.json")); assert m["tag"], m; assert len(m["sha256"]) == 64, m; print("engine manifest:", m["tag"], m["sha256"][:12])'
           echo "BYORIDB_HOME=$BYORIDB_HOME" >> "$GITHUB_ENV"
 
       - name: MCP roundtrip smoke
