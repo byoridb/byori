@@ -226,6 +226,22 @@ def slugify(value: str, fallback: str = "project", limit: int = 36) -> str:
     return slug[:limit].rstrip("_")
 
 
+def memory_space_for_root(root: pathlib.Path) -> str:
+    """Deterministic memory space name for a canonical project root.
+
+    Derived from the root path rather than from the project's random id so that
+    a component that was not handed the name can recompute it: an MCP server
+    started outside the manager app resolves the same space, and losing
+    ~/.byori/projects.json does not orphan a project's memory.
+
+    One spec, three implementations — this, `_memory_space_for_root` in
+    mcp/byoridb_mcp.py, and `defaultMemorySpace` in the manager's
+    WorkspacePersistence.swift. See docs/install.md ("Memory space").
+    """
+    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:8]
+    return validate_space("byori_%s_%s" % (slugify(root.name or "project"), digest))
+
+
 class ProjectRegistry:
     def __init__(self, home: pathlib.Path):
         self.home = ensure_private_dir(home)
@@ -298,8 +314,25 @@ class ProjectRegistry:
             project_id = uuid.uuid4().hex[:12]
             name = root.name or "project"
             if space is None:
-                space = "byori_%s_%s" % (slugify(name), project_id[:8])
+                space = memory_space_for_root(root)
             validate_space(space)
+            # Two roots deriving the same space would merge two projects' memory
+            # into one graph with nothing to show it happened. Refuse instead and
+            # let the caller name a space, rather than papering over it with a
+            # longer digest that no other component could recompute.
+            collision = next(
+                (
+                    item
+                    for item in state["projects"] + state["removed_projects"]
+                    if item.get("space") == space
+                ),
+                None,
+            )
+            if collision is not None:
+                raise ByoriError(
+                    "memory space %s is already used by %s; register this project with "
+                    "an explicit --space" % (space, collision.get("root"))
+                )
             remote = ""
             with contextlib.suppress(ByoriError):
                 remote = sanitize_remote(git_output(root, "config", "--get", "remote.origin.url"))

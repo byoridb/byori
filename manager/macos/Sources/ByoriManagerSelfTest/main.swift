@@ -739,11 +739,28 @@ enum ByoriManagerSelfTest {
         }
 
         if ProcessInfo.processInfo.environment["BYORI_MANAGER_LIVE_GRAPH_TEST"] == "1" {
+            // The space is named explicitly: there is no shared default to read.
+            guard let liveSpace = ProcessInfo.processInfo.environment["BYORIDB_MEMORY_SPACE"],
+                  !liveSpace.isEmpty else {
+                throw Failure(
+                    "BYORI_MANAGER_LIVE_GRAPH_TEST=1 requires BYORIDB_MEMORY_SPACE "
+                        + "(the project space to read)"
+                )
+            }
             let livePaths = ManagerPaths.applicationDefault()
             let client = ByoriGraphClient()
-            let liveGraph = try await client.loadGraph(paths: livePaths, nodeLimit: 200)
+            let liveGraph = try await client.loadGraph(
+                paths: livePaths,
+                nodeLimit: 200,
+                space: liveSpace
+            )
             if let firstNode = liveGraph.nodes.first {
-                _ = try await client.loadBody(paths: livePaths, nodeID: firstNode.id, tag: firstNode.tag)
+                _ = try await client.loadBody(
+                    paths: livePaths,
+                    nodeID: firstNode.id,
+                    tag: firstNode.tag,
+                    space: liveSpace
+                )
             }
             print(
                 "ByoriManager live graph PASS "

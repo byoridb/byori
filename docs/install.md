@@ -142,14 +142,75 @@ Profiles filter MCP tools; they are not authorization boundaries or process sand
 and fails if a writer has not already prepared the space at the current version. It still has the
 configured engine credential. Use separate instances and credentials across trust domains.
 
-`BYORIDB_MEMORY_SPACE` selects the logical memory namespace (default: `claude_memory`) and must
-match `^[A-Za-z_][A-Za-z0-9_]{0,63}$`. It prevents accidental project mixing, but all spaces use
-the same engine credential, so it is not an authorization or tenant boundary. Use separate
-instances and credentials across trust domains.
+`BYORIDB_MEMORY_SPACE` overrides the logical memory namespace and must match
+`^[A-Za-z_][A-Za-z0-9_]{0,63}$`. Unset, the server resolves the space from the project — see
+[Memory space](#memory-space). All spaces use the same engine credential, so a space keeps projects
+from mixing but is not an authorization or tenant boundary. Use separate instances and credentials
+across trust domains.
 
 Pass both variables in each separately configured MCP client's process configuration. The default
 installer persists the safe profile in `~/.byoridb/env`; on reinstall or upgrade it rewrites that
-file, preserves only `BYORIDB_ROOT_PASSWORD`, and restores the safe default.
+file, preserves only `BYORIDB_ROOT_PASSWORD`, and restores the safe default. It deliberately does
+not write `BYORIDB_MEMORY_SPACE` there: one value in a file shared by every project is how memory
+stopped being per project in the first place.
+
+### Memory space
+
+A memory space belongs to a project, and every component resolves it the same way:
+
+1. **`BYORIDB_MEMORY_SPACE`**, when set — an explicit override. The macOS app passes the selected
+   project's space this way, so a session it launches in a task worktree needs no discovery.
+2. **The project registry** (`~/.byori/projects.json`), keyed by canonical project root. A
+   registered project keeps the name it already has, including names assigned before they were
+   derived.
+3. **Derived from the project root**, when the project is not registered.
+
+There is no shared default. A directory nobody registered gets its own space rather than a bucket
+shared with every other project. Before this, only the macOS app passed a space and everything else
+fell back to a single `claude_memory` space, so which project's memory a session saw depended on
+which launcher started it.
+
+The project directory is `CLAUDE_PROJECT_DIR` when the host exports it, otherwise the working
+directory. A linked Git worktree resolves to its **main** worktree: byori runs tasks in worktrees of
+one project, and a space per checkout would scatter that project's memory across every task it ever
+ran. A worktree explicitly registered as a project in its own right still wins.
+
+The derived name is `byori_<slug>_<digest>`:
+
+- `<slug>`: the root's directory name, lowercased, with runs of non-alphanumerics collapsed to `_`,
+  leading and trailing `_` removed, `p_` prefixed when it does not start with a letter, cut to 36
+  characters, then trailing `_` removed again. A name with nothing ASCII-alphanumeric becomes
+  `project`.
+- `<digest>`: the first 8 hex characters of `sha256(<canonical root path>)`.
+
+It is derived from the path rather than from the project's id so any component can recompute it from
+the repository alone — losing `~/.byori/projects.json` must not orphan a project's memory. Because
+of that, moving a repository changes its derived name; register the project (or pass the space
+explicitly) if you need the name to survive a move. Registering a second project whose derived name
+collides with an existing one is refused rather than silently merging two projects' graphs.
+
+One spec, three implementations: `_memory_space_for_root` in `mcp/byoridb_mcp.py`,
+`memory_space_for_root` in `cli/byori.py`, and `defaultMemorySpace` in the macOS app's
+`WorkspacePersistence.swift`. The same vectors are asserted in `tests/test_memory_space.py` and
+`WorkspacePersistenceTests.swift`.
+
+#### Memories written before spaces were per project
+
+Sessions that predate this all wrote into one `claude_memory` space, which therefore holds several
+unrelated projects side by side. That data is intact but is not read from a project space, and it is
+not migrated automatically: deciding which rows belong to which project is a judgement call. When
+the space still exists, the MCP server says so on startup. Copy what belongs to a project with:
+
+```sh
+# what would move
+scripts/migrate-legacy-memory.py --name-prefix module:my-project
+
+# move it, into the space resolved for the current project
+scripts/migrate-legacy-memory.py --name-prefix module:my-project --apply
+```
+
+The source space is never modified — rows are copied, not moved. The destination must already
+exist: start an agent session in the project once and its MCP server bootstraps it.
 
 ### MCP server lifetime
 

@@ -314,7 +314,7 @@ write가 있으면 추가로 이동한다. 예약 schema-version note는 제외�
 | `BYORIDB__STORAGE__DATA_PATHS` | 서버 | 데이터 경로 (이중 `__` config 패턴) |
 | `BYORIDB__SERVER__HTTP_ADDR` / `BYORIDB__SERVER__GRAPH_ADDR` | 서버 | 바인드 주소 |
 | `BYORIDB_HTTP` / `BYORIDB_USER` / `BYORIDB_PASSWORD` | MCP | 엔진 접속 (ROOT_PASSWORD가 PASSWORD보다 우선) |
-| `BYORIDB_MEMORY_SPACE` | MCP | 논리 memory space 이름(기본 `claude_memory`), `^[A-Za-z_][A-Za-z0-9_]{0,63}$` 필수 |
+| `BYORIDB_MEMORY_SPACE` | MCP | 논리 memory space 이름을 덮어쓴다. `^[A-Za-z_][A-Za-z0-9_]{0,63}$` 필수. 없으면 프로젝트에서 해석(docs/ko/install.md "Memory space") |
 | `BYORIDB_MCP_PROFILE` | MCP | 대소문자를 구분하는 `legacy`(기본, 9 tool), `safe`(8 tool, `memory_query`만 숨김), 또는 `readonly`(read tool 4개) |
 
 주의: 단일 `_`(시크릿)와 이중 `__`(config tree) 패턴이 혼재한다 — 엔진 쪽 관례.
