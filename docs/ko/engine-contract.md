@@ -321,3 +321,31 @@ instance와 credential을 분리한다.
   `byoridb-server` 필수(+선택 `byoridb-cli`).
 - target: `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`.
 - 이 규칙이 바뀌면 `install.sh`의 다운로드 URL 조립이 깨진다.
+
+## 7. 최소 엔진 버전과 빌드 식별
+
+**최소 `v0.3.3`**이며 `ENGINE_TAG_DEFAULT`와 같다. 위의 모든 surface를 제공하는 가장 오래된
+태그다. 십진 문자열 `session_id`, §1의 session-loss marker, §2의 63bit VID 범위, §4의
+`FETCH ... AS OF`가 모두 필요하다. 더 오래된 엔진은 시작 시점에 실패하지 않고 해당 surface에
+의존하는 첫 read에서 실패한다.
+
+이 클라이언트가 원하는 두 가지는 **어떤 릴리스에도 들어 있지 않다.** 엔진 `main`에만 있고
+최신 릴리스가 그보다 앞선다.
+
+| 엔진 변경 | 반영 | `v0.3.3` 포함 | 여기서의 결과 |
+|---|---|---|---|
+| 비어 있지 않은 `BYORIDB_ROOT_PASSWORD` 게이트 | 2026-08-08 | 아니오 | 변수 없이 시작하면 엔진이 root 비밀번호를 생성해 **`logs/server.log`에 기록한다.** 그래서 `templates/run-server.sh`는 변수가 비어 있으면 시작을 거부한다. 키가 존재하기만 하는 것에 의존하지 않는다 |
+| 로그인 throttling | — | 아니오 | 반복 실패 로그인을 엔진이 지연시키지 않는다 |
+| `type(e)` MATCH edge accessor, batch destination projection | 2026-08-03 | 아니오 | `_read_edge_records`가 relation type마다 쿼리를 하나씩 보내야 한다. 단일 untyped `MATCH`로 합치는 것은 이 변경이 포함된 릴리스를 기다린다 |
+
+`ENGINE_TAG_DEFAULT`를 릴리스되지 않은 commit으로 올리지 말 것. `install.sh`는 릴리스 asset을
+내려받으므로 `main`에만 있는 빌드는 사용자가 설치할 수 없다.
+
+### 빌드 식별
+
+`byoridb-server`는 `--version`을 노출하지 않고 인자를 무시하며, `v0.3.3`에서 `--version`은
+일반 서버 실행이 된다. 따라서 상태 확인이 이를 probe해서는 안 된다. `install.sh`가 설치한
+내용을 `$BYORIDB_HOME/engine.json`(`tag`, `target`, `source`, `sha256`, `installed_at`)에
+기록하고 macOS 앱이 ByoriDB 페이지의 엔진 행에서 읽는다. Byori가 이를 기록하기 전에 설치한
+경우 파일이 없으며, 검증된 빌드가 아니라 "기록 없음"으로 보고한다. 엔진이 `--version`을
+제공하면 바이너리에서 직접 확인하고 이 파일은 fallback으로 둔다.

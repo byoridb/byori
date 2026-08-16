@@ -337,3 +337,32 @@ and credentials across trust boundaries.
 - Targets: `aarch64-apple-darwin`, `x86_64-apple-darwin`, and
   `x86_64-unknown-linux-gnu`.
 - Changing this convention breaks download URL construction in `install.sh`.
+
+## 7. Minimum Engine Version and Build Identity
+
+**Minimum: `v0.3.3`**, which is also `ENGINE_TAG_DEFAULT`. It is the oldest tag that provides
+every surface above: decimal-string `session_id`, the session-loss markers in §1, the 63-bit VID
+range in §2, and `FETCH ... AS OF` in §4. An older engine does not fail at startup — it fails at
+the first read that depends on one of them.
+
+Two things this client wants are **not in any released engine**. They exist only on the engine's
+`main`, and the newest release predates them:
+
+| Engine change | Landed | In `v0.3.3` | Consequence here |
+|---|---|---|---|
+| Non-blank `BYORIDB_ROOT_PASSWORD` gate | 2026-08-08 | no | Started without the variable, the engine generates a root password **and writes it to `logs/server.log`**. `templates/run-server.sh` therefore refuses to start when the variable is empty, rather than relying on it merely being present |
+| Login throttling | — | no | Repeated failed logins are not slowed by the engine |
+| `type(e)` MATCH edge accessor, batch destination projection | 2026-08-03 | no | `_read_edge_records` must keep issuing one query per relation type; collapsing it into a single untyped `MATCH` waits on a release that contains these |
+
+Do not advance `ENGINE_TAG_DEFAULT` to an unreleased commit: `install.sh` downloads a release
+asset, so a build that exists only on `main` cannot be installed by a user.
+
+### Build identity
+
+`byoridb-server` exposes no `--version` and ignores its arguments, and on `v0.3.3` passing
+`--version` starts a normal server — so a status check must never probe it. `install.sh` records
+what it installed in `$BYORIDB_HOME/engine.json` (`tag`, `target`, `source`, `sha256`,
+`installed_at`), which the macOS app reads for the ByoriDB page's engine row. An install performed
+before Byori recorded this has no file, which is reported as "not recorded" rather than as a
+verified build. Once the engine ships `--version`, verify against the binary itself and treat this
+file as a fallback.
