@@ -136,6 +136,11 @@ next session without relaunching Byori:
 - Start, stop, and restart ByoriDB, and open server logs
 - Detect Claude Code, Codex, Gemini CLI, Cursor CLI, and OpenCode, and install or update them
   through each vendor's official installation command
+- Register any other coding CLI by its executable path, with optional default arguments that are
+  passed as `argv` without a shell. A registered CLI is launch-only, and Settings says so: Byori
+  neither installs it, connects MCP for it, nor syncs a Skill to it, because none of that can be
+  verified for a CLI it has never seen. Unregistering removes it from Byori's list and leaves the
+  executable and existing session history untouched
 - Configure the `byoridb` stdio MCP integration through each CLI's official
   `mcp add/remove` commands
 - Synchronize the Memory Skill to Claude's `~/.claude/skills` and Codex's
