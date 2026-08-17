@@ -1,5 +1,16 @@
 import Foundation
 
+/// One node whose body text is wanted, identified the way the graph returns it.
+public struct KnowledgeBodyRequest: Sendable, Hashable {
+    public let nodeID: Int64
+    public let tag: String
+
+    public init(nodeID: Int64, tag: String) {
+        self.nodeID = nodeID
+        self.tag = tag
+    }
+}
+
 /// `space` is required rather than optional throughout: a memory space belongs to
 /// a project, and an implicit one is how every project's memory ended up in a
 /// single shared space. The caller always knows which project it is reading.
@@ -14,12 +25,30 @@ public protocol KnowledgeGraphProviding: Sendable {
         nodeLimit: Int,
         space: String
     ) async throws -> KnowledgeGraphSnapshot
+    /// Reads many bodies as one batch, deliberately not one call per node: every
+    /// call opens its own engine session, and a fan-out of logins is what made
+    /// the engine reject valid credentials (see `authGate`).
+    func loadBodies(
+        paths: ManagerPaths,
+        requests: [KnowledgeBodyRequest],
+        space: String
+    ) async throws -> [Int64: String]
+}
+
+public extension KnowledgeGraphProviding {
     func loadBody(
         paths: ManagerPaths,
         nodeID: Int64,
         tag: String,
         space: String
-    ) async throws -> String
+    ) async throws -> String {
+        let bodies = try await loadBodies(
+            paths: paths,
+            requests: [KnowledgeBodyRequest(nodeID: nodeID, tag: tag)],
+            space: space
+        )
+        return bodies[nodeID] ?? ""
+    }
 }
 
 public enum KnowledgeGraphClientError: LocalizedError, Sendable {
@@ -56,6 +85,11 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
     private static let noteTag = "note"
     private static let typedWikiTags = ["module", "decision", "bug", "incident", "concept", "entity", "task"]
     private static let nodeTags = [noteTag] + typedWikiTags
+
+    /// Upper bound on one `loadBodies` batch. The inspector asks for at most 18;
+    /// this keeps a future caller from turning one session into an unbounded
+    /// sequence of queries.
+    private static let bodyBatchLimit = 50
 
     /// rel은 Layer 1의 범용 엣지, 나머지는 schema v2 typed wiki 엣지(memory-ontology.md §4.2).
     /// `decided_in`은 ontology 문서(§4.2)의 목표 스키마일 뿐 아직 `byoridb_mcp.py`
@@ -218,6 +252,17 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
         }
     }
 
+    /// Engine 0.4.0 rejects some *concurrent* logins with "Invalid credentials"
+    /// even when the credential is correct — measured against the shipped binary,
+    /// 2 of 16 parallel logins with the same correct password came back 401, each
+    /// in under a millisecond (a verified login takes ~40ms, so those were
+    /// refused before the password was checked). The engine also locks an account
+    /// after repeated failed attempts, so a burst does not merely produce a
+    /// spurious error, it spends the lockout budget.
+    ///
+    /// Two responses, both here: reads that belong together share one session
+    /// (`loadBodies`), and this client never has two logins in flight.
+    private let authGate = SerialGate()
     private let session: URLSession
     private let serviceVerifier: LocalServiceVerifier
     private let decoder = JSONDecoder()
@@ -406,12 +451,20 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
         "(" + ids.map { "\(field) == \($0)" }.joined(separator: " OR ") + ")"
     }
 
-    public func loadBody(
+    /// Reads the requested bodies over a single engine session.
+    ///
+    /// One session, and the reads run in sequence on it. That is not a
+    /// concession: a login costs ~40ms of password hashing while each of these
+    /// lookups costs well under a millisecond, so batching is both cheaper than
+    /// the per-node logins it replaces and free of the concurrent-login failures
+    /// they caused. Bodies that come back empty are omitted rather than stored as
+    /// empty strings, which is what the callers already do.
+    public func loadBodies(
         paths: ManagerPaths,
-        nodeID: Int64,
-        tag: String,
+        requests: [KnowledgeBodyRequest],
         space: String
-    ) async throws -> String {
+    ) async throws -> [Int64: String] {
+        guard !requests.isEmpty else { return [:] }
         guard await serviceVerifier.verify(paths: paths) else {
             throw KnowledgeGraphClientError.untrustedService
         }
@@ -425,15 +478,27 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
             sessionID: sessionID,
             statement: "USE \(selectedSpace)"
         )
-        // module 태그만 body 대신 summary 프로퍼티를 쓴다(memory-ontology.md §4.1).
-        let resolvedTag = Self.nodeTags.contains(tag) ? tag : Self.noteTag
-        let property = resolvedTag == "module" ? "summary" : "body"
-        let response = try await query(
-            baseURL: baseURL,
-            sessionID: sessionID,
-            statement: "MATCH (n:\(resolvedTag)) WHERE id(n) == \(nodeID) RETURN n.\(resolvedTag).\(property) AS body LIMIT 1"
-        )
-        return response.rows.first?["body"]?.stringValue ?? ""
+
+        var bodies: [Int64: String] = [:]
+        bodies.reserveCapacity(requests.count)
+        var seen = Set<Int64>()
+        for request in requests.prefix(Self.bodyBatchLimit) {
+            guard seen.insert(request.nodeID).inserted else { continue }
+            // module 태그만 body 대신 summary 프로퍼티를 쓴다(memory-ontology.md §4.1).
+            let resolvedTag = Self.nodeTags.contains(request.tag) ? request.tag : Self.noteTag
+            let property = resolvedTag == "module" ? "summary" : "body"
+            let response = try await query(
+                baseURL: baseURL,
+                sessionID: sessionID,
+                statement: "MATCH (n:\(resolvedTag)) WHERE id(n) == \(request.nodeID) "
+                    + "RETURN n.\(resolvedTag).\(property) AS body LIMIT 1"
+            )
+            if let body = response.rows.first?["body"]?.stringValue,
+               !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                bodies[request.nodeID] = body
+            }
+        }
+        return bodies
     }
 
     private func validatedSpace(_ space: String) throws -> String {
@@ -500,7 +565,19 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
         return url
     }
 
+    /// Logs in, never concurrently with another login from this client. See
+    /// `authGate` for why. The gate is held only for the login itself, so reads
+    /// that follow still overlap freely.
     private func createSession(
+        baseURL: URL,
+        password: String
+    ) async throws -> SessionIdentifier {
+        try await authGate.perform { [self] in
+            try await createSessionUnserialized(baseURL: baseURL, password: password)
+        }
+    }
+
+    private func createSessionUnserialized(
         baseURL: URL,
         password: String
     ) async throws -> SessionIdentifier {

@@ -134,6 +134,16 @@ public actor ManagerService {
         try await graphProvider.loadGraph(paths: paths, nodeLimit: limit, space: space)
     }
 
+    /// Reads many bodies in one batch. Prefer this over calling
+    /// `loadKnowledgeBody` per node: each single read opens its own engine
+    /// session, and that fan-out is what made the engine refuse valid logins.
+    public func loadKnowledgeBodies(
+        requests: [KnowledgeBodyRequest],
+        space: String
+    ) async throws -> [Int64: String] {
+        try await graphProvider.loadBodies(paths: paths, requests: requests, space: space)
+    }
+
     public func loadKnowledgeBody(
         nodeID: Int64,
         tag: String,
