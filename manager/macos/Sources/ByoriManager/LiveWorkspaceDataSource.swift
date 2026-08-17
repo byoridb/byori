@@ -474,12 +474,18 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
                 at: destination.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
+            let repositoryRoot = URL(fileURLWithPath: project.rootPath)
             _ = try await git.addWorktree(
-                repositoryRoot: URL(fileURLWithPath: project.rootPath),
+                repositoryRoot: repositoryRoot,
                 at: destination,
                 branch: branch,
                 creatingFrom: startPoint
             )
+            // Git gives the new worktree tracked files only. Byori created this
+            // checkout, so it also carries over the local configuration that
+            // makes it runnable — see WorktreeLocalConfig for what, and for why
+            // it is an allowlist rather than everything Git ignores.
+            WorktreeLocalConfig().carry(from: repositoryRoot, to: destination)
             return destination
         }
     }
