@@ -218,6 +218,84 @@ final class WorkspaceGitWorktreeTests: XCTestCase {
         }
     }
 
+    /// `git worktree add <path> origin/x` succeeds and detaches HEAD, leaving a
+    /// checkout whose commits belong to no branch. A caller that named a branch
+    /// never meant that, so it is refused before any directory is created.
+    func testRefusesARemoteBranchThatWouldDetachHead() async throws {
+        let clone = try makeClone()
+        let destination = clone.deletingLastPathComponent()
+            .appendingPathComponent("wt-remote", isDirectory: true)
+
+        do {
+            _ = try await git.addWorktree(
+                repositoryRoot: clone,
+                at: destination,
+                branch: "origin/feature/one",
+                creatingFrom: nil
+            )
+            XCTFail("a remote-tracking branch must not be checked out directly")
+        } catch {
+            XCTAssertTrue(
+                "\(error)".contains("is not a local branch"),
+                "the refusal must name the reason, got: \(error)"
+            )
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: destination.path),
+                "the refusal must come before any directory exists"
+            )
+            let worktrees = try await git.worktrees(at: clone)
+            XCTAssertEqual(worktrees.count, 1, "only the primary checkout remains")
+        }
+    }
+
+    /// The supported way to work on a colleague's branch: a local branch cut from
+    /// the remote ref, which Git also gives an upstream.
+    func testCreatesATrackingLocalBranchFromARemoteStartPoint() async throws {
+        let clone = try makeClone()
+        let destination = clone.deletingLastPathComponent()
+            .appendingPathComponent("wt-tracking", isDirectory: true)
+
+        let created = try await git.addWorktree(
+            repositoryRoot: clone,
+            at: destination,
+            branch: "feature/one",
+            creatingFrom: "origin/feature/one"
+        )
+
+        XCTAssertEqual(created.branch, "feature/one")
+        XCTAssertEqual(
+            try capture(["-C", clone.path, "rev-parse", "--abbrev-ref", "feature/one@{upstream}"]),
+            "origin/feature/one"
+        )
+    }
+
+    /// A clone of the scratch repository, so `refs/remotes/origin/*` is real Git
+    /// state rather than a hand-written ref.
+    private func makeClone() throws -> URL {
+        let clone = root.deletingLastPathComponent()
+            .appendingPathComponent("byori-clone-\(UUID().uuidString)/repo", isDirectory: true)
+        addTeardownBlock { [clone] in
+            try? FileManager.default.removeItem(at: clone.deletingLastPathComponent())
+        }
+        try run(["clone", root.path, clone.path])
+        return clone
+    }
+
+    private func capture(_ arguments: [String]) throws -> String {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = arguments
+        process.standardOutput = output
+        process.standardError = Pipe()
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0, "git \(arguments.joined(separator: " "))")
+        return String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     func testRejectsBranchNamesThatWouldBeReadAsOptions() {
         XCTAssertThrowsError(try WorkspaceGitService.validateBranchName("--force"))
         XCTAssertThrowsError(try WorkspaceGitService.validateBranchName(""))
