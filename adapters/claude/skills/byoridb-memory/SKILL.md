@@ -180,10 +180,13 @@ twice. Route by type:
 - Non-obvious structural fact → wiki `module`/`concept` + edges.
 - A lone preference or isolated fact → note (Layer 1) regardless of Layer 2 availability.
 
-**Write at checkpoints, not every turn** — end of a task/track, a milestone, PR creation,
-incident resolution, or when the user says "remember this". Per-turn extraction turns the graph
-into a searchable junk drawer (the exact failure mode this schema exists to prevent). A
-checkpoint is also the moment to do a quick pass: "what did we learn here worth keeping?"
+**Write at checkpoints, not every turn** — end of a task/track, a milestone, PR creation or merge,
+a release, incident resolution, or when the user says "remember this". Per-turn extraction turns the
+graph into a searchable junk drawer (the exact failure mode this schema exists to prevent). A
+checkpoint is two passes, not one: "what did we learn here worth keeping?" **and "which recorded
+facts did this change make wrong?"** A merged PR, a shipped release, or a fixed bug usually falsifies
+something already in the graph — update those nodes in the same pass, by name, so they stay the
+answer rather than becoming a trap.
 
 **Classify scope before writing.** For each learning, decide how broadly it applies:
 - **Reusable pattern** (recurs, would help on other work) → record generalized wording in
@@ -218,6 +221,11 @@ to its transferable shape, or drop it.
   bitemporal history + `AS OF` depends on it.
 - **Inflating a one-off into a universal rule** (or burying a reusable pattern in a
   project-scoped node) — classify scope honestly before writing.
+- **Volatile state in a body** — "the fix is on an unreleased branch", "the app is still on 0.8.9",
+  "not yet filed as an issue" all expire. Prefer the durable shape (what the hazard is, why it
+  happens, what it costs); when current state genuinely matters, date it in the sentence and correct
+  it at the next checkpoint. A stale node is worse than a missing one: it is read with the same
+  confidence as a true one, and the next session acts on it.
 
 ## Hygiene rules
 - Canonical `<type>:<slug>` names, never sentences. Same name = update, not a dup.
