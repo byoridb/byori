@@ -407,8 +407,32 @@ public struct WorkspaceGitService: WorkspaceGitInspecting, Sendable {
         return remote
     }
 
+    /// Lists worktrees, first clearing registrations whose directory is gone.
+    ///
+    /// A deleted worktree directory leaves its administrative entry behind, and
+    /// that entry keeps holding the branch: the next checkout of it fails with
+    /// "branch is already checked out", and the listing shows a checkout that
+    /// does not exist. `git worktree prune` is the documented cleanup for exactly
+    /// that, and it only removes bookkeeping for directories that are already
+    /// missing — so it runs here rather than waiting for a user to know the
+    /// command. Only when something is actually missing, to keep an ordinary
+    /// refresh from spawning a second git process.
     public func worktrees(at path: URL) async throws -> [WorkspaceGitWorktreeSnapshot] {
         let root = try await repositoryRoot(at: path)
+        let listed = try await listWorktrees(root: root)
+        let hasMissingCheckout = listed.contains { snapshot in
+            !FileManager.default.fileExists(atPath: snapshot.path)
+        }
+        guard hasMissingCheckout else { return listed }
+        let pruned = await git(
+            ["-C", root.path, "worktree", "prune"],
+            workingDirectory: root.path
+        )
+        guard pruned.succeeded else { return listed }
+        return try await listWorktrees(root: root)
+    }
+
+    private func listWorktrees(root: URL) async throws -> [WorkspaceGitWorktreeSnapshot] {
         let result = await git(
             ["-C", root.path, "worktree", "list", "--porcelain", "-z"],
             workingDirectory: root.path
