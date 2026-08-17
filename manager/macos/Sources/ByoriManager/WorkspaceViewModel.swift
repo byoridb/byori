@@ -895,7 +895,6 @@ final class WorkspaceViewModel: ObservableObject {
     var canStartSession: Bool {
         guard !isStartingSession,
               !newSessionDraft.projectID.isEmpty,
-              !newSessionDraft.sourceTreeID.isEmpty,
               sessionNameValidationMessage == nil,
               launchConstraintMessage == nil,
               let providerID = newSessionDraft.providerID,
@@ -917,6 +916,22 @@ final class WorkspaceViewModel: ObservableObject {
         return true
     }
 
+    /// Where the session will run, as the sheet states it rather than asks it.
+    /// Byori decides; this is the sentence that keeps the decision visible.
+    var plannedSessionLocation: String {
+        guard let project = projects.first(where: { $0.id == newSessionDraft.projectID }) else {
+            return "새 워크트리"
+        }
+        guard let planned = project.sourceTrees
+            .first(where: { $0.id == newSessionDraft.sourceTreeID }) else {
+            return "새 워크트리 (Byori가 자동으로 만듭니다)"
+        }
+        let identity = planned.name == planned.branch
+            ? planned.name
+            : "\(planned.name) — \(planned.branch)"
+        return "\(identity) · \(planned.kind.locationLabel)"
+    }
+
     var launchConstraintMessage: String? {
         guard let project = projects.first(where: { $0.id == newSessionDraft.projectID }) else {
             return "The selected project is no longer registered."
@@ -930,6 +945,10 @@ final class WorkspaceViewModel: ObservableObject {
             return "The selected project folder is missing."
         }
 
+        // An empty source tree means Byori will cut a worktree when the session
+        // starts. There is nothing to validate about a checkout that does not
+        // exist yet: it is free by construction and its working tree is clean.
+        guard !newSessionDraft.sourceTreeID.isEmpty else { return nil }
         guard let sourceTree = project.sourceTrees.first(where: { $0.id == newSessionDraft.sourceTreeID }) else {
             return "The selected source tree is no longer available."
         }
@@ -1529,12 +1548,15 @@ final class WorkspaceViewModel: ObservableObject {
 
     private func presentNewSession(for target: (
         project: WorkspaceProjectItem,
-        sourceTree: WorkspaceSourceTreeItem,
+        sourceTree: WorkspaceSourceTreeItem?,
         task: WorkspaceTaskItem?
     )) async {
         newSessionDraft = WorkspaceNewSessionDraft(
             projectID: target.project.id,
-            sourceTreeID: target.sourceTree.id,
+            // Empty means "Byori will cut a worktree on start". Resolved here
+            // only when a checkout already exists, so opening this sheet and
+            // cancelling never leaves a branch or a directory behind.
+            sourceTreeID: target.sourceTree?.id ?? "",
             taskChoice: target.task.map { .existing($0.id) } ?? .newTask,
             sessionName: WorkspaceSessionNameGenerator.make(),
             contextDepth: contextDepth,
@@ -1595,9 +1617,27 @@ final class WorkspaceViewModel: ObservableObject {
         let modelChoice: WorkspaceLaunchModelChoice = selectedModel.acceptsCustomIdentifier
             ? .exact(newSessionDraft.customModelID.trimmingCharacters(in: .whitespacesAndNewlines))
             : .cliDefault
+
+        isStartingSession = true
+        newSessionError = nil
+        // Where the session runs is settled here rather than asked in the sheet.
+        // It can create a worktree, which is why it waits for the confirmation.
+        let sourceTreeID: String
+        do {
+            sourceTreeID = try await resolvedSessionSourceTreeID(
+                projectID: newSessionDraft.projectID,
+                existingTaskID: existingTaskID,
+                taskTitle: newTaskTitle
+            )
+        } catch {
+            isStartingSession = false
+            newSessionError = error.localizedDescription
+            return
+        }
+
         let request = WorkspaceSessionLaunchRequest(
             projectID: newSessionDraft.projectID,
-            sourceTreeID: newSessionDraft.sourceTreeID,
+            sourceTreeID: sourceTreeID,
             existingTaskID: existingTaskID,
             newTaskTitle: newTaskTitle,
             sessionName: sessionName,
@@ -1607,8 +1647,6 @@ final class WorkspaceViewModel: ObservableObject {
             additionalArguments: composedLaunchArguments()
         )
 
-        isStartingSession = true
-        newSessionError = nil
         do {
             let result = try await dataSource.startSession(request)
             upsert(result)
@@ -1803,17 +1841,26 @@ final class WorkspaceViewModel: ObservableObject {
 
     private func newSessionTarget() -> (
         project: WorkspaceProjectItem,
-        sourceTree: WorkspaceSourceTreeItem,
+        sourceTree: WorkspaceSourceTreeItem?,
         task: WorkspaceTaskItem?
     )? {
-        if let lineage = selectedLineage, let sourceTree = lineage.sourceTree {
+        if let lineage = selectedLineage,
+           let sourceTree = lineage.sourceTree,
+           lineage.task != nil,
+           !sourceTree.hasActiveWritingSession {
+            // Continuing an existing task: it lives in that checkout, so there is
+            // nothing to choose.
             return (lineage.project, sourceTree, lineage.task)
         }
-        if let project = selectedProject, let sourceTree = project.sourceTrees.first {
-            return (project, sourceTree, nil)
+        // The selected task is already writing. Asking for a session there used to
+        // dead-end on "this checkout already has an active writing session",
+        // which is a wall built out of an implementation detail — the answer is
+        // another checkout, and Byori is the one that knows how to get one.
+        if let lineage = selectedLineage {
+            return (lineage.project, freeSourceTree(in: lineage.project), nil)
         }
-        if let project = projects.first, let sourceTree = project.sourceTrees.first {
-            return (project, sourceTree, nil)
+        if let project = selectedProject ?? selectedLineage?.project ?? projects.first {
+            return (project, freeSourceTree(in: project), nil)
         }
         return nil
     }
@@ -1822,20 +1869,135 @@ final class WorkspaceViewModel: ObservableObject {
         matching target: WorkspaceNewSessionTarget
     ) -> (
         project: WorkspaceProjectItem,
-        sourceTree: WorkspaceSourceTreeItem,
+        sourceTree: WorkspaceSourceTreeItem?,
         task: WorkspaceTaskItem?
     )? {
-        guard let project = projects.first(where: { $0.id == target.projectID }),
-              let sourceTree = project.sourceTrees.first(where: { $0.id == target.sourceTreeID }) else {
-            return nil
+        guard let project = projects.first(where: { $0.id == target.projectID }) else { return nil }
+        guard let sourceTree = project.sourceTrees.first(where: { $0.id == target.sourceTreeID }) else {
+            // The caller named a checkout that is gone. Starting a session is
+            // still meaningful — Byori picks the location — so this is not fatal.
+            return (project, freeSourceTree(in: project), nil)
         }
         guard let taskID = target.existingTaskID else {
-            return (project, sourceTree, nil)
+            return (project, sourceTree.hasActiveWritingSession ? freeSourceTree(in: project) : sourceTree, nil)
         }
         guard let task = sourceTree.tasks.first(where: { $0.id == taskID }) else {
             return nil
         }
         return (project, sourceTree, task)
+    }
+
+    /// A checkout in `project` that can take a new writing session right now.
+    ///
+    /// The primary checkout wins when it is free. One session at a time is the
+    /// common case, and running it where the user already works costs no second
+    /// copy of the repository, no cold build, and nothing to clean up afterwards.
+    /// Worktrees exist for the case this returns nil: something is already
+    /// writing, so a second session needs its own files.
+    private func freeSourceTree(in project: WorkspaceProjectItem) -> WorkspaceSourceTreeItem? {
+        let usable = project.sourceTrees.filter { sourceTree in
+            if case .unavailable = sourceTree.workingState { return false }
+            return !sourceTree.hasActiveWritingSession
+        }
+        return usable.first { $0.kind == .primary } ?? usable.first
+    }
+
+    /// The checkout a session will run in, creating one when nothing is free.
+    ///
+    /// Called when the user confirms, not when the sheet opens: cutting a branch
+    /// and a directory is a side effect, and a cancelled sheet must not leave one.
+    private func resolvedSessionSourceTreeID(
+        projectID: String,
+        existingTaskID: String?,
+        taskTitle: String?
+    ) async throws -> String {
+        guard let project = projects.first(where: { $0.id == projectID }) else {
+            throw WorkspaceAdapterError.invalidState(
+                "Refresh the workspace and start the session again."
+            )
+        }
+        if let existingTaskID {
+            guard let owner = project.sourceTrees.first(where: { sourceTree in
+                sourceTree.tasks.contains { $0.id == existingTaskID }
+            }) else {
+                throw WorkspaceAdapterError.invalidState(
+                    "That task is no longer in this project."
+                )
+            }
+            return owner.id
+        }
+        if !newSessionDraft.sourceTreeID.isEmpty,
+           let planned = project.sourceTrees.first(where: { $0.id == newSessionDraft.sourceTreeID }),
+           !planned.hasActiveWritingSession {
+            return planned.id
+        }
+        if let free = freeSourceTree(in: project) { return free.id }
+        return try await createSessionWorktree(in: project, taskTitle: taskTitle)
+    }
+
+    /// Cuts the worktree a second concurrent session needs, and returns it.
+    ///
+    /// The branch is named after the task so the checkout is recognizable in Git
+    /// without Byori's UI, and it starts from whatever the project's primary
+    /// checkout has checked out — the same base the user would have branched from.
+    private func createSessionWorktree(
+        in project: WorkspaceProjectItem,
+        taskTitle: String?
+    ) async throws -> String {
+        let branches = try await dataSource.branches(projectID: project.id)
+        let existingNames = Set(branches.filter { !$0.isRemote }.map(\.name))
+        let branch = Self.availableBranchName(
+            for: taskTitle,
+            avoiding: existingNames
+        )
+        let startPoint = branches.first { $0.isCheckedOut }?.name
+        _ = try await dataSource.createSourceTree(
+            projectID: project.id,
+            branch: branch,
+            startPoint: startPoint
+        )
+        await load(force: true)
+        guard let created = projects
+            .first(where: { $0.id == project.id })?
+            .sourceTrees
+            .first(where: { $0.branch == branch }) else {
+            throw WorkspaceAdapterError.invalidState(
+                "Byori created a checkout for \(branch) but could not find it. Refresh and try again."
+            )
+        }
+        return created.id
+    }
+
+    /// `byori/<task-slug>`, suffixed until it is free. Prefixed so these branches
+    /// are obviously Byori's and never collide with a hand-made branch name.
+    static func availableBranchName(
+        for taskTitle: String?,
+        avoiding existingNames: Set<String>
+    ) -> String {
+        let slug = slugifiedBranchComponent(taskTitle)
+        let base = "byori/\(slug)"
+        guard existingNames.contains(base) else { return base }
+        for suffix in 2...99 {
+            let candidate = "\(base)-\(suffix)"
+            if !existingNames.contains(candidate) { return candidate }
+        }
+        return "\(base)-\(UUID().uuidString.prefix(8).lowercased())"
+    }
+
+    private static func slugifiedBranchComponent(_ title: String?) -> String {
+        let scalars = (title ?? "").lowercased().unicodeScalars.map { scalar -> Character in
+            let isAllowed = (48...57).contains(scalar.value)
+                || (97...122).contains(scalar.value)
+            return isAllowed ? Character(scalar) : "-"
+        }
+        let collapsed = String(scalars)
+            .split(separator: "-", omittingEmptySubsequences: true)
+            .joined(separator: "-")
+        let bounded = String(collapsed.prefix(40))
+        // Git rejects a component that ends in a dot or is empty, and a bare
+        // "session" is more readable than a generated id for an untitled task.
+        let trimmed = bounded.trimmingCharacters(in: CharacterSet(charactersIn: "-."))
+        return trimmed.isEmpty ? "session" : trimmed
     }
 
     private func endedSessionLineage(for session: WorkspaceSessionItem) -> WorkspaceLineage? {

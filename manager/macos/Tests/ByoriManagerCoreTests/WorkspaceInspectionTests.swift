@@ -150,6 +150,11 @@ final class WorkspaceInspectionTests: XCTestCase {
         let primary = temporaryRoot.appendingPathComponent("repo with spaces", isDirectory: true)
         let linked = temporaryRoot.appendingPathComponent("linked feature", isDirectory: true)
         let detached = temporaryRoot.appendingPathComponent("detached", isDirectory: true)
+        // Every listed checkout exists, so nothing is pruned and the listing is
+        // the only worktree command issued.
+        for directory in [primary, linked, detached] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
         let runner = StubCommandRunner { command in
             XCTAssertEqual(command.executable, "/test/bin/git")
             if command.arguments.contains("--show-toplevel") {
@@ -197,6 +202,65 @@ final class WorkspaceInspectionTests: XCTestCase {
                 isPrunable: true
             ),
         ])
+    }
+
+    /// A worktree directory the user deleted leaves a registration that keeps
+    /// holding its branch, so the next checkout of that branch fails. Listing
+    /// clears those first — but only when something is actually missing, so an
+    /// ordinary refresh still costs one git process.
+    func testWorktreeListingPrunesRegistrationsWhoseDirectoryIsGone() async throws {
+        let primary = temporaryRoot.appendingPathComponent("primary", isDirectory: true)
+        let missing = temporaryRoot.appendingPathComponent("deleted-by-hand", isDirectory: true)
+        try FileManager.default.createDirectory(at: primary, withIntermediateDirectories: true)
+
+        let commands = CommandLog()
+        let runner = StubCommandRunner { command in
+            if command.arguments.contains("--show-toplevel") {
+                return CommandResult(exitCode: 0, output: primary.path)
+            }
+            let attempt = commands.record(command.arguments)
+            if command.arguments.contains("prune") {
+                return CommandResult(exitCode: 0, output: "")
+            }
+            // First listing still reports the deleted checkout; after the prune
+            // git no longer knows about it.
+            let stale = "worktree \(missing.path)\0"
+                + "HEAD \(String(repeating: "b", count: 40))\0"
+                + "branch refs/heads/gone\0\0"
+            return CommandResult(exitCode: 0, output:
+                "worktree \(primary.path)\0"
+                    + "HEAD \(String(repeating: "a", count: 40))\0"
+                    + "branch refs/heads/main\0\0"
+                    + (attempt == 1 ? stale : "")
+            )
+        }
+        let service = WorkspaceGitService(runner: runner, gitExecutable: "/test/bin/git")
+
+        let worktrees = try await service.worktrees(at: primary)
+
+        XCTAssertEqual(worktrees.map(\.path), [primary.path])
+        XCTAssertEqual(commands.recorded.count, 3, "list, prune, list")
+        XCTAssertTrue(commands.recorded[1].contains("prune"))
+    }
+}
+
+/// Counts worktree commands across concurrent-safe stub invocations.
+private final class CommandLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var commands: [[String]] = []
+
+    @discardableResult
+    func record(_ arguments: [String]) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        commands.append(arguments)
+        return commands.filter { !$0.contains("prune") }.count
+    }
+
+    var recorded: [[String]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return commands
     }
 }
 
