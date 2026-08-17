@@ -40,6 +40,11 @@ do not capture every turn. Reuse the same canonical name to update an entity and
 its temporal history. When recording a confirmed result, set lifecycle fields explicitly:
 `bug.state="fixed"`, `incident.resolved=true`, or `task.state="done"` as appropriate.
 
+At each checkpoint also ask which stored facts the change made wrong, and correct those nodes
+by name in the same pass. Keep expiring claims out of a body ("still on the old version", "not
+filed yet"); record the durable shape instead, or date the sentence. A stale node is read with
+the same confidence as a true one, so it is worse than a missing one.
+
 ## Keep operational data out
 
 Do not store conversation/session replay, response or embedding caches, tool-result
