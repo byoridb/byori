@@ -1283,31 +1283,19 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
             }
             if nodes.count > limit { nodes = Array(nodes.prefix(limit)) }
 
-            let bodyNodes = Array(nodes.prefix(min(nodes.count, 18)))
-            let managerService = self.managerService
-            let memorySpace = project.memorySpace
-            let bodies = await withTaskGroup(
-                of: (Int64, String?).self,
-                returning: [Int64: String].self
-            ) { group in
-                for node in bodyNodes {
-                    group.addTask {
-                        let body = try? await managerService.loadKnowledgeBody(
-                            nodeID: node.id,
-                            tag: node.tag,
-                            space: memorySpace
-                        )
-                        return (node.id, body)
-                    }
-                }
-                var result: [Int64: String] = [:]
-                for await (nodeID, body) in group {
-                    if let body, !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        result[nodeID] = body
-                    }
-                }
-                return result
+            // One batch, not one task per node. This was a task group of up to 18
+            // concurrent reads, and each read opened its own engine session, so a
+            // single inspector load fired ~19 logins at once — which the engine
+            // answers by refusing some of them as "Invalid credentials".
+            let bodyRequests = nodes.prefix(min(nodes.count, 18)).map {
+                KnowledgeBodyRequest(nodeID: $0.id, tag: $0.tag)
             }
+            let bodies = (
+                try? await managerService.loadKnowledgeBodies(
+                    requests: bodyRequests,
+                    space: project.memorySpace
+                )
+            ) ?? [:]
 
             let items = nodes.map { node in
                 let hop = distances[node.id]
