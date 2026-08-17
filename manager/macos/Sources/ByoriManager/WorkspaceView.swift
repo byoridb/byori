@@ -543,13 +543,24 @@ private struct WorkspaceSidebar: View {
         Binding(get: { model.selection }, set: { model.select($0) })
     }
 
+    /// project → task → session. The checkout a task runs in is not a level here.
+    ///
+    /// It used to be: every task hung under its source tree, so the outline made
+    /// the user navigate Git plumbing to reach their work, and a project with two
+    /// concurrent sessions looked like two projects. A checkout is *where* a task
+    /// runs — Byori chooses it, carries the local config into it, and prunes it —
+    /// so it belongs on the task's row as a detail, not in the path to it.
     private var sidebarNodes: [WorkspaceSidebarNode] {
         model.projects.map { project in
-            let sourceTrees = project.sourceTrees.map { sourceTree in
+            let taskNodes = project.sourceTrees.flatMap { sourceTree -> [WorkspaceSidebarNode] in
                 let activeSessionReason = sourceTree.hasActiveWritingSession
-                    ? "A writing session is already active in this source tree."
+                    ? "A writing session is already active in this checkout."
                     : nil
-                let tasks = sourceTree.tasks.map { task in
+                // Named on the row only when it is not the project's own checkout:
+                // "which branch is this task on" is worth seeing, "it is in the
+                // primary checkout" is the default and needs no words.
+                let locationLabel = sourceTree.kind == .primary ? nil : sourceTree.branch
+                return sourceTree.tasks.map { task in
                     let taskDisabledReason = activeSessionReason ?? (!task.status.allowsNewSession
                         ? "This \(task.status.label.lowercased()) task cannot start another session."
                         : nil)
@@ -564,13 +575,22 @@ private struct WorkspaceSidebar: View {
                     // hold at most one live one. Nesting it under its own row
                     // spent a level of the outline on a container that could
                     // never gain a sibling; the pair shares a line instead.
+                    // Removing the last task of a worktree Byori cut leaves an
+                    // empty checkout nobody asked for, so that worktree's own
+                    // removal is offered on the row that produced it.
+                    var removalRequests: [WorkspaceRemovalRequest] = [.task(task)]
+                    if sourceTree.kind == .managedWorktree, sourceTree.tasks.count == 1 {
+                        removalRequests.append(.managedWorktree(sourceTree))
+                    }
                     if visibleSessions.count == 1, let session = visibleSessions.first {
                         return WorkspaceSidebarNode(
                             id: "task-session:\(task.id)",
                             selection: .session(session.id),
                             kind: .session(session),
                             title: task.title,
-                            subtitle: session.displayName,
+                            subtitle: [locationLabel, session.displayName]
+                                .compactMap { $0 }
+                                .joined(separator: " · "),
                             children: nil,
                             quickSessionTarget: WorkspaceNewSessionTarget(
                                 projectID: project.id,
@@ -578,7 +598,7 @@ private struct WorkspaceSidebar: View {
                                 existingTaskID: task.id
                             ),
                             quickSessionDisabledReason: taskDisabledReason,
-                            removalRequests: [.task(task)]
+                            removalRequests: removalRequests
                         )
                     }
                     let sessions = visibleSessions.map { session in
@@ -595,6 +615,7 @@ private struct WorkspaceSidebar: View {
                         selection: .task(task.id),
                         kind: .task(task),
                         title: task.title,
+                        subtitle: locationLabel,
                         children: sessions.isEmpty ? nil : sessions,
                         quickSessionTarget: WorkspaceNewSessionTarget(
                             projectID: project.id,
@@ -602,43 +623,23 @@ private struct WorkspaceSidebar: View {
                             existingTaskID: task.id
                         ),
                         quickSessionDisabledReason: taskDisabledReason,
-                        removalRequests: [.task(task)]
+                        removalRequests: removalRequests
                     )
                 }
-                let removalRequests: [WorkspaceRemovalRequest]
-                switch sourceTree.kind {
-                case .primary:
-                    removalRequests = [.project(project)]
-                case .managedWorktree:
-                    removalRequests = [.sourceTree(sourceTree), .managedWorktree(sourceTree)]
-                case .externalCheckout:
-                    removalRequests = [.sourceTree(sourceTree)]
-                }
-                return WorkspaceSidebarNode(
-                    id: "source-tree:\(sourceTree.id)",
-                    selection: .sourceTree(sourceTree.id),
-                    kind: .sourceTree(sourceTree),
-                    title: sourceTree.name,
-                    children: tasks.isEmpty ? nil : tasks,
-                    quickSessionTarget: WorkspaceNewSessionTarget(
-                        projectID: project.id,
-                        sourceTreeID: sourceTree.id,
-                        existingTaskID: nil
-                    ),
-                    quickSessionDisabledReason: activeSessionReason,
-                    removalRequests: removalRequests
-                )
             }
             return WorkspaceSidebarNode(
                 id: "project:\(project.id)",
                 selection: .project(project.id),
                 kind: .project(project),
                 title: project.name,
-                // Source trees hang directly off the project. The old "Source
-                // Trees" group added a level that named a category rather than
-                // a thing, and gave every project a disclosure arrow even when
-                // it had nothing to disclose.
-                children: sourceTrees.isEmpty ? nil : sourceTrees,
+                children: taskNodes.isEmpty ? nil : taskNodes,
+                // Starting a session on the project row is the ordinary path now:
+                // Byori resolves the checkout, so the row does not name one.
+                quickSessionTarget: WorkspaceNewSessionTarget(
+                    projectID: project.id,
+                    sourceTreeID: "",
+                    existingTaskID: nil
+                ),
                 removalRequests: [.project(project)],
                 restorableSourceTrees: project.hiddenSourceTrees,
                 addSourceTreeProjectID: project.id
@@ -1770,17 +1771,13 @@ private struct NewWorkspaceSessionSheet: View {
                     Section("Location") {
                         LabeledContent("Project", value: projectName)
 
-                        Picker("Checkout", selection: sourceTreeBinding) {
-                            ForEach(model.sourceTrees(for: model.newSessionDraft.projectID)) { sourceTree in
-                                Text(sourceTreeOptionLabel(sourceTree))
-                                    .tag(sourceTree.id)
-                            }
-                        }
-                        .accessibilityHint("Choose the exact checkout and working directory used by the agent process")
+                        // Stated, not chosen: Byori runs the session in the
+                        // project's own checkout when it is free and only cuts a
+                        // worktree when something else is already writing. The
+                        // line stays so the decision is never a surprise.
+                        LabeledContent("Checkout", value: model.plannedSessionLocation)
 
                         if let selectedSourceTree {
-                            LabeledContent("Type", value: selectedSourceTree.kind.locationLabel)
-
                             LabeledContent("Working Directory") {
                                 Text(selectedSourceTree.url.path)
                                     .font(.caption.monospaced())
@@ -2092,24 +2089,6 @@ private struct NewWorkspaceSessionSheet: View {
         model
             .sourceTrees(for: model.newSessionDraft.projectID)
             .first(where: { $0.id == model.newSessionDraft.sourceTreeID })
-    }
-
-    private func sourceTreeOptionLabel(_ sourceTree: WorkspaceSourceTreeItem) -> String {
-        let identity = sourceTree.name == sourceTree.branch
-            ? sourceTree.name
-            : "\(sourceTree.name) — \(sourceTree.branch)"
-        return "\(identity) — \(sourceTree.kind.locationLabel)"
-    }
-
-    private var sourceTreeBinding: Binding<String> {
-        Binding(
-            get: { model.newSessionDraft.sourceTreeID },
-            set: { sourceTreeID in
-                model.newSessionDraft.sourceTreeID = sourceTreeID
-                model.newSessionDraft.taskChoice = .newTask
-                model.newSessionDraft.acceptsModifiedWorkingTree = false
-            }
-        )
     }
 
     private var providerBinding: Binding<String?> {

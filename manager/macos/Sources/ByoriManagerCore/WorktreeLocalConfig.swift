@@ -39,16 +39,19 @@ public struct WorktreeLocalConfig: Sendable {
     /// large file silently is worse than skipping it.
     public static let byteLimit = 256 * 1_024
 
-    private let fileManager: FileManager
-
-    public init(fileManager: FileManager = .default) {
-        self.fileManager = fileManager
-    }
+    public init() {}
 
     /// Which candidates are present in `source`, absent from `destination`, and
     /// small enough to copy. Separate from `carry` so the decision is testable
     /// without touching a real worktree.
-    public func plan(from source: URL, to destination: URL) -> [String] {
+    ///
+    /// The file manager is a parameter rather than stored state: `FileManager` is
+    /// not `Sendable`, and this type is passed across isolation boundaries.
+    public func plan(
+        from source: URL,
+        to destination: URL,
+        fileManager: FileManager = .default
+    ) -> [String] {
         Self.candidates.filter { relativePath in
             let origin = source.appendingPathComponent(relativePath)
             let target = destination.appendingPathComponent(relativePath)
@@ -76,9 +79,13 @@ public struct WorktreeLocalConfig: Sendable {
     /// one config file missing is more useful than no worktree at all, so a copy
     /// that fails is reported by its absence from the result.
     @discardableResult
-    public func carry(from source: URL, to destination: URL) -> [String] {
+    public func carry(
+        from source: URL,
+        to destination: URL,
+        fileManager: FileManager = .default
+    ) -> [String] {
         var carried: [String] = []
-        for relativePath in plan(from: source, to: destination) {
+        for relativePath in plan(from: source, to: destination, fileManager: fileManager) {
             let origin = source.appendingPathComponent(relativePath)
             let target = destination.appendingPathComponent(relativePath)
             let parent = target.deletingLastPathComponent()
