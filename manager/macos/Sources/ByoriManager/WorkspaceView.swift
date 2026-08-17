@@ -1268,34 +1268,42 @@ private struct WorkspaceSessionPane<TerminalHost: View>: View {
         }
     }
 
+    /// Shown only while the automatic reattach is in flight, or after it failed.
+    /// Selecting a session attaches it, so the button here is a fallback for the
+    /// case where the CLI is gone and the error is worth seeing — not the normal
+    /// way back into a session.
     private var detachedSessionView: some View {
         VStack(spacing: 12) {
-            Image(systemName: "bolt.horizontal.circle")
-                .font(.system(size: 32))
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
-            Text("세션이 계속 실행 중입니다")
-                .font(.title3.weight(.semibold))
-            Text("Byori를 닫는 동안에도 이 CLI는 tmux에서 실행되고 있었습니다. 다시 연결하면 중단된 지점 그대로 이어집니다.")
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 460)
+            if isReattaching {
+                ProgressView()
+                    .controlSize(.large)
+                    .accessibilityHidden(true)
+                Text("세션에 연결하는 중입니다")
+                    .font(.title3.weight(.semibold))
+                Text("Byori를 닫는 동안에도 이 CLI는 tmux에서 실행되고 있었습니다. 중단된 지점 그대로 이어집니다.")
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 460)
+            } else {
+                Image(systemName: "bolt.horizontal.circle")
+                    .font(.system(size: 32))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                Text("세션이 계속 실행 중입니다")
+                    .font(.title3.weight(.semibold))
+                Text("이 CLI는 tmux에서 실행되고 있었지만 자동 연결이 되지 않았습니다. 다시 연결하면 중단된 지점 그대로 이어집니다.")
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 460)
 
-            Button(action: reattach) {
-                if isReattaching {
-                    HStack(spacing: 7) {
-                        ProgressView().controlSize(.small)
-                        Text("연결 중…")
-                    }
-                } else {
+                Button(action: reattach) {
                     Label("세션에 다시 연결", systemImage: "arrow.uturn.backward.circle")
                 }
+                .buttonStyle(.borderedProminent)
+                .padding(.top, 4)
+                .accessibilityLabel("Reattach to session \(session.displayName)")
+                .accessibilityHint("Reopens the terminal for the CLI still running in tmux")
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(isReattaching)
-            .padding(.top, 4)
-            .accessibilityLabel("Reattach to session \(session.displayName)")
-            .accessibilityHint("Reopens the terminal for the CLI still running in tmux")
         }
         .padding(28)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
