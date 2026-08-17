@@ -795,6 +795,10 @@ final class WorkspaceViewModel: ObservableObject {
     @Published private(set) var isMutatingWorkspace = false
     @Published private(set) var stoppingSessionIDs: Set<String> = []
     @Published private(set) var reattachingSessionIDs: Set<String> = []
+    /// Sessions whose automatic reattach failed. Kept so a session tmux has
+    /// already lost is not re-attempted on every load, and so the failure is
+    /// reported the one way that asked for it: the manual button.
+    private var autoReattachFailedSessionIDs: Set<String> = []
     /// Set when a session started now would die with the app. Shown before the
     /// user commits to a session, not after the work is already lost.
     @Published private(set) var sessionPersistenceWarning: String?
@@ -971,6 +975,9 @@ final class WorkspaceViewModel: ObservableObject {
             phase = .ready
             isRefreshing = false
             await loadInspector()
+            // A relaunch lands here: defaultSelection() prefers an active session,
+            // which after a relaunch is a session tmux is still running.
+            await autoReattachSelectedSessionIfNeeded()
         } catch {
             isRefreshing = false
             let message = error.localizedDescription
@@ -985,7 +992,10 @@ final class WorkspaceViewModel: ObservableObject {
     func select(_ newSelection: WorkspaceSelection?) {
         guard selection != newSelection else { return }
         selection = newSelection
-        Task { await loadInspector() }
+        Task {
+            await loadInspector()
+            await autoReattachSelectedSessionIfNeeded()
+        }
     }
 
     func setContextDepth(_ depth: WorkspaceContextDepth) {
@@ -1615,22 +1625,53 @@ final class WorkspaceViewModel: ObservableObject {
 
     /// Reopens a terminal onto a session still running under tmux.
     func reattachSession(_ session: WorkspaceSessionItem) async {
+        await reattach(session, automatically: false)
+    }
+
+    /// Reopens the selected session's terminal without being asked.
+    ///
+    /// Reattaching is not a decision a person needs to make: the CLI kept running
+    /// under tmux while Byori was closed, and opening the app to a session whose
+    /// only content is a button to show that session is a step with no
+    /// alternative. Only the selected session is attached, not every detached one
+    /// — each attach spawns a tmux client and a terminal view, and the sessions
+    /// nobody is looking at can stay where they are until selected.
+    func autoReattachSelectedSessionIfNeeded() async {
+        guard let session = selectedSession,
+              session.isDetached,
+              !reattachingSessionIDs.contains(session.id),
+              !autoReattachFailedSessionIDs.contains(session.id) else {
+            return
+        }
+        await reattach(session, automatically: true)
+    }
+
+    private func reattach(_ session: WorkspaceSessionItem, automatically: Bool) async {
         guard session.isDetached, !reattachingSessionIDs.contains(session.id) else { return }
         reattachingSessionIDs.insert(session.id)
         defer { reattachingSessionIDs.remove(session.id) }
 
         do {
             let result = try await dataSource.reattachSession(id: session.id)
+            autoReattachFailedSessionIDs.remove(session.id)
             upsert(result)
             selection = .session(result.session.id)
             await loadInspector()
         } catch {
             // A session that ended while Byori was closed lands here. Reload so
             // the row stops offering a reattach that cannot succeed.
-            alert = WorkspaceAlert(
-                title: "세션에 다시 연결하지 못했습니다",
-                message: error.localizedDescription
-            )
+            if automatically {
+                // Nobody asked for this attempt, so it does not get to raise a
+                // dialog. Remember the failure instead: it must not be retried on
+                // every refresh, and the manual button stays as the way to see
+                // the error on purpose.
+                autoReattachFailedSessionIDs.insert(session.id)
+            } else {
+                alert = WorkspaceAlert(
+                    title: "세션에 다시 연결하지 못했습니다",
+                    message: error.localizedDescription
+                )
+            }
             await load()
         }
     }
