@@ -1737,19 +1737,25 @@ private struct ByoriDatabaseView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
+                // One action, because there was never a decision to make here.
+                // The two buttons this replaced ("bundled assets" and "online
+                // update") differed in which engine version each happened to
+                // land, and both could install one older than what was already
+                // running. Byori now always fetches the newest engine release.
                 GroupBox("설치") {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
-                            Button("번들 자산으로 설치·복구") {
+                            Button(
+                                model.snapshot?.byori.isInstalled == true
+                                    ? "최신 엔진으로 업데이트"
+                                    : "ByoriDB 설치"
+                            ) {
                                 model.request(.installByori, confirmation: true)
                             }
                             .buttonStyle(.borderedProminent)
-                            Button("온라인 업데이트") {
-                                model.request(.updateByori, confirmation: true)
-                            }
                             Spacer()
                         }
-                        Text("두 작업 모두 변경 전 runtime을 백업하며, 검증에 실패하면 이전 상태로 되돌립니다.")
+                        Text("GitHub의 최신 ByoriDB 엔진 릴리스를 내려받아 설치합니다. 변경 전 runtime을 백업하며, 검증에 실패하면 이전 상태로 되돌립니다. 엔진 릴리스를 확인할 수 없으면 이 앱과 함께 검증된 버전을 설치합니다.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)

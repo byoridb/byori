@@ -43,7 +43,6 @@ enum ManagerAction: Identifiable, Equatable {
     case syncSkill(AgentKind, ManagedSkill)
     case removeSkill(AgentKind, ManagedSkill)
     case installByori
-    case updateByori
     case updateApp
     case installTmux
     case startByori
@@ -58,7 +57,6 @@ enum ManagerAction: Identifiable, Equatable {
         case let .syncSkill(kind, skill): return "sync-skill:\(kind.rawValue):\(skill.rawValue)"
         case let .removeSkill(kind, skill): return "remove-skill:\(kind.rawValue):\(skill.rawValue)"
         case .installByori: return "install-byori"
-        case .updateByori: return "update-byori"
         case .updateApp: return "update-app"
         case .installTmux: return "install-tmux"
         case .startByori: return "start-byori"
@@ -73,8 +71,7 @@ enum ManagerAction: Identifiable, Equatable {
         case let .disconnectMCP(kind): return "\(kind.displayName)에서 Byori MCP 연결을 해제할까요?"
         case let .removeSkill(kind, skill):
             return "\(kind.displayName)에서 \(skill.rawValue) Skill을 제거할까요?"
-        case .installByori: return "번들 자산으로 ByoriDB를 설치할까요?"
-        case .updateByori: return "최신 ByoriDB 설치기를 내려받아 업데이트할까요?"
+        case .installByori: return "ByoriDB를 최신 엔진 릴리스로 설치할까요?"
         case .updateApp: return "Byori 앱을 최신 버전으로 업데이트할까요?"
         case .installTmux: return "Homebrew로 tmux를 설치하거나 업그레이드할까요?"
         case .stopByori: return "ByoriDB 서비스를 중지할까요?"
@@ -86,12 +83,10 @@ enum ManagerAction: Identifiable, Equatable {
         switch self {
         case let .installCLI(kind):
             return "\(kind.displayName)의 공식 설치 명령을 실행합니다. 로그인 정보는 Byori가 다루지 않습니다."
-        case .updateByori:
-            return "GitHub의 최신 Byori 릴리스 설치기를 실행합니다. 기존 데이터와 root 비밀번호는 보존됩니다."
         case .updateApp:
             return "최신 릴리스의 디스크 이미지를 내려받아 Apple 공증과 개발자 서명을 확인한 뒤 교체합니다. 확인에 실패하면 설치하지 않습니다. 교체를 위해 앱이 한 번 종료되었다가 다시 열립니다."
         case .installByori:
-            return "앱에 포함된 MCP·Skill·서비스 자산을 사용하고, 호환되는 ByoriDB 엔진은 GitHub 릴리스에서 다운로드합니다. 기존 runtime은 먼저 백업합니다."
+            return "앱에 포함된 MCP·Skill·서비스 자산을 사용하고, 엔진은 GitHub의 최신 릴리스를 내려받습니다. 기존 runtime은 먼저 백업하며 기존 데이터와 root 비밀번호는 보존됩니다."
         case .installTmux:
             return "brew install tmux 또는 brew upgrade tmux를 실행합니다. Byori는 세션 유지에만 tmux를 사용하며, 사용자의 ~/.tmux.conf는 읽지도 변경하지도 않습니다."
         case .removeSkill:
@@ -119,8 +114,7 @@ enum ManagerAction: Identifiable, Equatable {
             return "\(kind.displayName) \(skill.displayName) Skill 동기화 중…"
         case let .removeSkill(kind, skill):
             return "\(kind.displayName) \(skill.displayName) Skill 제거 중…"
-        case .installByori: return "ByoriDB 설치·복구 중…"
-        case .updateByori: return "ByoriDB 업데이트 중…"
+        case .installByori: return "ByoriDB 설치·업데이트 중…"
         case .updateApp: return "앱 업데이트 확인·검증 중…"
         case .installTmux: return "tmux 설치·업그레이드 중…"
         case .startByori: return "ByoriDB 시작 중…"
@@ -134,7 +128,7 @@ enum ManagerAction: Identifiable, Equatable {
     /// or late Cancel cannot leave an unverified partial configuration behind.
     var supportsSafeCancellation: Bool {
         switch self {
-        case .installByori, .updateByori:
+        case .installByori:
             return true
         default:
             return false
@@ -143,7 +137,7 @@ enum ManagerAction: Identifiable, Equatable {
 
     var cancellationDetail: String {
         switch self {
-        case .installByori, .updateByori:
+        case .installByori:
             return "설치 프로세스를 종료하고 변경 전 ByoriDB 상태를 복구했습니다."
         default:
             return "취소 요청 후 최종 상태를 다시 확인했습니다."
@@ -599,9 +593,7 @@ final class ManagerViewModel: ObservableObject {
             case let .installCLI(kind):
                 result = try await service.installOrUpdateCLI(kind)
             case .installByori:
-                result = try await service.installByoriBundled()
-            case .updateByori:
-                result = try await service.updateByoriOnline()
+                result = try await service.installOrUpdateByori()
             case .updateApp:
                 // Replacing the bundle needs the app to quit. Refuse before
                 // downloading anything: verifying a release and then failing

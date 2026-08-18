@@ -512,7 +512,7 @@ enum ByoriManagerSelfTest {
         )
         let cancelInstallService = ManagerService(paths: cancelInstallPaths)
         let installTask = Task {
-            try await cancelInstallService.installByoriBundled()
+            try await cancelInstallService.installOrUpdateByori()
         }
         for _ in 0..<100 where !fileManager.fileExists(atPath: installStarted.path) {
             try await Task.sleep(nanoseconds: 20_000_000)

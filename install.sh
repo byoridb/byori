@@ -6,17 +6,19 @@
 #
 #   curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh | bash
 #
-# Options: --with-hooks --tag vX.Y.Z --engine-tag vX.Y.Z --uninstall
+# Options: --with-hooks --tag vX.Y.Z --engine-tag vX.Y.Z|latest --uninstall
 #          --binary PATH --assets DIR --no-service --no-claude --no-codex
 #   --tag        pins the byori asset version (default: latest byori release)
-#   --engine-tag overrides the ByoriDB engine release to install
+#   --engine-tag ByoriDB engine release to install: a tag, or `latest` to resolve
+#                the newest engine release (default: the validated pinned tag)
 # Env:     BYORIDB_HOME (~/.byoridb) BYORIDB_HTTP_PORT (19669) BYORIDB_GRAPH_PORT (9669)
 #          BYORIDB_LABEL (com.byoridb.local)
 set -euo pipefail
 
 ASSET_REPO="byoridb/byori"        # install.sh / MCP / skill / templates
 ENGINE_REPO="byoridb/byoridb"     # byoridb-server binary releases
-ENGINE_TAG_DEFAULT="v0.4.0"       # engine version this byori version is tested against
+ENGINE_TAG_DEFAULT="v0.4.0"       # engine version this byori version is tested against,
+                                  # and the fallback when `latest` cannot be resolved
 BYORIDB_HOME="${BYORIDB_HOME:-$HOME/.byoridb}"
 HTTP_PORT="${BYORIDB_HTTP_PORT:-19669}"
 GRAPH_PORT="${BYORIDB_GRAPH_PORT:-9669}"
@@ -106,6 +108,18 @@ resolve_tag() {
   awk -F'"' '/"tag_name"/{print $4; exit}' "$WORK/rel.json"
 }
 
+# `--engine-tag latest` asks for the newest engine release instead of the tag this
+# byori version was validated against, so the engine stops waiting on a byori
+# release to move forward. Unlike the asset tag this never aborts the install: the
+# API is rate limited for unauthenticated callers and may be unreachable, and an
+# install that lands the validated engine is still a correct install.
+resolve_engine_tag() {
+  if curl -fsSL "https://api.github.com/repos/${ENGINE_REPO}/releases/latest" \
+      -o "$WORK/engine-rel.json"; then
+    awk -F'"' '/"tag_name"/{print $4; exit}' "$WORK/engine-rel.json"
+  fi
+}
+
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 # get <repo-relative-path> <dest>: from --assets dir or raw.githubusercontent at TAG
 get() {
@@ -123,6 +137,16 @@ render() { # <src-template> <dest>
 }
 
 TARGET="$(detect_target)"
+if [ "$ENGINE_TAG" = latest ]; then
+  resolved_engine_tag="$(resolve_engine_tag)"
+  if [ -n "$resolved_engine_tag" ]; then
+    ENGINE_TAG="$resolved_engine_tag"
+    log "latest engine release: $ENGINE_TAG"
+  else
+    ENGINE_TAG="$ENGINE_TAG_DEFAULT"
+    warn "could not resolve the latest engine release; using $ENGINE_TAG"
+  fi
+fi
 # Both tags are interpolated into download URLs, and the engine tag is recorded
 # in the engine manifest. Keep them to a charset that cannot alter either.
 for candidate in "$TAG" "$ENGINE_TAG"; do
@@ -160,7 +184,7 @@ render "$WORK/run-byori.sh" "$WORK/run-byori.rendered.sh"
 bash -n "$WORK/run-server.rendered.sh" "$WORK/run-mcp.rendered.sh" \
   "$WORK/run-byori.rendered.sh"
 
-# 1) stage and install the engine binary (from ENGINE_REPO, pinned to the tested ENGINE_TAG)
+# 1) stage and install the engine binary (from ENGINE_REPO at the resolved ENGINE_TAG)
 mkdir -p "$WORK/engine"
 if [ -n "$BINARY" ]; then
   log "using local binary: $BINARY"

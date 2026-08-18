@@ -23,7 +23,7 @@ jobs:
         run: |
           python -m py_compile cli/byori.py mcp/byoridb_mcp.py scripts/next_release_tag.py \
             scripts/migrate-legacy-memory.py
-          python -m unittest tests/test_cli.py tests/test_mcp_contract.py tests/test_mcp_lifecycle.py tests/test_release_workflow.py tests/test_memory_space.py
+          python -m unittest tests/test_cli.py tests/test_mcp_contract.py tests/test_mcp_lifecycle.py tests/test_release_workflow.py tests/test_memory_space.py tests/test_install_engine_tag.py
 
   smoke:
     name: Engine contract smoke
@@ -33,6 +33,11 @@ jobs:
 
       - name: Lint installer
         run: bash -n install.sh templates/run-byori.sh templates/run-server.sh templates/run-mcp.sh
+
+      # Which engine release the installer decides to install, with curl stubbed:
+      # this job owns installer behaviour, and the decision is what changed.
+      - name: Test installer engine-tag resolution
+        run: python3 -m unittest tests/test_install_engine_tag.py
 
       - name: Test multi-agent CLI
         run: python3 -m unittest tests/test_cli.py
@@ -45,10 +50,16 @@ jobs:
 
       # Downloads the pinned ENGINE_TAG release from byoridb/byoridb and installs
       # this checkout's assets — exactly what a user install does, minus agent wiring.
+      # The tag is passed explicitly: the app asks for `latest`, but this smoke test
+      # is the validated pairing, so it must stay reproducible when a new engine
+      # release appears.
       - name: Install (pinned engine + local assets)
         run: |
           export BYORIDB_HOME="$RUNNER_TEMP/byoridb-home"
-          ./install.sh --assets . --no-claude --no-codex --no-service
+          ENGINE_TAG="$(sed -n 's/^ENGINE_TAG_DEFAULT="\([^"]*\)".*/\1/p' install.sh)"
+          test -n "$ENGINE_TAG"
+          echo "pinned engine tag: $ENGINE_TAG"
+          ./install.sh --assets . --engine-tag "$ENGINE_TAG" --no-claude --no-codex --no-service
           "$BYORIDB_HOME/bin/byori" --help
           # The engine binary answers no version question, so the installer's
           # record is the only build identity there is. Assert it was written.

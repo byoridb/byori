@@ -12,6 +12,13 @@ if a surface documented here changes, Byori must be updated before the engine ta
   `templates/run-server.sh`
 - Validated pairing: **byori v0.2.x ↔ engine `v0.4.0`**
   (`ENGINE_TAG_DEFAULT` in `install.sh`)
+- What each install path takes: the macOS app's install button passes
+  `--engine-tag latest`, so a user's engine tracks the newest engine release and no
+  longer waits for a byori release. `ENGINE_TAG_DEFAULT` remains the validated
+  pairing, what CI installs, and the fallback when the release lookup fails.
+  **Consequence:** a breaking engine release reaches app users before the checklist
+  below runs, so this client has to survive an engine newer than the one it was
+  validated against — the surfaces here are the ones that must not be broken silently.
 - Validation has two layers:
   - `python3 -m unittest tests/test_mcp_contract.py` checks profiles, closed and bounded
     tool schemas, the read-query gate, canonical identities, relation rules, lifecycle values,
@@ -31,7 +38,8 @@ share that graph space.
 
 ## Engine Upgrade Checklist
 
-1. Update `ENGINE_TAG_DEFAULT` in `install.sh`
+1. Update `ENGINE_TAG_DEFAULT` in `install.sh` (CI's pin and the offline fallback;
+   app installs already take the new release)
 2. Confirm that both the MCP contract test and CI smoke test pass; together they cover the
    complete surface below
 3. Compare the surface in this document against the engine CHANGELOG diff, and update this
@@ -368,6 +376,10 @@ which is why the minimum is stated here rather than discovered.
 
 Do not advance `ENGINE_TAG_DEFAULT` to an unreleased commit: `install.sh` downloads a release
 asset, so a build that exists only on `main` cannot be installed by a user.
+
+There is no maximum. `--engine-tag latest` installs whatever the newest engine release is, and
+nothing stops an engine release that changes a surface in this document; that is why the upgrade
+checklist compares this document against the engine CHANGELOG rather than trusting the pin.
 
 ### Build identity
 

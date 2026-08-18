@@ -180,11 +180,26 @@ public actor ManagerService {
         )
     }
 
-    public func installByoriBundled() async throws -> OperationResult {
+    /// Installs or repairs the ByoriDB runtime, always taking the newest engine
+    /// release rather than a version frozen when this app was built.
+    ///
+    /// This replaced a pair of buttons — "install from bundled assets" and "update
+    /// online" — that asked the user to choose between two things neither name
+    /// explained, and whose real difference was which *engine* each happened to
+    /// land. Both could install an engine older than the one already running,
+    /// because both took the tag pinned in whichever `install.sh` they used.
+    ///
+    /// So the two axes are separated instead of being offered as one choice:
+    ///
+    /// - **Byori-owned assets** (MCP runtime, CLI, Skills, service templates) come
+    ///   from the app bundle. They are the ones this build was tested against, and
+    ///   replacing them is what the app updater is for. A build with no bundled
+    ///   assets — `swift run` during development — has none to use, so it falls
+    ///   back to the installer from the latest release.
+    /// - **The engine** is resolved at install time by `--engine-tag latest`, which
+    ///   falls back to the installer's pinned tag when GitHub cannot be reached.
+    public func installOrUpdateByori() async throws -> OperationResult {
         try Task.checkCancellation()
-        guard fileManager.fileExists(atPath: paths.installer.path) else {
-            throw ManagerError.missingResource(paths.installer.path)
-        }
         guard paths.executable(named: "python3") != nil else {
             throw ManagerError.prerequisite(
                 "현재 MCP 런타임에는 python3가 필요합니다. Python 3를 설치한 뒤 다시 시도해 주세요."
@@ -192,17 +207,7 @@ public actor ManagerService {
         }
         let snapshot = try await createRuntimeSnapshot()
         try Task.checkCancellation()
-        let result = await runner.run(CommandSpec(
-            executable: "/bin/bash",
-            arguments: [
-                paths.installer.path,
-                "--assets", paths.runtimeRoot.path,
-                "--no-claude",
-                "--no-codex",
-            ],
-            environment: commonEnvironment,
-            timeout: 900
-        ))
+        let result = await runner.run(byoriInstallCommand())
         do {
             try require(result, label: "ByoriDB 설치")
             try await verifyByori()
@@ -211,36 +216,30 @@ public actor ManagerService {
             try await rollbackRuntimeUncancelled(snapshot, originalError: error)
             throw error
         }
-        return OperationResult(summary: "ByoriDB 설치/복구 완료", detail: result.output)
+        return OperationResult(summary: "ByoriDB 설치/업데이트 완료", detail: result.output)
     }
 
-    public func updateByoriOnline() async throws -> OperationResult {
-        try Task.checkCancellation()
-        guard paths.executable(named: "python3") != nil else {
-            throw ManagerError.prerequisite(
-                "현재 MCP 런타임에는 python3가 필요합니다. Python 3를 설치한 뒤 다시 시도해 주세요."
+    /// The bundled installer when the app carries one, otherwise the installer from
+    /// the latest release. Both ask for the newest engine release.
+    func byoriInstallCommand() -> CommandSpec {
+        let engineArguments = ["--engine-tag", "latest", "--no-claude", "--no-codex"]
+        guard fileManager.fileExists(atPath: paths.installer.path) else {
+            let command = "/usr/bin/curl -fsSL "
+                + "https://github.com/byoridb/byori/releases/latest/download/install.sh "
+                + "| /bin/bash -s -- " + engineArguments.joined(separator: " ")
+            return CommandSpec(
+                executable: "/bin/bash",
+                arguments: ["-o", "pipefail", "-c", command],
+                environment: commonEnvironment,
+                timeout: 900
             )
         }
-        let command = "/usr/bin/curl -fsSL "
-            + "https://github.com/byoridb/byori/releases/latest/download/install.sh "
-            + "| /bin/bash -s -- --no-claude --no-codex"
-        let snapshot = try await createRuntimeSnapshot()
-        try Task.checkCancellation()
-        let result = await runner.run(CommandSpec(
+        return CommandSpec(
             executable: "/bin/bash",
-            arguments: ["-o", "pipefail", "-c", command],
+            arguments: [paths.installer.path, "--assets", paths.runtimeRoot.path] + engineArguments,
             environment: commonEnvironment,
             timeout: 900
-        ))
-        do {
-            try require(result, label: "ByoriDB 온라인 업데이트")
-            try await verifyByori()
-            try await verifyByoriCLI()
-        } catch {
-            try await rollbackRuntimeUncancelled(snapshot, originalError: error)
-            throw error
-        }
-        return OperationResult(summary: "ByoriDB 업데이트 완료", detail: result.output)
+        )
     }
 
     /// Reports whether a newer signed release exists, without downloading it.

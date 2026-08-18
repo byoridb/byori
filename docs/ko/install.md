@@ -55,7 +55,7 @@ ByoriDB 지식 그래프를 공유한다.
 ## 옵션
 
 ```sh
-install.sh [--with-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z] [--uninstall]
+install.sh [--with-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z|latest] [--uninstall]
            [--binary PATH] [--assets DIR] [--no-service] [--no-claude] [--no-codex]
 ```
 
@@ -63,7 +63,9 @@ install.sh [--with-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z] [--uninstall]
   기존 `SessionStart`/`PreToolUse` 배열에 append하며 이미 같은 hook이 있으면 건너뛴다
   (재실행 idempotent). 변경 전 `settings.json.bak.<timestamp>` 백업을 자동 생성한다. `jq` 필요.
 - `--tag` — byori 자산(MCP/스킬/템플릿) 버전 고정(기본: 최신 byori 릴리스).
-- `--engine-tag` — ByoriDB 엔진 릴리스 override(기본: 이 byori 버전과 함께 검증된 고정 태그).
+- `--engine-tag` — 설치할 ByoriDB 엔진 릴리스(기본: 이 byori 버전과 함께 검증된 고정 태그).
+  `latest`를 주면 최신 엔진 릴리스를 조회해 설치한다 — macOS 앱의 설치 버튼이 이 방식이다.
+  조회가 실패하면(네트워크 없음, GitHub API rate limit) 고정 태그를 설치하고 그 사실을 로그로 남긴다.
 - `--uninstall` — 서비스 중지·해제, Claude/Codex MCP 등록 해제, Byori skill 두 개 제거.
   **데이터는 확인 후 보존/삭제 선택.** merge되지 않은 사용자 변경이 있을 수 있어
   `~/.byori`의 오케스트레이션 record와 worktree는 보존한다.
@@ -75,7 +77,7 @@ install.sh [--with-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z] [--uninstall]
 
 설치기 환경변수: `BYORIDB_HOME`(기본 `~/.byoridb`), `BYORIDB_HTTP_PORT`(기본 19669),
 `BYORIDB_GRAPH_PORT`(기본 9669), `BYORIDB_LABEL`(기본 `com.byoridb.local`),
-`BYORI_ENGINE_TAG`(기본: 고정 호환 엔진 태그).
+`BYORI_ENGINE_TAG`(기본: 고정 호환 엔진 태그. `latest`도 허용).
 재설치할 때 현재 `BYORIDB_ROOT_PASSWORD` 또는 legacy `BYORIDB_PASSWORD` 값을 보존한다.
 설치 완료는 해당 credential로 실제 session 생성까지 성공해야 한다. 오래된 ByoriDB
 process가 이미 port를 점유할 수 있으므로 인증 없는 `/health` 응답만으로 성공 처리하지 않는다.
