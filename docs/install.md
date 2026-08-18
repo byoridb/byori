@@ -58,7 +58,7 @@ project's ByoriDB knowledge graph through the Context inspector.
 ## Options
 
 ```sh
-install.sh [--with-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z] [--uninstall]
+install.sh [--with-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z|latest] [--uninstall]
            [--binary PATH] [--assets DIR] [--no-service] [--no-claude] [--no-codex]
 ```
 
@@ -68,8 +68,11 @@ install.sh [--with-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z] [--uninstall]
   changing the file, it creates a `settings.json.bak.<timestamp>` backup. Requires `jq`.
 - `--tag` — pins the version of Byori assets (MCP, skill, and templates). The default
   is the latest Byori release.
-- `--engine-tag` — overrides the ByoriDB engine release. The default is the pinned
-  engine version verified with this Byori release.
+- `--engine-tag` — which ByoriDB engine release to install. The default is the pinned
+  engine version verified with this Byori release. Pass `latest` to resolve the newest
+  engine release instead, which is what the macOS app's install button does; when that
+  lookup fails — no network, or a GitHub API rate limit — the pinned version is installed
+  and the run says so.
 - `--uninstall` — stops and unregisters the service, unregisters the Claude/Codex
   MCP integration, and removes both Byori skills. **You are prompted to keep or delete the data.**
   Orchestration records and worktrees under `~/.byori` are preserved because they may contain
@@ -85,7 +88,7 @@ install.sh [--with-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z] [--uninstall]
 Installer environment variables: `BYORIDB_HOME` (default: `~/.byoridb`),
 `BYORIDB_HTTP_PORT` (default: 19669), `BYORIDB_GRAPH_PORT` (default: 9669),
 `BYORIDB_LABEL` (default: `com.byoridb.local`), and `BYORI_ENGINE_TAG` (default: the
-pinned compatible engine tag).
+pinned compatible engine tag; accepts `latest` as well).
 Reinstallation preserves either the current `BYORIDB_ROOT_PASSWORD` or the legacy
 `BYORIDB_PASSWORD` value. Completion requires authenticated session creation with that
 credential; an unauthenticated `/health` response alone is not accepted because a stale

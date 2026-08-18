@@ -352,9 +352,10 @@ in memory.
 Under Byori is [ByoriDB](https://github.com/byoridb/byoridb), a general-purpose semantic graph
 database. It provides property graphs and nGQL, write-time materialization for selected
 RDFS-Plus/OWL 2 RL rules, inference provenance through `WHY`, bitemporal history through
-`AS OF`, and similarity recommendations. The installer downloads an engine release validated
-with this repository's version and pins it by tag; use `--engine-tag` to override it. See the
-ByoriDB repository documentation for the engine's feature set and constraints.
+`AS OF`, and similarity recommendations. The macOS app installs the newest engine release; the
+installer on its own downloads the release validated with this repository's version, and
+`--engine-tag latest` asks it for the newest one instead. See the ByoriDB repository
+documentation for the engine's feature set and constraints.
 
 ## Current limitations
 

@@ -10,6 +10,12 @@ Byori 호환성과 무관하게 바뀌어도 된다. 반대로 이 문서의 표
   `tests/smoke_mcp.py`, `manager/macos/Sources/ByoriManagerCore/ByoriGraphClient.swift`,
   `install.sh`, `templates/run-server.sh`
 - 검증 조합: **byori v0.2.x ↔ engine `v0.4.0`** (`install.sh`의 `ENGINE_TAG_DEFAULT`)
+- 설치 경로별로 어떤 엔진을 받는가: macOS 앱의 설치 버튼은 `--engine-tag latest`를 넘기므로
+  사용자의 엔진은 최신 엔진 릴리스를 따라가고 byori 릴리스를 기다리지 않는다.
+  `ENGINE_TAG_DEFAULT`는 검증 조합이자 CI가 설치하는 태그이며, 릴리스 조회가 실패했을 때의
+  fallback으로 남는다. **결과:** 호환성을 깨는 엔진 릴리스가 아래 체크리스트보다 먼저 앱
+  사용자에게 도달한다. 즉 이 클라이언트는 검증된 것보다 새로운 엔진에서도 살아남아야 하며,
+  여기 적힌 표면들이 조용히 깨지면 안 되는 이유가 그것이다.
 - 검증은 두 층으로 구성한다:
   - `python3 -m unittest tests/test_mcp_contract.py`는 엔진 없이 profile, 닫히고 크기가
     제한된 tool schema, read-query gate, canonical identity, relation 규칙, lifecycle 값,
@@ -27,7 +33,8 @@ Project의 모든 Source Tree/Worktree, Task, Session, agent 선택은 그 graph
 
 ## 엔진 버전 올리기 체크리스트
 
-1. `install.sh`의 `ENGINE_TAG_DEFAULT` 갱신
+1. `install.sh`의 `ENGINE_TAG_DEFAULT` 갱신(CI의 고정 태그이자 오프라인 fallback.
+   앱 설치는 이미 새 릴리스를 받는다)
 2. MCP contract test와 CI 스모크 모두 통과 확인 (둘이 함께 아래 표면 전체를 커버)
 3. 이 문서의 표면과 엔진 CHANGELOG diff 대조, 변경 시 문서 갱신
 4. byori 패치 릴리스 태그
@@ -351,6 +358,10 @@ instance와 credential을 분리한다.
 
 `ENGINE_TAG_DEFAULT`를 릴리스되지 않은 commit으로 올리지 말 것. `install.sh`는 릴리스 asset을
 내려받으므로 `main`에만 있는 빌드는 사용자가 설치할 수 없다.
+
+최대 버전은 없다. `--engine-tag latest`는 최신 엔진 릴리스가 무엇이든 설치하며, 이 문서의 표면을
+바꾸는 엔진 릴리스를 막는 장치는 없다. 그래서 업그레이드 체크리스트는 고정 태그를 믿는 대신 이
+문서와 엔진 CHANGELOG를 비교하게 되어 있다.
 
 ### 빌드 식별
 

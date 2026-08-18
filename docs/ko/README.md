@@ -340,9 +340,10 @@ model context로 전달될 수 있습니다. 비밀번호, token, credential 같
 Byori 아래에는 범용 semantic graph database인
 [ByoriDB](https://github.com/byoridb/byoridb)가 있습니다 — property graph와 nGQL,
 선택된 RDFS-Plus/OWL 2 RL 규칙의 write-time materialization, inference provenance(`WHY`),
-bitemporal history(`AS OF`), similarity recommendation을 제공합니다. 설치기는 이 저장소의
-버전과 함께 검증된 엔진 릴리스를 고정 태그로 내려받으며(`--engine-tag`로 override),
-엔진 기능 범위와 제약은 ByoriDB 저장소 문서를 참고합니다.
+bitemporal history(`AS OF`), similarity recommendation을 제공합니다. macOS 앱은 최신 엔진
+릴리스를 설치하고, 설치기를 직접 실행하면 이 저장소의 버전과 함께 검증된 릴리스를 내려받습니다
+(`--engine-tag latest`로 최신 릴리스 요청). 엔진 기능 범위와 제약은 ByoriDB 저장소 문서를
+참고합니다.
 
 ## 현재 한계
 

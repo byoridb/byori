@@ -295,9 +295,12 @@ shell environment variables, the app inspects the existing launchd plist and ren
   the app diagnoses this prerequisite.
 - Configuration changes and installation run in the user scope and require neither
   administrator privileges nor vendor tokens.
-- Online updates use the installer from the latest GitHub release and preserve existing
-  data and the root password. Health and authenticated session creation must both succeed;
-  this prevents a different process on the same port from being reported as ready. On failure,
-  the app restores the runtime files and re-verifies a previously working connection.
+- Installing ByoriDB is one action, not a choice between two. It uses the MCP, CLI, Skill,
+  and service assets carried in the app bundle — the ones this build was tested with, replaced
+  by the app updater — and always fetches the newest ByoriDB engine release, falling back to
+  the version validated with this build when that lookup fails. Existing data and the root
+  password are preserved. Health and authenticated session creation must both succeed; this
+  prevents a different process on the same port from being reported as ready. On failure, the
+  app restores the runtime files and re-verifies a previously working connection.
 - Failure details appear under **Settings → Diagnostics** as the app's activity log.
   Database contents and credentials are never recorded there.
