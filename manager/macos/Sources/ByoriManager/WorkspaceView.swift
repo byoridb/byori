@@ -2488,6 +2488,10 @@ private struct NewWorkspaceSourceTreeSheet: View {
                         Text("Every branch is already checked out. Create a new one instead.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    } else if let plan = remoteCheckoutPlan {
+                        Text(plan)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 case .new:
                     TextField("Branch Name", text: $model.newSourceTreeDraft.newBranchName)
@@ -2507,6 +2511,22 @@ private struct NewWorkspaceSourceTreeSheet: View {
     /// so those are not offered rather than failing after the fact.
     private var selectableBranches: [WorkspaceGitBranch] {
         model.availableBranches.filter { !$0.isCheckedOut }
+    }
+
+    /// A remote-tracking branch cannot be checked out into a worktree, so Byori
+    /// cuts a local branch from it. The sheet states that before the button is
+    /// pressed rather than letting the created checkout be the first news of it.
+    private var remoteCheckoutPlan: String? {
+        let name = model.newSourceTreeDraft.selectedBranch
+        guard model.availableBranches.contains(where: { $0.isRemote && $0.name == name }),
+              !model.availableBranches.contains(where: { !$0.isRemote && $0.name == name }),
+              let local = WorkspaceViewModel.usableLocalBranchName(
+                  forRemote: name,
+                  avoiding: model.availableBranches
+              ) else {
+            return nil
+        }
+        return "Byori creates local branch \(local), tracking \(name)."
     }
 }
 

@@ -1478,9 +1478,21 @@ final class WorkspaceViewModel: ObservableObject {
             let branches = try await dataSource.branches(projectID: projectID)
             guard newSourceTreeDraft.projectID == projectID else { return }
             availableBranches = branches
-            // Default to something the user can actually act on.
+            // Default to something the user can actually act on. A local branch
+            // first: a remote-tracking branch is a legitimate choice, but it turns
+            // into a new local branch, so it must not be what the sheet quietly
+            // starts on — and a remote whose local name is taken cannot be used
+            // at all.
             if newSourceTreeDraft.selectedBranch.isEmpty {
-                newSourceTreeDraft.selectedBranch = branches.first { !$0.isCheckedOut }?.name ?? ""
+                newSourceTreeDraft.selectedBranch = branches
+                    .first { !$0.isRemote && !$0.isCheckedOut }?.name
+                    ?? branches.first { branch in
+                        branch.isRemote && Self.usableLocalBranchName(
+                            forRemote: branch.name,
+                            avoiding: branches
+                        ) != nil
+                    }?.name
+                    ?? ""
             }
             if newSourceTreeDraft.startPoint.isEmpty {
                 newSourceTreeDraft.startPoint = branches.first { $0.isCheckedOut }?.name
@@ -1497,11 +1509,50 @@ final class WorkspaceViewModel: ObservableObject {
         isPresentingNewSourceTree = false
     }
 
+    /// The listed branch the picker's selection names. A local branch wins a name
+    /// collision: the picker tags entries by name alone, and a local branch is the
+    /// one that can be checked out as it is.
+    private var selectedExistingBranch: WorkspaceGitBranch? {
+        let name = newSourceTreeDraft.selectedBranch
+        guard !name.isEmpty else { return nil }
+        return availableBranches.first { !$0.isRemote && $0.name == name }
+            ?? availableBranches.first { $0.name == name }
+    }
+
+    /// `origin/feature/x` → `feature/x`. The remote name is the first component;
+    /// the rest is the branch as the remote knows it.
+    static func localBranchName(forRemote name: String) -> String? {
+        guard let separator = name.firstIndex(of: "/") else { return nil }
+        let local = String(name[name.index(after: separator)...])
+        return local.isEmpty ? nil : local
+    }
+
+    /// The local branch a remote-tracking pick becomes, or nil when it cannot
+    /// become one: a ref with no branch component, or a local name already taken.
+    static func usableLocalBranchName(
+        forRemote name: String,
+        avoiding branches: [WorkspaceGitBranch]
+    ) -> String? {
+        guard let local = localBranchName(forRemote: name),
+              !branches.contains(where: { !$0.isRemote && $0.name == local }) else {
+            return nil
+        }
+        return local
+    }
+
     var newSourceTreeValidationMessage: String? {
         switch newSourceTreeDraft.mode {
         case .existing:
-            if newSourceTreeDraft.selectedBranch.isEmpty {
+            guard let selected = selectedExistingBranch else {
                 return "Choose a branch that is not already checked out."
+            }
+            if selected.isRemote {
+                guard let local = Self.localBranchName(forRemote: selected.name) else {
+                    return "\(selected.name) carries no branch name to check out."
+                }
+                if availableBranches.contains(where: { !$0.isRemote && $0.name == local }) {
+                    return "A local branch named \(local) already exists. Choose it instead."
+                }
             }
         case .new:
             let name = newSourceTreeDraft.newBranchName.trimmingCharacters(in: .whitespaces)
@@ -1524,8 +1575,22 @@ final class WorkspaceViewModel: ObservableObject {
             let startPoint: String?
             switch draft.mode {
             case .existing:
-                branch = draft.selectedBranch
-                startPoint = nil
+                guard let selected = selectedExistingBranch else { return }
+                if selected.isRemote {
+                    // A worktree cannot sit on a remote-tracking ref — Git would
+                    // detach HEAD and the work would belong to no branch. Cutting
+                    // a local branch from it is what picking a colleague's branch
+                    // means, and starting from the remote ref records the upstream.
+                    guard let local = Self.usableLocalBranchName(
+                        forRemote: selected.name,
+                        avoiding: availableBranches
+                    ) else { return }
+                    branch = local
+                    startPoint = selected.name
+                } else {
+                    branch = selected.name
+                    startPoint = nil
+                }
             case .new:
                 branch = draft.newBranchName.trimmingCharacters(in: .whitespaces)
                 startPoint = draft.startPoint

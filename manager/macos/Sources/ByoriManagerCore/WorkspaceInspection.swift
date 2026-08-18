@@ -630,6 +630,16 @@ public struct WorkspaceGitService: WorkspaceGitInspecting, Sendable {
         try Self.validateBranchName(branch)
         if let startPoint {
             try Self.validateStartPoint(startPoint)
+        } else {
+            // Without a start point this checks a branch out as it is, and
+            // `git worktree add <path> <commit-ish>` accepts far more than a
+            // branch: a remote-tracking ref, a tag, or a bare revision all
+            // resolve, and Git then detaches HEAD. That leaves a checkout whose
+            // commits belong to no branch, which is never what a caller asking
+            // for `branch` meant. Only a local branch can be checked out, so
+            // anything else is refused here instead of being discovered later
+            // as a directory sitting on a detached HEAD.
+            try await requireLocalBranch(branch, in: repositoryRoot)
         }
         let target = destination.standardizedFileURL
         guard !FileManager.default.fileExists(atPath: target.path) else {
@@ -665,6 +675,24 @@ public struct WorkspaceGitService: WorkspaceGitInspecting, Sendable {
             throw WorkspaceError.gitCommandFailed("git did not register the new worktree")
         }
         return created
+    }
+
+    /// Fails unless `refs/heads/<branch>` exists, naming the remedy for the case
+    /// this is reached with: a remote-tracking branch, which needs a local branch
+    /// started from it rather than a direct checkout.
+    private func requireLocalBranch(_ branch: String, in repositoryRoot: URL) async throws {
+        let result = await git(
+            [
+                "-C", repositoryRoot.path,
+                "show-ref", "--verify", "--quiet", "refs/heads/\(branch)",
+            ],
+            workingDirectory: repositoryRoot.path
+        )
+        guard result.succeeded else {
+            throw WorkspaceError.gitCommandFailed(
+                "\(branch) is not a local branch. Create a local branch from it instead."
+            )
+        }
     }
 
     /// Removes one exact non-primary worktree after re-checking that Git still
