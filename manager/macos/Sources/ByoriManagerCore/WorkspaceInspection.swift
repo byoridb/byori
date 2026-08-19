@@ -368,9 +368,10 @@ public struct WorkspaceGitService: WorkspaceGitInspecting, Sendable {
             .standardizedFileURL
     }
 
-    /// Initializes a local repository without invoking a shell. Callers create
-    /// and approve the directory first; this method only adds Git metadata and
-    /// deliberately does not configure a remote or create a commit.
+    /// Initializes a local repository without invoking a shell, and commits once so
+    /// the branch it names actually exists. Callers create and approve the directory
+    /// first; this method only adds Git metadata and deliberately does not configure
+    /// a remote.
     public func initializeRepository(at directory: URL) async throws -> URL {
         let candidate = directory.standardizedFileURL
         var isDirectory: ObjCBool = false
@@ -390,7 +391,47 @@ public struct WorkspaceGitService: WorkspaceGitInspecting, Sendable {
                 message.isEmpty ? "git init failed for \(candidate.path)" : message
             )
         }
-        return try await repositoryRoot(at: candidate)
+        let root = try await repositoryRoot(at: candidate)
+        try await createRootCommit(at: root)
+        return root
+    }
+
+    /// `git init` names HEAD `main` without creating it: `refs/heads/main` does not
+    /// exist until something is committed. Git is content with that; Byori is not.
+    /// An unborn branch is listed by nothing, can be the start point of nothing, and
+    /// cannot be checked out a second time — so a new project registered fine and
+    /// then refused the next thing the user asked for, with Git's vocabulary rather
+    /// than an explanation.
+    ///
+    /// An empty root commit is the smallest thing that makes the branch real. It
+    /// invents no files: what the project contains is the user's to decide.
+    private func createRootCommit(at repositoryRoot: URL) async throws {
+        var arguments = ["-C", repositoryRoot.path]
+        if await !hasAuthorIdentity(at: repositoryRoot) {
+            // Git refuses to commit with no author, and a project nobody can work
+            // in is worse than a root commit attributed to the tool that made it.
+            // A configured identity always wins over this one.
+            arguments += ["-c", "user.name=Byori", "-c", "user.email=byori@localhost"]
+        }
+        arguments += ["commit", "--allow-empty", "-m", "Initial commit"]
+        let result = await git(arguments, workingDirectory: repositoryRoot.path)
+        guard result.succeeded else {
+            let message = bounded(result.output, limit: 2_048)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw WorkspaceError.gitCommandFailed(
+                "git could not create the first commit in \(repositoryRoot.path)"
+                    + (message.isEmpty ? "" : ": \(message)")
+            )
+        }
+    }
+
+    /// Whether Git can name an author here, whether from configuration or its own
+    /// detection. `git var` answers exactly the question `git commit` will ask.
+    private func hasAuthorIdentity(at repositoryRoot: URL) async -> Bool {
+        await git(
+            ["-C", repositoryRoot.path, "var", "GIT_AUTHOR_IDENT"],
+            workingDirectory: repositoryRoot.path
+        ).succeeded
     }
 
     public func originRemote(at repositoryRoot: URL) async throws -> String? {

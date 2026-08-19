@@ -224,7 +224,7 @@ struct WorkspaceView<TerminalHost: View>: View {
             Button("Cancel", role: .cancel) { model.cancelProjectInitialization() }
         } message: {
             if let request = model.pendingProjectInitialization {
-                Text("\(request.displayName) is not a Git repository. Byori will run git init with a main branch in \(request.folderURL.path), then add it as a trusted project. Existing files stay in place and no remote is added.")
+                Text("\(request.displayName) is not a Git repository. Byori will run git init with a main branch in \(request.folderURL.path), make one empty commit so that branch exists, then add it as a trusted project. Existing files stay in place, uncommitted, and no remote is added.")
             }
         }
     }
@@ -2484,7 +2484,9 @@ private struct NewWorkspaceSourceTreeSheet: View {
                                 .tag(branch.name)
                         }
                     }
-                    if selectableBranches.isEmpty {
+                    // With no refs at all the reason is no commits, not contention,
+                    // and the sheet's validation line says so.
+                    if selectableBranches.isEmpty, !model.availableBranches.isEmpty {
                         Text("Every branch is already checked out. Create a new one instead.")
                             .font(.caption)
                             .foregroundStyle(.secondary)

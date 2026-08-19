@@ -99,6 +99,18 @@ final class WorkspaceInspectionTests: XCTestCase {
                 XCTAssertEqual(command.arguments, ["-C", directory.path, "init", "-b", "main"])
                 return CommandResult(exitCode: 0, output: "Initialized empty Git repository")
             }
+            // The path carries a `;` on purpose: every argument stays a separate
+            // element, including the ones the root commit adds.
+            if command.arguments.contains("GIT_AUTHOR_IDENT") {
+                XCTAssertEqual(command.arguments, ["-C", directory.path, "var", "GIT_AUTHOR_IDENT"])
+                return CommandResult(exitCode: 0, output: "Someone <someone@example.invalid> 0 +0000")
+            }
+            if command.arguments.contains("commit") {
+                XCTAssertEqual(command.arguments, [
+                    "-C", directory.path, "commit", "--allow-empty", "-m", "Initial commit",
+                ])
+                return CommandResult(exitCode: 0, output: "[main (root-commit) abc1234] Initial commit")
+            }
             XCTAssertEqual(command.arguments, ["-C", directory.path, "rev-parse", "--show-toplevel"])
             return CommandResult(exitCode: 0, output: directory.path)
         }
@@ -128,7 +140,10 @@ final class WorkspaceInspectionTests: XCTestCase {
         }
     }
 
-    func testInitializeRealRepositoryCreatesUsableUnbornMainBranch() async throws {
+    /// A new project has to be workable the moment it is registered, and an unborn
+    /// `main` is not: nothing lists it, nothing can start from it, and no second
+    /// checkout can be cut. So initialization commits once.
+    func testInitializeRealRepositoryCreatesABornMainBranch() async throws {
         let directory = temporaryRoot.appendingPathComponent("real-new-project", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         let service = WorkspaceGitService()
@@ -136,14 +151,67 @@ final class WorkspaceInspectionTests: XCTestCase {
         let root = try await service.initializeRepository(at: directory)
         let status = try await service.status(at: root)
         let worktrees = try await service.worktrees(at: root)
+        let branches = try await service.branches(at: root)
 
         XCTAssertEqual(root.path, directory.resolvingSymlinksInPath().standardizedFileURL.path)
         XCTAssertEqual(status.branch, "main")
-        XCTAssertNil(status.headRevision)
-        XCTAssertTrue(status.isClean)
+        XCTAssertNotNil(status.headRevision, "an unborn branch is what this has to avoid")
+        XCTAssertTrue(status.isClean, "the root commit is empty, so nothing is left uncommitted")
         XCTAssertEqual(worktrees.count, 1)
         XCTAssertEqual(worktrees.first?.branch, "main")
         XCTAssertTrue(worktrees.first?.isPrimary == true)
+        XCTAssertEqual(branches.map(\.name), ["main"], "main must be a ref, not just HEAD's name")
+        XCTAssertTrue(branches.first?.isCheckedOut == true)
+    }
+
+    /// The failure this exists to prevent, end to end: cutting a worktree is
+    /// impossible from an unborn HEAD, which is what a second concurrent session
+    /// needs on a project Byori just created.
+    func testANewRepositoryCanImmediatelyTakeAWorktree() async throws {
+        let directory = temporaryRoot.appendingPathComponent("worktree-ready", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        let service = WorkspaceGitService()
+        let root = try await service.initializeRepository(at: directory)
+
+        let created = try await service.addWorktree(
+            repositoryRoot: root,
+            at: temporaryRoot.appendingPathComponent("second-checkout", isDirectory: true),
+            branch: "byori/first-task",
+            creatingFrom: "main"
+        )
+
+        XCTAssertEqual(created.branch, "byori/first-task")
+    }
+
+    /// A machine with no configured Git identity would otherwise fail here, leaving
+    /// exactly the unborn repository this is meant to avoid.
+    func testTheRootCommitFallsBackToByorisIdentityOnlyWhenGitHasNone() async throws {
+        for hasIdentity in [true, false] {
+            let commands = CommandLog()
+            let runner = StubCommandRunner { command in
+                if command.arguments.contains("--show-toplevel") {
+                    return CommandResult(exitCode: 0, output: "/tmp/project")
+                }
+                _ = commands.record(command.arguments)
+                if command.arguments.contains("GIT_AUTHOR_IDENT") {
+                    return hasIdentity
+                        ? CommandResult(exitCode: 0, output: "Someone <someone@example.invalid> 0 +0000")
+                        : CommandResult(exitCode: 128, output: "unable to auto-detect email address")
+                }
+                return CommandResult(exitCode: 0, output: "")
+            }
+            let service = WorkspaceGitService(runner: runner, gitExecutable: "/test/bin/git")
+
+            _ = try await service.initializeRepository(at: temporaryRoot)
+
+            let commit = try XCTUnwrap(commands.recorded.first { $0.contains("commit") })
+            XCTAssertTrue(commit.contains("--allow-empty"), "\(commit)")
+            XCTAssertEqual(
+                commit.contains("user.name=Byori"),
+                !hasIdentity,
+                "a configured identity must be preferred: \(commit)"
+            )
+        }
     }
 
     func testGitWorktreeListParsesPrimaryLinkedDetachedAndFlags() async throws {

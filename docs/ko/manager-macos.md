@@ -42,9 +42,14 @@ Project
 ```
 
 - Project는 사용자가 명시적으로 등록하고 신뢰한 로컬 Git repository다. **새 프로젝트
-  생성…**은 이름을 정한 폴더를 만들고 `main` repository로 초기화한 뒤, remote나 첫 commit을
-  추가하지 않고 등록한다. **폴더 열기…**는 기존 폴더를 모두 선택할 수 있으며, Git
-  repository가 아니면 기존 파일을 그대로 둔 채 `git init`을 실행하기 전에 별도로 확인한다.
+  생성…**은 이름을 정한 폴더를 만들고 `main` repository로 초기화한 뒤 remote 없이 등록한다.
+  초기화는 빈 root commit 하나를 함께 만든다. `git init`은 `main`을 이름만 정하고 만들지는
+  않기 때문이다 — 무엇이든 commit되기 전까지는 목록에 나올 branch도, 다른 branch의 시작점도,
+  worktree를 만들 대상도 없어서 프로젝트가 등록된 직후 다음 동작을 거부하게 된다. 이 commit은
+  파일을 추가하지 않으며(프로젝트에 무엇이 들어갈지는 사용자가 정한다), 사용자의 Git identity를
+  쓰고 Git이 identity를 찾지 못할 때만 Byori 자신의 것으로 대체한다. **폴더 열기…**는 기존
+  폴더를 모두 선택할 수 있으며, Git repository가 아니면 기존 파일을 commit하지 않고 그대로 둔 채
+  `git init`을 실행하기 전에 별도로 확인한다.
 - Source Tree나 Worktree는 코딩 CLI가 실행될 checkout을 나타낸다. 앱은 기존 또는
   새 local branch에 Byori 관리 worktree를 만들 수 있다.
 - Task는 해당 checkout에서 연관된 session을 묶는다.

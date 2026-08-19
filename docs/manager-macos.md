@@ -47,9 +47,13 @@ Project
 
 - A project is an explicitly registered and trusted local Git repository. **Create New Project…**
   creates a named folder, initializes a `main` repository, and registers it without adding a
-  remote or initial commit. **Open Folder…** accepts any existing folder; if it is not already a
-  Git repository, Byori asks for confirmation before running `git init` and keeps existing files
-  in place.
+  remote. Initialization also makes one empty root commit, because `git init` names `main`
+  without creating it: until something is committed there is no branch to list, to start another
+  branch from, or to cut a worktree from, so the project would register and then refuse the next
+  action. The commit adds no files — what the project contains stays the user's decision — and it
+  uses the user's configured Git identity, falling back to Byori's own only when Git has none.
+  **Open Folder…** accepts any existing folder; if it is not already a Git repository, Byori asks
+  for confirmation before running `git init` and keeps existing files in place, uncommitted.
 - A source tree or worktree identifies the checkout in which the coding CLI runs. The
   app can create a Byori-managed worktree for an existing or new local branch.
 - A task groups related sessions for that checkout.
