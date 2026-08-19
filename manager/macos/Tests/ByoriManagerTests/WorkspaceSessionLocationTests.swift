@@ -36,6 +36,29 @@ final class WorkspaceSessionLocationTests: XCTestCase {
         XCTAssertNil(model.newSessionError)
     }
 
+    /// A folder registered before its first commit. The primary is busy, so a second
+    /// session needs a worktree — and Git cannot cut one from an unborn HEAD. Byori's
+    /// own new projects get a root commit, so this is a folder that arrived without
+    /// one, and the sheet has to say that rather than pass Git's refusal through.
+    func testASecondSessionWithoutAnyCommitsNamesWhatIsMissing() async {
+        let dataSource = LocationDataSource(
+            snapshot: makeSnapshot(primaryBusy: true),
+            branches: []
+        )
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+
+        await startSession(in: model, titled: "Review the API")
+
+        XCTAssertTrue(dataSource.createdWorktrees.isEmpty, "there is nothing to branch from")
+        XCTAssertTrue(dataSource.startedRequests.isEmpty)
+        XCTAssertEqual(
+            model.newSessionError,
+            "Byori has no commits yet, so a second checkout cannot be created. "
+                + "Make the first commit, then start the session again."
+        )
+    }
+
     /// Opening the sheet must not create anything: a cancelled sheet that left a
     /// branch and a directory behind would be worse than the button it replaced.
     func testOpeningAndCancellingTheSheetCreatesNothing() async {
@@ -157,9 +180,16 @@ private final class LocationDataSource: WorkspaceDataSource {
     var snapshot: WorkspacePresentationSnapshot
     var createdWorktrees: [CreatedWorktree] = []
     var startedRequests: [WorkspaceSessionLaunchRequest] = []
+    private let listedBranches: [WorkspaceGitBranch]
 
-    init(snapshot: WorkspacePresentationSnapshot) {
+    init(
+        snapshot: WorkspacePresentationSnapshot,
+        branches: [WorkspaceGitBranch] = [
+            WorkspaceGitBranch(name: "main", isRemote: false, isCheckedOut: true),
+        ]
+    ) {
         self.snapshot = snapshot
+        listedBranches = branches
     }
 
     func loadWorkspace() async throws -> WorkspacePresentationSnapshot { snapshot }
@@ -179,9 +209,7 @@ private final class LocationDataSource: WorkspaceDataSource {
         )]
     }
 
-    func branches(projectID: String) async throws -> [WorkspaceGitBranch] {
-        [WorkspaceGitBranch(name: "main", isRemote: false, isCheckedOut: true)]
-    }
+    func branches(projectID: String) async throws -> [WorkspaceGitBranch] { listedBranches }
 
     func createSourceTree(
         projectID: String,

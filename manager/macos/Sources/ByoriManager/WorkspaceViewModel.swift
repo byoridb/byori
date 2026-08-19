@@ -1541,6 +1541,11 @@ final class WorkspaceViewModel: ObservableObject {
     }
 
     var newSourceTreeValidationMessage: String? {
+        // No refs at all means no commits: neither mode can work, and "choose a
+        // branch" from an empty picker explains nothing.
+        if availableBranches.isEmpty {
+            return "This project has no commits yet. Make the first commit, then add a checkout."
+        }
         switch newSourceTreeDraft.mode {
         case .existing:
             guard let selected = selectedExistingBranch else {
@@ -2010,12 +2015,21 @@ final class WorkspaceViewModel: ObservableObject {
         taskTitle: String?
     ) async throws -> String {
         let branches = try await dataSource.branches(projectID: project.id)
+        // A repository with no commits has no branch to start from, and Git cannot
+        // cut a worktree from an unborn HEAD. Byori's own new projects get a root
+        // commit, so this is a folder that arrived without one: name what is
+        // missing instead of passing Git's refusal through.
+        guard let startPoint = branches.first(where: { $0.isCheckedOut })?.name else {
+            throw WorkspaceAdapterError.invalidState(
+                "\(project.name) has no commits yet, so a second checkout cannot be created. "
+                    + "Make the first commit, then start the session again."
+            )
+        }
         let existingNames = Set(branches.filter { !$0.isRemote }.map(\.name))
         let branch = Self.availableBranchName(
             for: taskTitle,
             avoiding: existingNames
         )
-        let startPoint = branches.first { $0.isCheckedOut }?.name
         _ = try await dataSource.createSourceTree(
             projectID: project.id,
             branch: branch,

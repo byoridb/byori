@@ -133,7 +133,8 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 - Use native disclosures and list rows for every hierarchy level.
 - Offer `Create New Project…` and `Open Folder…` from the outline header and actionable empty
   state. Creation shows the resulting path and initializes a local `main` repository without a
-  remote or commit.
+  remote. It commits once, empty, so `main` is a branch and not only HEAD's name: a project that
+  registers and then cannot take a checkout is not a created project. The commit adds no files.
 - Let users select any existing folder. If it is not already in a Git repository, require a
   separate confirmation that names the folder and explains `git init`; never initialize it as a
   side effect of choosing it.
