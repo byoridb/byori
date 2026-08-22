@@ -443,6 +443,11 @@ def _raw_query(ngql, read_only=False):
     """
     if _session["id"] is None:
         _login()
+        # A fresh session has no space pinned. Bootstrap normally does this, but a
+        # login that happens here would otherwise leave the next statement failing
+        # with "No space selected".
+        if _session["ready"]:
+            _post("/api/v1/query", {"session_id": _session["id"], "query": f"USE {SPACE}"})
     payload = {"session_id": _session["id"], "query": ngql}
     if read_only:
         payload["read_only"] = True
@@ -1346,13 +1351,59 @@ QUESTION_STOPWORDS = frozenset({
 
 
 def _question_terms(question):
-    """The words in a question worth searching for, longest first."""
-    words = {
-        word.lower()
-        for word in re.findall(r"[\w./-]{3,}", question)
-        if word.lower() not in QUESTION_STOPWORDS
-    }
+    """The words in a question worth searching for, as written, longest first.
+
+    Case is preserved because the engine's `CONTAINS` is case-sensitive and
+    `toLower()` silently matches nothing, so the variants in `_term_variants` are
+    the only way a lowercase question finds `GETRANGE` in a commit message.
+    """
+    seen = set()
+    words = []
+    for word in re.findall(r"[\w./-]{3,}", question):
+        key = word.lower()
+        if key in QUESTION_STOPWORDS or key in seen:
+            continue
+        seen.add(key)
+        words.append(word)
     return sorted(words, key=len, reverse=True)[:6]
+
+
+def _term_variants(term):
+    """The spellings of one term worth asking the engine for.
+
+    Commit messages shout command names (`GETRANGE`), documents capitalise sentences,
+    and questions are typed in lower case. Three spellings at most, deduplicated.
+    """
+    variants = [term]
+    for candidate in (term.lower(), term.capitalize(),
+                      term.upper() if term.isalpha() and len(term) <= 12 else None):
+        if candidate and candidate not in variants:
+            variants.append(candidate)
+    return variants
+
+
+def _discriminating_terms(terms, nodes):
+    """The question's words that actually separate one memory from another.
+
+    Kept explainable on purpose: a term carried by more than half the candidates is
+    dropped, the rest count as they are. No corpus statistics, no tuning — the point
+    of an answer here is its evidence, and a ranking nobody can explain would
+    undermine it.
+    """
+    candidates = list(nodes)
+    if len(candidates) < 4:
+        return list(terms)
+    kept = []
+    for term in terms:
+        matches = sum(
+            1 for node in candidates
+            if term in (node.get("name") or "").lower()
+            or term in (node.get("body") or "").lower()
+        )
+        if matches * 2 <= len(candidates):
+            kept.append(term)
+    # Everything was common: fall back rather than rank by nothing at all.
+    return kept or list(terms)
 
 
 def _relevance(node, terms):
@@ -1446,12 +1497,16 @@ def tool_why(args):
     terms = [question] + _question_terms(question)
     types = (node_type,) if node_type else NODE_TYPES
     hits = {}
+    # Every term is searched. Stopping once enough candidates had piled up meant the
+    # most specific word in a question could go unasked: "why does GETRANGE behave
+    # this way — was an improvement reverted?" filled up on "improvement" and never
+    # looked for "getrange". Each term contributes a bounded number of candidates
+    # instead, and there are at most a handful of terms.
     for term in terms:
-        for current_type in types:
-            for node in _query_nodes(current_type, text=term, limit=limit * 2):
-                hits.setdefault(node["vid"], node)
-        if len(hits) >= MAX_WHY_CANDIDATES:
-            break
+        for spelling in _term_variants(term):
+            for current_type in types:
+                for node in _query_nodes(current_type, text=spelling, limit=limit * 2):
+                    hits.setdefault(node["vid"], node)
 
     # Relevance decides, adjusted by what kind of thing can answer a "why", then
     # recency. The adjustment is small and one-directional: a module or an entity is
@@ -1460,10 +1515,17 @@ def tool_why(args):
     # three" just because its name contained both words.
     priority = {"decision": 0, "incident": 1, "bug": 2, "task": 3, "concept": 4,
                 "note": 5, "entity": 6, "module": 7}
+    # A word that appears in nearly every candidate tells you nothing: asking "was
+    # an improvement reverted" made every revert score on the word "reverted", and
+    # the one about the command in the question lost to the rest. Terms that common
+    # are dropped from the score rather than left to dilute it.
+    scoring_terms = _discriminating_terms(
+        [term.lower() for term in terms[1:]], hits.values()
+    )
     ranked = sorted(
         hits.values(),
         key=lambda node: (
-            -(_relevance(node, terms[1:]) + WHY_TYPE_WEIGHT.get(node["type"], 0)),
+            -(_relevance(node, scoring_terms) + WHY_TYPE_WEIGHT.get(node["type"], 0)),
             priority.get(node["type"], 9),
             -int(node.get("ts") or 0),
         ),

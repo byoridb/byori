@@ -1277,7 +1277,7 @@ def command_init(args: argparse.Namespace) -> int:
     could traverse. This reads it — deterministically, see cli/archaeology.py —
     and writes what the history states outright.
     """
-    from archaeology import excavate  # noqa: PLC0415 - installed beside this file
+    from archaeology import ArchaeologyError, excavate  # noqa: PLC0415 - installed beside this file
 
     root = repository_root(pathlib.Path(args.path))
     registry = ProjectRegistry(default_byori_home())
@@ -1286,15 +1286,22 @@ def command_init(args: argparse.Namespace) -> int:
     validate_space(space)
 
     print("reading %s" % root)
-    plan = excavate(root, root.name, limit=args.limit)
+    try:
+        plan = excavate(root, root.name, limit=args.limit, max_modules=args.max_modules)
+    except ArchaeologyError as exc:
+        # Reported rather than presented as an empty result: "analyzed 0 commits"
+        # reads like a fact about the repository when it is a fact about the run.
+        raise ByoriError(str(exc))
     stats = plan.stats
 
     print(
-        "\nanalyzed\n  %d commits · %d tracked files · %d merges naming a pull request"
+        "\nanalyzed\n  %d commits · %d tracked files · %d pull requests · "
+        "%d commits traced to one"
         % (
             stats.get("commits_scanned", 0),
             stats.get("tracked_files", 0),
-            stats.get("merge_commits_with_pull_requests", 0),
+            stats.get("merges_with_pull_requests", 0),
+            stats.get("commits_with_a_pull_request", 0),
         )
     )
     print("\ndiscovered")
@@ -1313,6 +1320,16 @@ def command_init(args: argparse.Namespace) -> int:
                 for edge in plan.edges
             ],
         }, ensure_ascii=False, indent=2))
+
+    if stats.get("modules_below_the_cut"):
+        print("  %d more directories were below the module cut (--max-modules)"
+              % stats["modules_below_the_cut"])
+
+    truncated = stats.get("branches_truncated", 0)
+    if truncated:
+        # No silent caps: a branch longer than the walk allows is said out loud.
+        print("  %d merged branches were longer than the walk and were not fully traced"
+              % truncated)
 
     if args.dry_run:
         print("\ndry run: nothing was written to %s" % space)
@@ -1587,6 +1604,10 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument(
         "--limit", type=int, default=2_000,
         help="how many commits to read, newest first (default: 2000)",
+    )
+    init.add_argument(
+        "--max-modules", type=int, default=60,
+        help="how many directories to record as modules, busiest first (default: 60)",
     )
     init.add_argument("--dry-run", action="store_true", help="show what would be written")
     init.add_argument("--json", action="store_true", help="also print the plan as JSON")
