@@ -58,14 +58,20 @@ project's ByoriDB knowledge graph through the Context inspector.
 ## Options
 
 ```sh
-install.sh [--with-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z|latest] [--uninstall]
+install.sh [--no-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z|latest] [--uninstall]
            [--binary PATH] [--assets DIR] [--no-service] [--no-claude] [--no-codex]
 ```
 
-- `--with-hooks` — adds checkpoint reminder hooks to `~/.claude/settings.json`
-  (disabled by default). It appends to the existing `SessionStart`/`PreToolUse`
-  arrays and skips hooks that are already present, so reruns are idempotent. Before
-  changing the file, it creates a `settings.json.bak.<timestamp>` backup. Requires `jq`.
+- `--no-hooks` — skips the checkpoint hooks in `~/.claude/settings.json`. **They are
+  installed by default**: a memory an agent has to remember to look for loses to one
+  already in its context, and every host that ships a file-based memory loads that
+  index automatically. Without the hooks the graph stays connected and empty.
+  The merge appends to the existing `SessionStart`/`PreToolUse` arrays and skips hooks
+  that are already present, so reruns are idempotent; before changing the file it
+  creates a `settings.json.bak.<timestamp>` backup. Requires `jq`.
+  Its own axis: `--no-claude` skips MCP registration and skills, not the hooks,
+  because the app-driven install passes `--no-claude` and its users are the ones who
+  need the reminder. Pass both to leave `~/.claude` untouched.
 - `--tag` — pins the version of Byori assets (MCP, skill, and templates). The default
   is the latest Byori release.
 - `--engine-tag` — which ByoriDB engine release to install. The default is the pinned
