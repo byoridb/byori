@@ -1,0 +1,52 @@
+{
+  "name": "redis — facts about the codebase that are not in the codebase",
+  "repository": "https://github.com/redis/redis",
+  "space": "byori_bench_redis",
+  "how_these_were_chosen": [
+    "Each case asks something the current source cannot answer: whether a change was undone, and which issue or pull request a behaviour came out of. Reading redis at HEAD tells you what the code does; none of these tell you why it is that way.",
+    "The expected evidence is a commit sha, a pull request number or an issue number taken from the repository's own history, so a pass means the answer cited something a reader can open — not that the wording sounded right.",
+    "Run with --baseline. A case the empty graph also passes was answerable from the question itself and does not belong in the suite."
+  ],
+  "cases": [
+    {
+      "question": "why was sendfile removed from redis replication?",
+      "evidence": ["9cf500a3f67e"],
+      "note": "Implemented, then reverted on 2020-06-06. HEAD contains no sendfile, so the code cannot say it was ever tried."
+    },
+    {
+      "question": "was the scan command performance change for matching data type kept?",
+      "evidence": ["7f0a7f0a6931"],
+      "note": "Reverted 2025-01-13; the optimisation is absent from HEAD, which reads the same as never having existed."
+    },
+    {
+      "question": "why does GETRANGE behave the way it does — was an improvement reverted?",
+      "evidence": ["6ceadfb58053"],
+      "note": "PR #12272 landed and was then reverted."
+    },
+    {
+      "question": "what happened to the optimization of memory usage for deferred replies?",
+      "evidence": ["fb732f7a944a"],
+      "note": "Reverted 2020-05-01."
+    },
+    {
+      "question": "why does geohash output 11 characters instead of 10?",
+      "evidence": ["009862ab7eee"],
+      "note": "A change to 10 characters was reverted in 2019, which is why the code shows 11."
+    },
+    {
+      "question": "which pull request fixed the SA_ONSTACK problem under Cygwin?",
+      "evidence": ["PR #1743"],
+      "note": "Issue #232, fixed by 3e0e51dd9fcf."
+    },
+    {
+      "question": "why does redis create a PID file even when running in the foreground?",
+      "evidence": ["PR #2266"],
+      "note": "Issue #463 asked for it; the behaviour is in the code, the reason is not."
+    },
+    {
+      "question": "why is SORT ordered the way it is when called against lists with zero ordering?",
+      "evidence": ["PR #2094"],
+      "note": "Issue #545, fixed by 6c0abc4a0ee1."
+    }
+  ]
+}

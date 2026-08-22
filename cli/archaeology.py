@@ -58,7 +58,7 @@ REVERT_BODY_SHA = re.compile(r"\b(?:This reverts commit|reverts commit)\s+([0-9a
 
 # Files that are a decision by convention rather than by inference.
 DECISION_PATHS = re.compile(
-    r"(^|/)(?:docs?/)?(?:adr|adrs|decisions|rfcs?|design-docs?)/[^/]+\.(?:md|markdown|rst|txt)$"
+    r"(^|/)(?:docs?/)?(?:adr|adrs|[a-z-]*decisions?|rfcs?|design-docs?)/[^/]+\.(?:md|markdown|rst|txt)$"
     r"|(^|/)(?:adr|rfc)-\d+[^/]*\.(?:md|markdown)$"
     r"|(^|/)(?:DESIGN|ARCHITECTURE|DECISIONS|RATIONALE)\.(?:md|markdown|rst|txt)$",
     re.IGNORECASE,
@@ -74,6 +74,15 @@ UNINTERESTING_DIRECTORIES = {
 
 MAX_BODY_CHARS = 1_400
 MAX_EVIDENCE_ITEMS = 4
+# How far a merged branch is followed before the walk gives up and says so.
+MAX_BRANCH_WALK = 2_000
+# Section names an ADR template hands out. A document whose first heading is one of
+# these has not told you its subject yet.
+ADR_SECTION_HEADINGS = frozenset({
+    "context", "background", "decision", "status", "consequences", "consequence",
+    "alternatives", "alternatives considered", "problem", "problem statement",
+    "summary", "abstract", "motivation", "rationale", "options",
+})
 
 
 @dataclasses.dataclass
@@ -129,17 +138,49 @@ def slug(value: str, limit: int = 60) -> str:
     return cleaned[:limit].rstrip("-._") or "x"
 
 
-def _git(root, *arguments: str, timeout: int = 120) -> str:
-    result = subprocess.run(
-        ("git", "-C", str(root)) + arguments,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        errors="replace",
-        timeout=timeout,
-    )
-    return result.stdout if result.returncode == 0 else ""
+class ArchaeologyError(RuntimeError):
+    """A Git command this pass depends on did not run."""
+
+
+def _git(root, *arguments: str, timeout: int = 600, required: bool = True) -> str:
+    """Run one Git command.
+
+    `required` commands raise when Git fails. They used to return an empty string,
+    which turned a partial clone whose fetch failed into "analyzed 0 commits"
+    printed as though nothing had gone wrong — a false fact, reported confidently,
+    which is the failure mode this whole project exists to avoid. Optional lookups
+    (a document's arrival, say) may legitimately find nothing and stay quiet.
+    """
+    try:
+        result = subprocess.run(
+            ("git", "-C", str(root)) + arguments,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        if required:
+            raise ArchaeologyError(
+                "git %s timed out after %ds in %s"
+                % (" ".join(arguments[:2]), timeout, root)
+            )
+        return ""
+    except OSError as exc:
+        if required:
+            raise ArchaeologyError("git could not run: %s" % exc)
+        return ""
+    if result.returncode != 0:
+        if required:
+            detail = (result.stderr or "").strip().splitlines()
+            raise ArchaeologyError(
+                "git %s failed in %s: %s"
+                % (" ".join(arguments[:2]), root, detail[-1] if detail else "exit %d" % result.returncode)
+            )
+        return ""
+    return result.stdout
 
 
 def read_commits(root, limit: int) -> List[Commit]:
@@ -176,46 +217,85 @@ def read_commits(root, limit: int) -> List[Commit]:
     return commits
 
 
-def read_merge_commits(root, limit: int, max_merges: int = 400) -> Dict[str, int]:
-    """Pull request number for every commit a merge brought in.
+def read_merge_commits(root, limit: int) -> Tuple[Dict[str, int], Dict[str, int]]:
+    """Pull request number for every commit a merge brought in, in one pass.
 
-    "Where was this discussed" is a headline of the evidence this pass records, and
-    it lives on the merge commit — but the commits that fixed something are the
-    ones *under* the merge. So each merge that names a pull request is expanded
-    with `rev-list <merge>^1..<merge>^2`, and the merge itself is mapped too.
+    "Where was this discussed" is a headline of the evidence this records, and it
+    lives on the merge commit — but the commit that fixed something is the one
+    *under* the merge. The first version expanded each merge with its own
+    `rev-list`, which meant a cap, and the cap quietly left 329 of 350 nodes in a
+    real repository with no pull request attached.
 
-    One process per merge, capped: on a repository with thousands of merges the
-    newest `max_merges` carry the recent history this pass is about, and the cap is
-    reported in the stats rather than silently applied.
+    So the graph is read once (`%H %P`) and walked here: the mainline is HEAD's
+    first-parent chain, and each merge's second parent is followed away from it
+    until the walk leaves the branch. Deterministic, no extra processes, and the
+    walk is bounded per merge — a branch that is longer than that is reported in the
+    stats rather than silently truncated.
     """
+    raw = _git(root, "log", "-n", str(limit * 3), "--format=%H %P")
+    parents: Dict[str, List[str]] = {}
+    order: List[str] = []
+    for line in raw.splitlines():
+        pieces = line.split()
+        if not pieces:
+            continue
+        parents[pieces[0]] = pieces[1:]
+        order.append(pieces[0])
+    if not order:
+        return {}, {"merges_with_pull_requests": 0, "branches_truncated": 0}
+
+    mainline = set()
+    cursor: Optional[str] = order[0]
+    while cursor and cursor not in mainline:
+        mainline.add(cursor)
+        chain = parents.get(cursor) or []
+        cursor = chain[0] if chain else None
+
+    subjects = _merge_subjects(root, limit)
+    numbers: Dict[str, int] = {}
+    truncated = 0
+    merges = 0
+    for sha, subject in subjects.items():
+        match = PULL_REQUEST.search(subject)
+        if not match:
+            continue
+        merges += 1
+        number = int(match.group(1))
+        numbers.setdefault(sha, number)
+        chain = parents.get(sha) or []
+        if len(chain) < 2:
+            continue
+        # Walk the merged branch away from the mainline. `visited` keeps a branch
+        # that merged another branch from being walked twice.
+        frontier = [chain[1]]
+        visited = set()
+        while frontier:
+            if len(visited) >= MAX_BRANCH_WALK:
+                truncated += 1
+                break
+            current = frontier.pop()
+            if current in visited or current in mainline:
+                continue
+            visited.add(current)
+            numbers.setdefault(current, number)
+            frontier.extend(parents.get(current) or [])
+    return numbers, {
+        "merges_with_pull_requests": merges,
+        "branches_truncated": truncated,
+    }
+
+
+def _merge_subjects(root, limit: int) -> Dict[str, str]:
     fmt = RECORD_SEPARATOR + FIELD_SEPARATOR.join(["%H", "%s"]) + FIELD_SEPARATOR
     raw = _git(root, "log", "--merges", "-n", str(limit), "--format=" + fmt)
-    numbers: Dict[str, int] = {}
-    expanded = 0
+    subjects: Dict[str, str] = {}
     for chunk in raw.split(RECORD_SEPARATOR):
         if not chunk.strip():
             continue
         fields = chunk.split(FIELD_SEPARATOR)
-        if len(fields) < 2:
-            continue
-        match = PULL_REQUEST.search(fields[1])
-        if not match:
-            continue
-        merge_sha = fields[0].strip()
-        number = int(match.group(1))
-        numbers[merge_sha] = number
-        if expanded >= max_merges:
-            continue
-        expanded += 1
-        for line in _git(
-            root, "rev-list", "%s^1..%s^2" % (merge_sha, merge_sha), timeout=30
-        ).splitlines():
-            sha = line.strip()
-            # First merge wins: a commit reachable from two merges was brought in
-            # by the earlier one, and that is the pull request that discussed it.
-            if sha and sha not in numbers:
-                numbers[sha] = number
-    return numbers
+        if len(fields) >= 2:
+            subjects[fields[0].strip()] = fields[1]
+    return subjects
 
 
 def read_tracked_paths(root) -> List[str]:
@@ -228,7 +308,7 @@ def first_commit_for_path(root, path: str) -> Optional[Commit]:
     # No `--reverse -n 1`: Git applies the count before reversing, so that pair
     # asks for "the newest, then reverse it" and finds nothing useful. Take the
     # last line of the additions instead — the oldest add is the arrival.
-    raw = _git(root, "log", "--diff-filter=A", "--format=" + fmt, "--", path)
+    raw = _git(root, "log", "--diff-filter=A", "--format=" + fmt, "--", path, required=False)
     lines = [line for line in raw.splitlines() if line.strip()]
     if not lines:
         return None
@@ -306,6 +386,7 @@ def build_plan(
     merge_pull_requests: Dict[str, int],
     tracked_paths: Sequence[str],
     decision_documents: Sequence[Tuple[str, Optional[Commit]]],
+    max_modules: int = 60,
 ) -> Plan:
     """Assemble nodes and edges from already-gathered Git facts."""
     prefix = slug(repository, limit=24)
@@ -318,7 +399,17 @@ def build_plan(
         for module in owning_modules(commit.paths, modules):
             touched[module].append(commit)
 
-    for path, file_count in sorted(modules.items()):
+    # A monorepo has hundreds of directories; recording all of them buries the
+    # handful that the history actually moves through. Keep the busiest, and say how
+    # many were left out — a silent cut would read as "this project has 60 modules".
+    ranked_modules = sorted(
+        modules.items(),
+        key=lambda item: (-len(touched.get(item[0], [])), -item[1], item[0]),
+    )
+    kept = dict(ranked_modules[:max_modules])
+    plan.stats["modules_below_the_cut"] = max(len(modules) - len(kept), 0)
+
+    for path, file_count in sorted(kept.items()):
         history = touched.get(path, [])
         name = "module:%s-%s" % (prefix, slug(path))
         last = _iso(history[0].timestamp) if history else "not in the scanned range"
@@ -340,6 +431,8 @@ def build_plan(
                     source=("module", name),
                     target=("module", "module:%s-%s" % (prefix, slug(parent))),
                 ))
+
+    modules = kept
 
     # --- issues closed by commits ------------------------------------------
     fixes: Dict[int, List[Commit]] = collections.defaultdict(list)
@@ -416,7 +509,12 @@ def build_plan(
     # --- decisions written down --------------------------------------------
     for path, introduced in decision_documents:
         title, excerpt = read_document_summary(root, path)
-        name = "decision:%s-%s" % (prefix, slug(path.rsplit("/", 1)[-1].rsplit(".", 1)[0]))
+        filename = path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        # Many ADRs open with `## Context` and keep their title in the filename, so
+        # a boilerplate section name is not the decision's name.
+        if not title or title.strip().lower().rstrip(":") in ADR_SECTION_HEADINGS:
+            title = filename.replace("-", " ").replace("_", " ").strip()
+        name = "decision:%s-%s" % (prefix, slug(filename))
         arrival = (
             "added %s in commit %s" % (_iso(introduced.timestamp), introduced.short)
             if introduced else "arrival not found in the scanned range"
@@ -434,11 +532,13 @@ def build_plan(
             ),
         ))
 
+    below_the_cut = plan.stats.get("modules_below_the_cut", 0)
     plan.stats = {
         "commits_scanned": len(commits),
-        "merge_commits_with_pull_requests": len(merge_pull_requests),
+        "modules_below_the_cut": below_the_cut,
+        "commits_with_a_pull_request": len(merge_pull_requests),
         "tracked_files": len(tracked_paths),
-        "modules": len(modules),
+        "modules": len(kept),
         "issues_closed": len(fixes),
         "decision_documents": len(decision_documents),
         "nodes": len(plan.nodes),
@@ -449,13 +549,17 @@ def build_plan(
 
 def read_document_summary(root, path: str) -> Tuple[str, str]:
     """A decision document's title and opening paragraph, quoted not summarised."""
-    raw = _git(root, "show", "HEAD:" + path)
+    raw = _git(root, "show", "HEAD:" + path, required=False)
     if not raw:
         try:
             with open(str(root) + "/" + path, encoding="utf-8", errors="replace") as handle:
                 raw = handle.read()
         except OSError:
             return "", ""
+    # An ADR template's instructions live in HTML comments, and a document written
+    # on that template keeps them. They are guidance for the author, not the
+    # decision, so they are removed before anything is quoted.
+    raw = re.sub(r"<!--.*?-->", "", raw, flags=re.DOTALL)
     lines = raw.splitlines()
     # A doc that opens with `---` starts with YAML frontmatter: metadata about the
     # document, not the decision in it. Reading it as the body produced colour
@@ -490,20 +594,36 @@ def read_document_summary(root, path: str) -> Tuple[str, str]:
     return title, " ".join(paragraph)
 
 
+# `adr000-template.md`, `0000-template.md`, `template.md`: the form an ADR is
+# written on, not a decision anybody made.
+TEMPLATE_DOCUMENT = re.compile(r"(^|/|-|_)(?:template|example|skeleton)s?\.[a-z]+$|0+-?template", re.IGNORECASE)
+
+
 def find_decision_documents(root, paths: Sequence[str], limit: int = 200) -> List[Tuple[str, Optional[Commit]]]:
     found: List[Tuple[str, Optional[Commit]]] = []
     for path in paths:
         if len(found) >= limit:
             break
+        if TEMPLATE_DOCUMENT.search(path):
+            continue
         if DECISION_PATHS.search(path):
             found.append((path, first_commit_for_path(root, path)))
     return found
 
 
-def excavate(root, repository: str, limit: int = 2_000) -> Plan:
+def excavate(root, repository: str, limit: int = 2_000, max_modules: int = 60) -> Plan:
     """Read the repository and return what its history states outright."""
     commits = read_commits(root, limit)
-    merges = read_merge_commits(root, limit)
+    if not commits:
+        raise ArchaeologyError(
+            "no commits were read from %s — an empty or unborn repository, or a "
+            "history this pass could not walk" % root
+        )
+    merges, merge_stats = read_merge_commits(root, limit)
     paths = read_tracked_paths(root)
     documents = find_decision_documents(root, paths)
-    return build_plan(root, repository, commits, merges, paths, documents)
+    plan = build_plan(
+        root, repository, commits, merges, paths, documents, max_modules=max_modules
+    )
+    plan.stats.update(merge_stats)
+    return plan

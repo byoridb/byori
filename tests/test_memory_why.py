@@ -66,12 +66,14 @@ class MemoryWhyTests(unittest.TestCase):
             self.addCleanup(patch.stop)
 
     def fake_query_nodes(self, node_type=None, name=None, text=None, limit=20):
+        """Case-sensitive on purpose: the engine's `CONTAINS` is, and a stub that
+        folded case hid the bug where a lowercase question never found `GETRANGE`."""
         matches = []
         for record in self.nodes.values():
             if node_type and record["type"] != node_type:
                 continue
-            haystack = (record["name"] + " " + record["body"]).lower()
-            if text and text.lower() not in haystack:
+            haystack = record["name"] + " " + record["body"]
+            if text and text not in haystack:
                 continue
             matches.append(record)
         return matches[:limit]
@@ -167,6 +169,19 @@ class MemoryWhyTests(unittest.TestCase):
             self.why("retry", limit=99)
         with self.assertRaises(ValueError):
             MCP.tool_why({"question": "retry", "unexpected": 1})
+
+
+class CaseSensitivityTests(MemoryWhyTests):
+    """The engine matches case exactly, so the question has to be spelled its way."""
+
+    def test_a_lowercase_question_finds_a_shouted_command_name(self):
+        self.nodes["6"] = node(
+            6, "bug", "bug:getrange-revert",
+            'Reverted: "Improve GETRANGE command behavior (#12272)" (commit 6ceadfb58053)',
+            ts=4_000, state="fixed",
+        )
+        names = [a["name"] for a in self.why("why does getrange behave this way", limit=3)["answers"]]
+        self.assertIn("bug:getrange-revert", names)
 
 
 class QuestionTermTests(unittest.TestCase):
