@@ -169,6 +169,8 @@ chmod 700 "$BYORIDB_HOME" "$BYORIDB_HOME/data" "$BYORIDB_HOME/logs" 2>/dev/null 
 [ -z "$TAG" ] && [ -z "$ASSETS" ] && { TAG="$(resolve_tag)"; [ -n "$TAG" ] || die "could not resolve latest byori release tag"; }
 get "mcp/byoridb_mcp.py" "$WORK/byoridb_mcp.py"
 get "cli/byori.py" "$WORK/byori.py"
+# byori.py imports this from beside itself; `byori init` is broken without it.
+get "cli/archaeology.py" "$WORK/archaeology.py"
 get "templates/run-server.sh" "$WORK/run-server.sh"
 get "templates/run-mcp.sh" "$WORK/run-mcp.sh"
 get "templates/run-byori.sh" "$WORK/run-byori.sh"
@@ -187,7 +189,7 @@ fi
 render "$WORK/run-server.sh" "$WORK/run-server.rendered.sh"
 render "$WORK/run-mcp.sh" "$WORK/run-mcp.rendered.sh"
 render "$WORK/run-byori.sh" "$WORK/run-byori.rendered.sh"
-"$PYTHON" -m py_compile "$WORK/byoridb_mcp.py" "$WORK/byori.py"
+"$PYTHON" -m py_compile "$WORK/byoridb_mcp.py" "$WORK/byori.py" "$WORK/archaeology.py"
 bash -n "$WORK/run-server.rendered.sh" "$WORK/run-mcp.rendered.sh" \
   "$WORK/run-byori.rendered.sh"
 
@@ -245,10 +247,11 @@ log "recorded engine build: ${engine_ref:-local} (${engine_sha:0:12})"
 log "installing MCP server + multi-agent CLI + service wrappers"
 cp "$WORK/byoridb_mcp.py" "$BYORIDB_HOME/byoridb_mcp.py"
 cp "$WORK/byori.py" "$BYORIDB_HOME/bin/byori.py"
+cp "$WORK/archaeology.py" "$BYORIDB_HOME/bin/archaeology.py"
 cp "$WORK/run-server.rendered.sh" "$BYORIDB_HOME/bin/run-server.sh"
 cp "$WORK/run-mcp.rendered.sh" "$BYORIDB_HOME/bin/run-mcp.sh"
 cp "$WORK/run-byori.rendered.sh" "$BYORIDB_HOME/bin/byori"
-chmod 644 "$BYORIDB_HOME/bin/byori.py"
+chmod 644 "$BYORIDB_HOME/bin/byori.py" "$BYORIDB_HOME/bin/archaeology.py"
 chmod +x "$BYORIDB_HOME/bin/run-server.sh" "$BYORIDB_HOME/bin/run-mcp.sh" \
   "$BYORIDB_HOME/bin/byori"
 
