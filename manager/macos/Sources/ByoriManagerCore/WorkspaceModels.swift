@@ -9,6 +9,10 @@ public struct WorkspaceProvider: RawRepresentable, Codable, Hashable, Sendable {
 
     public static let claude = WorkspaceProvider(rawValue: "claude")
     public static let codex = WorkspaceProvider(rawValue: "codex")
+    /// A plain login shell rather than a coding CLI. Recorded like any other
+    /// provider so a shell session persists, reattaches, and stops the same way —
+    /// but it is not a writing session: see `WorkspaceSession.isWritingSession`.
+    public static let shell = WorkspaceProvider(rawValue: "shell")
 }
 
 public struct WorkspaceProject: Identifiable, Equatable, Sendable {
@@ -164,6 +168,13 @@ public struct WorkspaceSession: Identifiable, Equatable, Codable, Sendable {
     public let createdAt: Date
     public let startedAt: Date?
     public let endedAt: Date?
+
+    /// Whether this session is an agent writing to the checkout.
+    ///
+    /// A shell is not: it is the terminal a person opens beside their work to run
+    /// `git status` or a build, and refusing it — or pushing the next agent into a
+    /// new worktree because one is open — would make it useless for that.
+    public var isWritingSession: Bool { provider != .shell }
 
     public static func normalizedName(_ value: String) throws -> String {
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)

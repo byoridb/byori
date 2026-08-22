@@ -280,6 +280,15 @@ struct WorkspaceView<TerminalHost: View>: View {
                 stop: { Task { await model.stopSession(session) } },
                 reattach: { Task { await model.reattachSession(session) } },
                 newSession: { Task { await model.prepareNewSession(after: session) } },
+                newTerminal: {
+                    Task {
+                        await model.startShellSession(target: WorkspaceNewSessionTarget(
+                            projectID: lineage.project.id,
+                            sourceTreeID: sourceTree.id,
+                            existingTaskID: nil
+                        ))
+                    }
+                },
                 commandGroups: commandGroups(session),
                 insertTerminalText: { insertTerminalText(session, $0) },
                 terminalHost: terminalHost
@@ -523,6 +532,9 @@ private struct WorkspaceSidebar: View {
                         newSession: { target in
                             Task { await model.prepareNewSession(target: target) }
                         },
+                        newTerminal: { target in
+                            Task { await model.startShellSession(target: target) }
+                        },
                         addSourceTree: { projectID in
                             Task { await model.prepareNewSourceTree(projectID: projectID) }
                         },
@@ -711,6 +723,7 @@ private struct WorkspaceSidebarNode: Identifiable {
 private struct WorkspaceSidebarBranch: View {
     let node: WorkspaceSidebarNode
     let newSession: (WorkspaceNewSessionTarget) -> Void
+    let newTerminal: (WorkspaceNewSessionTarget) -> Void
     let addSourceTree: (String) -> Void
     let requestRemoval: (WorkspaceRemovalRequest) -> Void
     let restoreSourceTree: (WorkspaceHiddenSourceTreeItem) -> Void
@@ -730,6 +743,7 @@ private struct WorkspaceSidebarBranch: View {
                     WorkspaceSidebarBranch(
                         node: child,
                         newSession: newSession,
+                        newTerminal: newTerminal,
                         addSourceTree: addSourceTree,
                         requestRemoval: requestRemoval,
                         restoreSourceTree: restoreSourceTree,
@@ -766,6 +780,7 @@ private struct WorkspaceSidebarBranch: View {
         WorkspaceSidebarRow(
             node: node,
             newSession: newSession,
+            newTerminal: newTerminal,
             addSourceTree: addSourceTree,
             requestRemoval: requestRemoval,
             restoreSourceTree: restoreSourceTree,
@@ -778,6 +793,7 @@ private struct WorkspaceSidebarBranch: View {
 private struct WorkspaceSidebarRow: View {
     let node: WorkspaceSidebarNode
     let newSession: (WorkspaceNewSessionTarget) -> Void
+    let newTerminal: (WorkspaceNewSessionTarget) -> Void
     let addSourceTree: (String) -> Void
     let requestRemoval: (WorkspaceRemovalRequest) -> Void
     let restoreSourceTree: (WorkspaceHiddenSourceTreeItem) -> Void
@@ -890,6 +906,22 @@ private struct WorkspaceSidebarRow: View {
             .accessibilityHint(node.quickSessionDisabledReason ?? quickActionHelp)
         }
 
+        if let quickSessionTarget = node.quickSessionTarget {
+            Button {
+                newTerminal(quickSessionTarget)
+            } label: {
+                // A shell needs no provider, model or flag, so it gets a button
+                // rather than the sheet the agent launch opens.
+                Label("터미널", systemImage: "apple.terminal")
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .disabled(isMutatingWorkspace)
+            .help(terminalActionHelp)
+            .accessibilityHint(terminalActionHelp)
+        }
+
         if hasRowActions {
             Menu {
                 rowActions
@@ -920,6 +952,10 @@ private struct WorkspaceSidebarRow: View {
         if let quickSessionTarget = node.quickSessionTarget {
             Button(quickActionLabel) { newSession(quickSessionTarget) }
                 .disabled(node.quickSessionDisabledReason != nil)
+            // Not disabled by an active writing session: a terminal beside a
+            // running agent is the case this exists for.
+            Button("터미널") { newTerminal(quickSessionTarget) }
+                .disabled(isMutatingWorkspace)
         }
     }
 
@@ -1015,6 +1051,17 @@ private struct WorkspaceSidebarRow: View {
             return "Start a new session for \(task.title)"
         default:
             return quickActionLabel
+        }
+    }
+
+    private var terminalActionHelp: String {
+        switch node.kind {
+        case let .task(task):
+            return "\(task.title)의 체크아웃에서 셸을 엽니다"
+        case let .session(session):
+            return "\(session.displayName)와 같은 체크아웃에서 셸을 엽니다"
+        default:
+            return "이 프로젝트의 체크아웃에서 셸을 엽니다"
         }
     }
 
@@ -1123,6 +1170,7 @@ private struct WorkspaceSessionPane<TerminalHost: View>: View {
     let stop: () -> Void
     let reattach: () -> Void
     let newSession: () -> Void
+    let newTerminal: () -> Void
     let commandGroups: [AgentCommandGroup]
     let insertTerminalText: (String) -> Void
     let terminalHost: (WorkspaceSessionItem) -> TerminalHost
@@ -1176,6 +1224,16 @@ private struct WorkspaceSessionPane<TerminalHost: View>: View {
                     .keyboardShortcut(".", modifiers: .command)
                     .disabled(isStopping)
                     .help("Stop Session")
+
+                    // While an agent runs, the thing most often wanted next to it
+                    // is a shell in the same checkout — git status, a build, a
+                    // quick look. It does not stop or displace the agent.
+                    Button(action: newTerminal) {
+                        Label("터미널", systemImage: "apple.terminal")
+                    }
+                    .labelStyle(.iconOnly)
+                    .help("같은 체크아웃에서 셸 열기")
+                    .accessibilityLabel("Open a shell in this checkout")
                 } else {
                     Divider().frame(height: 18)
                     Button(action: newSession) {

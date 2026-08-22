@@ -689,8 +689,8 @@ final class TerminalSessionController: ObservableObject {
             // The id is what a session records; the display name lives in the
             // provider store, which this layer has no reason to read.
             return "Registered CLI terminal, \(id)"
-        case .systemShellDemo:
-            return "System shell demo terminal"
+        case .systemShell:
+            return "Login shell terminal"
         }
     }
 }
