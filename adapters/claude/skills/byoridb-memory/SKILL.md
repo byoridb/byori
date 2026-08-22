@@ -10,14 +10,40 @@ description: >-
   re-asking. Backed by a graph + bitemporal history, so it also answers "what did
   we know/decide about X as of <past time>". Two layers: quick notes for standalone
   facts, and a typed knowledge-graph ("wiki") for structural knowledge whose value
-  is in its relationships. Complements (does not replace) the file-based project notes.
+  is in its relationships. This is the record for durable project knowledge: when the
+  host also has its own file-based memory, keep the knowledge here and let that store
+  hold pointers at most.
 ---
 
 # ByoriDB Memory
 
 A local, always-on ByoriDB instance is your long-term memory. You reach it through
 the **`byoridb` MCP server** over this project's memory space, which the server
-resolves from the project itself. Both layers below are bootstrapped automatically: on startup the
+resolves from the project itself.
+
+## Where knowledge lives when the host has its own memory
+
+**This graph is the record.** Many hosts ship a file-based memory whose index is loaded
+into context automatically; that convenience is exactly why knowledge ends up there by
+default and this space stays connected but empty. Measured on a real project: twenty notes
+in the host's file store, nothing here.
+
+So: durable knowledge is written **here**. A host's file store may keep a one-line pointer
+("this project's memory is in ByoriDB"), and nothing else worth keeping. Do not maintain the
+same fact in both — two copies drift, and a stale memory is read with the same confidence as
+a true one.
+
+**If both already hold content**, that is a migration, not a steady state:
+1. Read the file store, and write each durable fact here with the right type and edges.
+2. Correct it as you go. Facts that sat in a file for weeks are usually stale in places —
+   fix them rather than importing them verbatim.
+3. Replace the file entries with a pointer, or delete them.
+4. Do not sync the two afterwards.
+
+**If recall here comes back empty** for a project that plainly has history, assume the
+knowledge is in another store and go look, rather than starting a parallel copy. The MCP
+server's startup line reports how many memories this space holds, precisely so an empty one
+is visible. Both layers below are bootstrapped automatically: on startup the
 MCP server migrates the space to the current memory schema (v2 = notes + typed wiki),
 recording the version in the reserved note `byori:schema-version`.
 

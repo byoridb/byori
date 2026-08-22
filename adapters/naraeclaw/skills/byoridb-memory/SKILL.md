@@ -45,6 +45,15 @@ by name in the same pass. Keep expiring claims out of a body ("still on the old 
 filed yet"); record the durable shape instead, or date the sentence. A stale node is read with
 the same confidence as a true one, so it is worse than a missing one.
 
+## This graph is the record
+
+Durable project knowledge belongs here. If this host also keeps its own file-based memory,
+let that store hold a pointer at most: two copies of one fact drift, and a stale memory is
+read with the same confidence as a true one. If both already hold content, migrate to this
+graph once — correcting what has gone stale on the way — and then stop writing to the other.
+If recall here returns nothing for a project that plainly has history, look for the other
+store rather than starting a parallel copy.
+
 ## Keep operational data out
 
 Do not store conversation/session replay, response or embedding caches, tool-result

@@ -23,7 +23,7 @@ jobs:
         run: |
           python -m py_compile cli/byori.py mcp/byoridb_mcp.py scripts/next_release_tag.py \
             scripts/migrate-legacy-memory.py
-          python -m unittest tests/test_cli.py tests/test_mcp_contract.py tests/test_mcp_lifecycle.py tests/test_release_workflow.py tests/test_memory_space.py tests/test_install_engine_tag.py
+          python -m unittest tests/test_cli.py tests/test_mcp_contract.py tests/test_mcp_lifecycle.py tests/test_release_workflow.py tests/test_memory_space.py tests/test_install_engine_tag.py tests/test_install_hooks.py
 
   smoke:
     name: Engine contract smoke
@@ -37,7 +37,7 @@ jobs:
       # Which engine release the installer decides to install, with curl stubbed:
       # this job owns installer behaviour, and the decision is what changed.
       - name: Test installer engine-tag resolution
-        run: python3 -m unittest tests/test_install_engine_tag.py
+        run: python3 -m unittest tests/test_install_engine_tag.py tests/test_install_hooks.py
 
       - name: Test multi-agent CLI
         run: python3 -m unittest tests/test_cli.py

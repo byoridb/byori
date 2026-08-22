@@ -55,13 +55,19 @@ ByoriDB 지식 그래프를 공유한다.
 ## 옵션
 
 ```sh
-install.sh [--with-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z|latest] [--uninstall]
+install.sh [--no-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z|latest] [--uninstall]
            [--binary PATH] [--assets DIR] [--no-service] [--no-claude] [--no-codex]
 ```
 
-- `--with-hooks` — 체크포인트 reminder 훅을 `~/.claude/settings.json`에 추가(기본은 안 함).
-  기존 `SessionStart`/`PreToolUse` 배열에 append하며 이미 같은 hook이 있으면 건너뛴다
-  (재실행 idempotent). 변경 전 `settings.json.bak.<timestamp>` 백업을 자동 생성한다. `jq` 필요.
+- `--no-hooks` — 체크포인트 훅을 `~/.claude/settings.json`에 넣지 않는다. **기본은 설치**다.
+  에이전트가 "찾아봐야 하는" 메모리는 이미 컨텍스트에 있는 메모리에게 진다 — 호스트가
+  제공하는 파일 기반 메모리는 색인이 매 세션 자동 로드되기 때문이다. 훅이 없으면 그래프는
+  연결만 된 채 비어 있게 된다. 기존 `SessionStart`/`PreToolUse` 배열에 append하며 이미 같은
+  hook이 있으면 건너뛴다(재실행 idempotent). 변경 전 `settings.json.bak.<timestamp>` 백업을
+  자동 생성한다. `jq` 필요.
+  독립 축이다 — `--no-claude`는 MCP 등록과 스킬만 건너뛰고 훅은 건너뛰지 않는다. 앱이 실행하는
+  설치가 `--no-claude`를 넘기고, 그 사용자들이 바로 이 reminder가 필요한 사람들이기 때문이다.
+  `~/.claude`를 전혀 건드리지 않으려면 두 옵션을 함께 넘긴다.
 - `--tag` — byori 자산(MCP/스킬/템플릿) 버전 고정(기본: 최신 byori 릴리스).
 - `--engine-tag` — 설치할 ByoriDB 엔진 릴리스(기본: 이 byori 버전과 함께 검증된 고정 태그).
   `latest`를 주면 최신 엔진 릴리스를 조회해 설치한다 — macOS 앱의 설치 버튼이 이 방식이다.

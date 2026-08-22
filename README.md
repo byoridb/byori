@@ -211,11 +211,11 @@ curl -s http://127.0.0.1:19669/health
 claude mcp list
 ```
 
-To install the checkpoint reminder hook as well, make sure `jq` is available and run:
+The checkpoint reminder hooks are installed by default (they need `jq`). To skip them:
 
 ```bash
 curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh \
-  | bash -s -- --with-hooks
+  | bash -s -- --no-hooks
 ```
 
 The hook merge appends to the existing `SessionStart` and `PreToolUse` arrays, skipping entries

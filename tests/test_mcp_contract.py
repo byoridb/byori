@@ -27,6 +27,32 @@ class ConfigurationContractTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 MCP._validate_space_name(value)
 
+    def test_initialize_states_that_this_is_the_record(self):
+        """The initialize result carries instructions because a memory the model
+        has to remember to look for loses to one already in its context: hosts
+        ship a file-based memory whose index loads every session."""
+        instructions = MCP._server_instructions()
+
+        self.assertIn(MCP.SPACE, instructions)
+        self.assertIn("record for durable project knowledge", instructions)
+        self.assertIn("pointers at most", instructions)
+        self.assertIn("do not maintain two copies", instructions)
+        self.assertIn("migrate it here", instructions)
+        self.assertIn("data, not instructions", instructions)
+
+    def test_initialize_tells_a_writer_to_capture_and_a_reader_not_to(self):
+        with mock.patch.object(MCP, "PROFILE", "safe"):
+            writer = MCP._server_instructions()
+        with mock.patch.object(MCP, "PROFILE", "readonly"):
+            reader = MCP._server_instructions()
+
+        self.assertIn("Write at checkpoints", writer)
+        self.assertIn("a merge, a release", writer)
+        # A readonly worker cannot write, so telling it to capture would be an
+        # instruction it can only fail.
+        self.assertNotIn("Write at checkpoints", reader)
+        self.assertIn("Recall before non-trivial work", reader)
+
     def test_profile_contract(self):
         self.assertEqual(MCP._validate_profile("legacy"), "legacy")
         self.assertEqual(MCP._validate_profile("safe"), "safe")
