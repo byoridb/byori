@@ -6,8 +6,14 @@
 #
 #   curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh | bash
 #
-# Options: --with-hooks --tag vX.Y.Z --engine-tag vX.Y.Z|latest --uninstall
+# Options: --no-hooks --tag vX.Y.Z --engine-tag vX.Y.Z|latest --uninstall
 #          --binary PATH --assets DIR --no-service --no-claude --no-codex
+#   --no-hooks   skip the Claude checkpoint hooks (installed by default: they are
+#                what makes the memory graph present in a session instead of
+#                something the agent has to remember to look for). Its own axis:
+#                --no-claude skips MCP registration and skills, not these, because
+#                the app-driven install passes --no-claude and its users are the
+#                ones who need the reminder. Pass both to leave ~/.claude alone.
 #   --tag        pins the byori asset version (default: latest byori release)
 #   --engine-tag ByoriDB engine release to install: a tag, or `latest` to resolve
 #                the newest engine release (default: the validated pinned tag)
@@ -31,7 +37,7 @@ MEMORY_SKILL_NAME="byoridb-memory"
 DESIGN_SKILL_NAME="byori-design"
 
 TAG=""; ENGINE_TAG="${BYORI_ENGINE_TAG:-$ENGINE_TAG_DEFAULT}"
-WITH_HOOKS=0; UNINSTALL=0; BINARY=""; ASSETS=""; NO_SERVICE=0; NO_CLAUDE=0; NO_CODEX=0
+WITH_HOOKS=1; UNINSTALL=0; BINARY=""; ASSETS=""; NO_SERVICE=0; NO_CLAUDE=0; NO_CODEX=0
 
 c_blue=$'\033[34m'; c_red=$'\033[31m'; c_dim=$'\033[2m'; c_off=$'\033[0m'
 log()  { printf '%s==>%s %s\n' "$c_blue" "$c_off" "$*"; }
@@ -41,7 +47,8 @@ need() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --with-hooks) WITH_HOOKS=1 ;;
+    --with-hooks) WITH_HOOKS=1 ;;   # accepted for compatibility; now the default
+    --no-hooks)   WITH_HOOKS=0 ;;
     --uninstall)  UNINSTALL=1 ;;
     --no-service) NO_SERVICE=1 ;;
     --no-claude)  NO_CLAUDE=1 ;;
@@ -393,8 +400,13 @@ else
   warn "codex CLI not found — skipped Codex wiring (connect later: codex mcp add byoridb -- $BYORIDB_HOME/bin/run-mcp.sh)"
 fi
 
-# 9) hooks (opt-in)
-if [ "$NO_CLAUDE" != 1 ] && [ "$WITH_HOOKS" = 1 ]; then
+# 9) hooks
+#
+# On by default. A memory the agent has to remember to look for loses to one that
+# is already in its context: hosts ship a file-based memory whose index loads every
+# session, so without these hooks the graph stays connected and empty. The merge
+# below is additive and idempotent, and it backs the file up first.
+if [ "$WITH_HOOKS" = 1 ]; then
   if command -v jq >/dev/null 2>&1; then
     settings="${HOME}/.claude/settings.json"; mkdir -p "${HOME}/.claude"
     [ -f "$settings" ] || echo '{}' > "$settings"
