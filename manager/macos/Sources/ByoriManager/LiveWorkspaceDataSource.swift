@@ -70,11 +70,13 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         let isManaged: Bool
     }
 
-    /// One of the two ways a session can be started, resolved once so the launch
-    /// path never has to re-derive it from a raw string.
+    /// How a session can be started, resolved once so the launch path never has
+    /// to re-derive it from a raw string.
     private enum ResolvedProvider {
         case builtIn(AgentKind)
         case custom(CustomAgentProvider)
+        /// A plain login shell. Byori installs no CLI for it and passes no model.
+        case shell
     }
 
     private var coreProjects: [String: ByoriManagerCore.WorkspaceProject] = [:]
@@ -298,7 +300,23 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
                 ]
             )
         }
-        return builtIn + custom
+        // A plain login shell. Offered last: it is the answer to "I just need a
+        // terminal here", not a coding provider competing with the CLIs.
+        let shell = WorkspaceProviderOption(
+            id: ByoriManagerCore.WorkspaceProvider.shell.rawValue,
+            displayName: "터미널",
+            systemImage: "apple.terminal",
+            availability: .available,
+            models: [
+                WorkspaceModelOption(
+                    id: Self.cliDefaultModelID,
+                    displayName: "로그인 셸",
+                    detail: "SHELL이 가리키는 셸을 이 체크아웃에서 로그인 셸로 실행합니다",
+                    availability: .available
+                ),
+            ]
+        )
+        return builtIn + custom + [shell]
     }
 
     func registerProject(at repositoryURL: URL) async throws {
@@ -645,7 +663,9 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         // Nothing else may start a session: an unknown id must not fall through
         // to some default executable.
         let resolvedProvider: ResolvedProvider
-        if let agent = AgentKind(rawValue: request.providerID) {
+        if request.providerID == ByoriManagerCore.WorkspaceProvider.shell.rawValue {
+            resolvedProvider = .shell
+        } else if let agent = AgentKind(rawValue: request.providerID) {
             resolvedProvider = .builtIn(agent)
         } else if let custom = await customProviders.provider(id: request.providerID) {
             resolvedProvider = .custom(custom)
@@ -826,6 +846,15 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
                 environmentOverrides: environment,
                 additionalArguments: additionalArguments
             )
+        case .shell:
+            // Extra arguments are dropped rather than appended: they would become
+            // argv for a login shell, which is a different and surprising act
+            // from passing flags to a CLI.
+            return try launchFactory.systemShell(
+                workingDirectory: workingDirectory,
+                sessionID: terminalID,
+                environmentOverrides: environment
+            )
         }
     }
 
@@ -869,7 +898,9 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         }
 
         let resolvedProvider: ResolvedProvider
-        if let agent = AgentKind(rawValue: session.provider.rawValue) {
+        if session.provider == .shell {
+            resolvedProvider = .shell
+        } else if let agent = AgentKind(rawValue: session.provider.rawValue) {
             resolvedProvider = .builtIn(agent)
         } else if let custom = await customProviders.provider(id: session.provider.rawValue) {
             resolvedProvider = .custom(custom)

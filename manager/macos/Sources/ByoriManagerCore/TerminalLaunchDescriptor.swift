@@ -1,14 +1,15 @@
 import Foundation
 
 /// Identifies what a retained terminal session launches. A system shell is
-/// deliberately a separate demo target so a missing coding CLI can never
-/// silently fall back to an unrestricted shell.
+/// deliberately its own target so a missing coding CLI can never silently fall
+/// back to an unrestricted shell: a shell session only ever exists because
+/// someone asked for one.
 public enum TerminalLaunchTarget: Equatable, Sendable {
     case codingAgent(AgentKind)
     /// A CLI the user registered. Carries the provider id so a session started
     /// this way is never mistaken for a built-in provider.
     case customAgent(String)
-    case systemShellDemo
+    case systemShell
 }
 
 /// Records whether a session intentionally follows the vendor CLI's current
@@ -218,27 +219,49 @@ public struct TerminalLaunchDescriptorFactory {
         )
     }
 
-    /// Creates an explicit local-shell demo. This API is never called as a
-    /// fallback from `codingAgent`.
-    public func systemShellDemo(
+    /// Creates an explicit login-shell session. Never called as a fallback from
+    /// `codingAgent`: a shell exists here only because it was asked for.
+    ///
+    /// `executable` defaults to the user's own shell so the session behaves like
+    /// the terminal they already use — same prompt, same aliases — and falls back
+    /// to `/bin/zsh` (the macOS default) when `SHELL` names nothing runnable.
+    public func systemShell(
         workingDirectory: URL,
         sessionID: UUID = UUID(),
-        executable: URL = URL(fileURLWithPath: "/bin/zsh"),
+        executable: URL? = nil,
         environmentOverrides: [String: String] = [:]
     ) throws -> TerminalLaunchDescriptor {
         let directory = try validateDirectory(workingDirectory)
-        let shell = try validateExecutable(executable)
+        let shell = try validateExecutable(executable ?? resolvedDefaultShell())
         let environment = try makeEnvironment(overrides: environmentOverrides)
 
         return TerminalLaunchDescriptor(
             id: sessionID,
-            target: .systemShellDemo,
+            target: .systemShell,
             modelSelection: nil,
             executable: shell,
+            // A login shell, so the profile that defines the user's prompt, PATH
+            // and aliases is the one this session runs under.
             arguments: ["-l"],
             environment: environment,
             workingDirectory: directory
         )
+    }
+
+    /// The user's `SHELL` when it points at something runnable, else `/bin/zsh`.
+    ///
+    /// Falls back rather than failing: a session the user asked for should not be
+    /// refused because `SHELL` names a shell that is no longer installed.
+    func resolvedDefaultShell() -> URL {
+        let fallback = URL(fileURLWithPath: "/bin/zsh")
+        guard let configured = baseEnvironment["SHELL"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            configured.hasPrefix("/"),
+            !configured.contains("\0"),
+            fileManager.isExecutableFile(atPath: configured) else {
+            return fallback
+        }
+        return URL(fileURLWithPath: configured)
     }
 
     /// Extra flags are handed to the CLI as separate `argv` entries and never go

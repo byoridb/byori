@@ -184,18 +184,49 @@ final class TerminalLaunchDescriptorTests: XCTestCase {
         }
     }
 
-    func testSystemShellRequiresExplicitDemoFactory() throws {
+    func testSystemShellIsItsOwnTargetAndCarriesNoModel() throws {
         let shell = try makeExecutable(named: "demo-zsh")
         let factory = TerminalLaunchDescriptorFactory(paths: paths, environment: [:])
 
-        let descriptor = try factory.systemShellDemo(
+        let descriptor = try factory.systemShell(
             workingDirectory: workingDirectory,
             executable: shell
         )
 
-        XCTAssertEqual(descriptor.target, .systemShellDemo)
+        XCTAssertEqual(descriptor.target, .systemShell)
         XCTAssertNil(descriptor.model)
         XCTAssertEqual(descriptor.arguments, ["-l"])
+        XCTAssertEqual(descriptor.executable.lastPathComponent, "demo-zsh")
+    }
+
+    /// A terminal opened from Byori should behave like the terminal the user
+    /// already has — same prompt, same aliases — so it runs their own shell.
+    func testSystemShellDefaultsToTheUsersShell() throws {
+        let shell = try makeExecutable(named: "fish")
+        let factory = TerminalLaunchDescriptorFactory(
+            paths: paths,
+            environment: ["SHELL": shell.path]
+        )
+
+        let descriptor = try factory.systemShell(workingDirectory: workingDirectory)
+
+        XCTAssertEqual(descriptor.executable.resolvingSymlinksInPath().path,
+                       shell.resolvingSymlinksInPath().path)
+    }
+
+    /// `SHELL` naming a shell that is gone must not refuse a session the user
+    /// asked for; the macOS default takes over.
+    func testSystemShellFallsBackWhenTheConfiguredShellIsUnusable() throws {
+        for value in ["/nonexistent/fish", "fish", ""] {
+            let factory = TerminalLaunchDescriptorFactory(
+                paths: paths,
+                environment: ["SHELL": value]
+            )
+
+            let descriptor = try factory.systemShell(workingDirectory: workingDirectory)
+
+            XCTAssertEqual(descriptor.executable.path, "/bin/zsh", "SHELL=\(value)")
+        }
     }
 
     func testRejectsUnsafeModelAndEnvironment() throws {

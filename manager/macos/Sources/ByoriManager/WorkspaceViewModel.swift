@@ -242,8 +242,11 @@ struct WorkspaceSourceTreeItem: Identifiable, Hashable {
     var workingState: WorkspaceWorkingTreeStatus
     var tasks: [WorkspaceTaskItem]
 
+    /// Whether an agent is writing in this checkout. A running shell does not
+    /// count: it is the terminal a person keeps beside their work, and treating it
+    /// as a writer would block the next agent or push it into a new worktree.
     var hasActiveWritingSession: Bool {
-        tasks.lazy.flatMap(\.sessions).contains(where: { $0.state.isActive })
+        tasks.lazy.flatMap(\.sessions).contains { $0.state.isActive && $0.isWritingSession }
     }
 }
 
@@ -356,7 +359,15 @@ struct WorkspaceSessionItem: Identifiable, Hashable {
         return normalizedName
     }
 
-    var launchSelectionDisplayName: String { "\(providerName) · \(modelName)" }
+    var launchSelectionDisplayName: String {
+        isWritingSession ? "\(providerName) · \(modelName)" : providerName
+    }
+
+    /// A shell session is not an agent writing in the checkout. Kept on the item
+    /// so the presentation layer does not have to know the provider id.
+    var isWritingSession: Bool {
+        providerID != ByoriManagerCore.WorkspaceProvider.shell.rawValue
+    }
 
     var hasCustomName: Bool {
         guard let name else { return false }
@@ -1729,6 +1740,103 @@ final class WorkspaceViewModel: ObservableObject {
             isStartingSession = false
             newSessionError = error.localizedDescription
         }
+    }
+
+    /// Opens a plain login shell, with no sheet and nothing to fill in.
+    ///
+    /// A terminal is not a launch to configure — there is no provider, model or
+    /// flag to choose — so asking would be four decisions for a thing that has
+    /// one shape. It runs in the checkout the target names (an agent's own
+    /// checkout when started from its task), is recorded like any other session
+    /// so it survives quitting Byori and reattaches, and does not count as a
+    /// writing session, so it never blocks an agent or forces a worktree.
+    func startShellSession(target requestedTarget: WorkspaceNewSessionTarget? = nil) async {
+        guard !isStartingSession else { return }
+        let resolved: (project: WorkspaceProjectItem, sourceTree: WorkspaceSourceTreeItem?, task: WorkspaceTaskItem?)?
+        if let requestedTarget {
+            resolved = newSessionTarget(matching: requestedTarget)
+        } else {
+            resolved = newSessionTarget()
+        }
+        guard let target = resolved else {
+            alert = WorkspaceAlert(
+                title: "터미널을 열 수 없습니다",
+                message: "먼저 프로젝트를 선택해 주세요."
+            )
+            return
+        }
+
+        isStartingSession = true
+        defer { isStartingSession = false }
+
+        // A shell wants the checkout the user is looking at, not a fresh worktree:
+        // it is where their files and their build already are. Only when no
+        // checkout exists at all does the ordinary resolution run.
+        let sourceTreeID: String
+        if let sourceTree = target.sourceTree ?? target.project.sourceTrees.first {
+            sourceTreeID = sourceTree.id
+        } else {
+            do {
+                sourceTreeID = try await resolvedSessionSourceTreeID(
+                    projectID: target.project.id,
+                    existingTaskID: target.task?.id,
+                    taskTitle: Self.shellTaskTitle
+                )
+            } catch {
+                alert = WorkspaceAlert(
+                    title: "터미널을 열 수 없습니다",
+                    message: error.localizedDescription
+                )
+                return
+            }
+        }
+
+        // Reuse the shell task of that checkout when the caller named no task, so
+        // opening a terminal five times does not leave five tasks behind.
+        let existingTaskID = target.task?.id
+            ?? existingShellTaskID(projectID: target.project.id, sourceTreeID: sourceTreeID)
+
+        let request = WorkspaceSessionLaunchRequest(
+            projectID: target.project.id,
+            sourceTreeID: sourceTreeID,
+            existingTaskID: existingTaskID,
+            newTaskTitle: existingTaskID == nil ? Self.shellTaskTitle : nil,
+            sessionName: Self.shellSessionName,
+            providerID: ByoriManagerCore.WorkspaceProvider.shell.rawValue,
+            modelChoice: .cliDefault,
+            contextDepth: contextDepth,
+            additionalArguments: []
+        )
+
+        do {
+            let result = try await dataSource.startSession(request)
+            upsert(result)
+            selection = .session(result.session.id)
+            await loadInspector()
+        } catch {
+            alert = WorkspaceAlert(
+                title: "터미널을 열지 못했습니다",
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    static let shellTaskTitle = "터미널"
+    private static let shellSessionName = "터미널"
+
+    /// The open shell task in that checkout, if there is one.
+    private func existingShellTaskID(projectID: String, sourceTreeID: String) -> String? {
+        projects
+            .first { $0.id == projectID }?
+            .sourceTrees
+            .first { $0.id == sourceTreeID }?
+            .tasks
+            .first { task in
+                task.title == Self.shellTaskTitle
+                    && task.status.allowsNewSession
+                    && task.sessions.allSatisfy { !$0.isWritingSession }
+            }?
+            .id
     }
 
     /// Reopens a terminal onto a session still running under tmux.
