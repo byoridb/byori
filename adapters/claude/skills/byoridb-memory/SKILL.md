@@ -55,6 +55,10 @@ Prefer the validated structured surface:
   the server validates its canonical name and derives its stable VID.
 - **`memory_link(action?, relation, source, target)`** — create/update or delete a validated edge.
 - **`memory_read(type?, name?, text?, limit?, include_links?)`** — read normalized notes/wiki nodes.
+- **`memory_why(question, type?, limit?)`** — ask *why* something is the way it is. The server
+  assembles the answer: the decision or incident, what caused it, what it superseded and what
+  superseded it, plus the commits/PRs/documents it cites. Each answer is labelled
+  `evidence-backed` or `unsourced`, and `stale` when something superseded it.
 - **`memory_query_read(ngql)`** — one validated read-only traversal or temporal query.
 - **`memory_delete(...)` / `memory_export(...)`** — explicit maintenance operations.
 
@@ -226,6 +230,9 @@ to its transferable shape, or drop it.
 
 ## When to RECALL
 
+- **For a why/how-come question, use `memory_why`** — it returns the causal shape and the
+  evidence, and marks a superseded answer stale. Assembling that from `memory_read` by hand is
+  where a summary quietly drops the supersession and answers with last year's decision.
 - **At the start of a non-trivial task or work phase** — `memory_recall` for notes,
   and `memory_read(include_links=true)` or `memory_query_read` to traverse the wiki around the relevant
   module/topic. Pull prior decisions, known bugs, and past
