@@ -8,6 +8,7 @@ The CLI is intentionally dependency-free.  It keeps volatile orchestration state
 import argparse
 import asyncio
 import contextlib
+import dataclasses
 import datetime as dt
 import fcntl
 import hashlib
@@ -1152,6 +1153,190 @@ def command_provider_list(args: argparse.Namespace) -> int:
     return 0
 
 
+class MemoryWriter:
+    """Writes a plan through the MCP implementation rather than around it.
+
+    Going through `tool_wiki_upsert`/`tool_link` means canonical names, VIDs,
+    relation rules and the schema migration are the server's, not a second
+    implementation here that could disagree with it. Re-running is safe: a
+    canonical name updates its node instead of adding another.
+    """
+
+    def __init__(self, space: str, byoridb_home: pathlib.Path):
+        self.space = validate_space(space)
+        self.byoridb_home = byoridb_home.expanduser().resolve()
+        self.module = self._load_module()
+
+    def _load_module(self):
+        candidates = [
+            self.byoridb_home / "byoridb_mcp.py",
+            pathlib.Path(__file__).resolve().parents[1] / "mcp" / "byoridb_mcp.py",
+        ]
+        source = next((path for path in candidates if path.is_file()), None)
+        if source is None:
+            raise ByoriError(
+                "ByoriDB MCP runtime not found; install Byori before running init"
+            )
+        loaded = read_runtime_env(self.byoridb_home / "env")
+        previous: Dict[str, Optional[str]] = {}
+        for key, value in loaded.items():
+            previous[key] = os.environ.get(key)
+            os.environ[key] = value
+        for key, value in (
+            ("BYORIDB_MEMORY_SPACE", self.space),
+            # Writing needs the full tool surface; `safe` still hides the
+            # unrestricted raw-query escape hatch, which init never needs.
+            ("BYORIDB_MCP_PROFILE", "safe"),
+        ):
+            previous[key] = os.environ.get(key)
+            os.environ[key] = value
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "byoridb_mcp_for_init_%s" % uuid.uuid4().hex, source
+            )
+            if spec is None or spec.loader is None:
+                raise ByoriError("could not load ByoriDB MCP runtime: %s" % source)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        except ByoriError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - report the runtime, not a traceback
+            raise ByoriError("could not initialize the ByoriDB client: %s" % exc)
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        return module
+
+    def write(self, plan) -> Dict[str, int]:
+        written = {"nodes": 0, "edges": 0, "failed": 0}
+        for node in plan.nodes:
+            payload: Dict[str, Any] = {
+                "type": node.type,
+                "name": node.name,
+                "body": node.body,
+            }
+            if node.state is not None:
+                payload["state"] = node.state
+            if node.resolved is not None:
+                payload["resolved"] = node.resolved
+            try:
+                self.module.tool_wiki_upsert(payload)
+                written["nodes"] += 1
+            except Exception as exc:  # noqa: BLE001 - one bad node must not stop the run
+                written["failed"] += 1
+                print("skipped %s: %s" % (node.name, exc), file=sys.stderr)
+        # Edges come second: both endpoints have to exist first, which is also
+        # why a failed node simply costs its edges rather than the whole run.
+        names = {node.name for node in plan.nodes}
+        for edge in plan.edges:
+            if edge.source[1] not in names or edge.target[1] not in names:
+                continue
+            try:
+                self.module.tool_link({
+                    "relation": edge.relation,
+                    "source": {"type": edge.source[0], "name": edge.source[1]},
+                    "target": {"type": edge.target[0], "name": edge.target[1]},
+                })
+                written["edges"] += 1
+            except Exception as exc:  # noqa: BLE001
+                written["failed"] += 1
+                print(
+                    "skipped %s --%s--> %s: %s"
+                    % (edge.source[1], edge.relation, edge.target[1], exc),
+                    file=sys.stderr,
+                )
+        return written
+
+
+def read_runtime_env(path: pathlib.Path) -> Dict[str, str]:
+    """BYORIDB_* values from the installed runtime's env file."""
+    values: Dict[str, str] = {}
+    if not path.exists():
+        return values
+    try:
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key.startswith("BYORIDB_"):
+                values[key] = value
+    except OSError as exc:
+        raise ByoriError("could not read %s: %s" % (path, exc))
+    return values
+
+
+def command_init(args: argparse.Namespace) -> int:
+    """Build a starting graph out of the repository's own history.
+
+    An empty graph is why Byori used to take weeks to become useful: the history
+    that explains the code was already in the clone, just not in a form anything
+    could traverse. This reads it — deterministically, see cli/archaeology.py —
+    and writes what the history states outright.
+    """
+    from archaeology import excavate  # noqa: PLC0415 - installed beside this file
+
+    root = repository_root(pathlib.Path(args.path))
+    registry = ProjectRegistry(default_byori_home())
+    project = registry.find(root)
+    space = args.space or (project or {}).get("space") or memory_space_for_root(root)
+    validate_space(space)
+
+    print("reading %s" % root)
+    plan = excavate(root, root.name, limit=args.limit)
+    stats = plan.stats
+
+    print(
+        "\nanalyzed\n  %d commits · %d tracked files · %d merges naming a pull request"
+        % (
+            stats.get("commits_scanned", 0),
+            stats.get("tracked_files", 0),
+            stats.get("merge_commits_with_pull_requests", 0),
+        )
+    )
+    print("\ndiscovered")
+    for node_type, count in plan.counts_by_type().items():
+        print("  %-9s %d" % (node_type, count))
+    print("  %-9s %d" % ("relations", len(plan.edges)))
+
+    if args.json:
+        print(json.dumps({
+            "root": str(root),
+            "space": space,
+            "stats": stats,
+            "nodes": [dataclasses.asdict(node) for node in plan.nodes],
+            "edges": [
+                {"relation": edge.relation, "source": list(edge.source), "target": list(edge.target)}
+                for edge in plan.edges
+            ],
+        }, ensure_ascii=False, indent=2))
+
+    if args.dry_run:
+        print("\ndry run: nothing was written to %s" % space)
+        return 0
+    if not plan.nodes:
+        print("\nnothing to write: no history in this repository named an issue, a "
+              "revert, or a decision document")
+        return 0
+
+    writer = MemoryWriter(space, default_byoridb_home())
+    written = writer.write(plan)
+    print(
+        "\nwrote %d memories and %d relations into %s%s"
+        % (
+            written["nodes"],
+            written["edges"],
+            space,
+            "" if not written["failed"] else " (%d skipped, see above)" % written["failed"],
+        )
+    )
+    print("ask an agent why something is the way it is; the evidence is in each memory.")
+    return 0
+
+
 def command_project_add(args: argparse.Namespace) -> int:
     registry = ProjectRegistry(default_byori_home())
     project, created = registry.add(pathlib.Path(args.path), args.space)
@@ -1392,6 +1577,20 @@ def build_parser() -> argparse.ArgumentParser:
     provider_list = provider_commands.add_parser("list", help="list provider availability")
     provider_list.add_argument("--json", action="store_true")
     provider_list.set_defaults(handler=command_provider_list)
+
+    init = commands.add_parser(
+        "init",
+        help="build a starting project graph from this repository's history",
+    )
+    init.add_argument("path", nargs="?", default=".")
+    init.add_argument("--space", help="write into this memory space instead of the project's")
+    init.add_argument(
+        "--limit", type=int, default=2_000,
+        help="how many commits to read, newest first (default: 2000)",
+    )
+    init.add_argument("--dry-run", action="store_true", help="show what would be written")
+    init.add_argument("--json", action="store_true", help="also print the plan as JSON")
+    init.set_defaults(handler=command_init)
 
     project = commands.add_parser("project", help="manage trusted projects")
     project_commands = project.add_subparsers(dest="project_command", required=True)
