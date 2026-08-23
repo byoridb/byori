@@ -197,6 +197,19 @@ struct WorkspacePendingProjectInitialization: Identifiable, Equatable {
     }
 }
 
+/// A project that was just added and whose graph is empty.
+///
+/// The offer is made here because this is the one moment the user is certainly
+/// looking: they just pointed Byori at a repository and are waiting to see what it
+/// does with it. Waiting for them to find the Context tab meant the product's whole
+/// point stayed invisible on the first run.
+struct WorkspaceProjectMemoryOffer: Identifiable, Equatable {
+    let projectID: String
+    let projectName: String
+
+    var id: String { projectID }
+}
+
 struct WorkspaceNewProjectDraft: Equatable {
     var name = ""
     var parentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
@@ -802,6 +815,8 @@ final class WorkspaceViewModel: ObservableObject {
     /// that started it can show progress instead of looking ignored.
     @Published private(set) var isBuildingProjectMemory = false
     @Published private(set) var lastProjectMemorySummary: String?
+    /// Set right after a repository is added, when its graph turns out to be empty.
+    @Published private(set) var projectMemoryOffer: WorkspaceProjectMemoryOffer?
     @Published private(set) var isRefreshing = false
     @Published private(set) var isRegisteringProject = false
     @Published private(set) var pendingProjectInitialization: WorkspacePendingProjectInitialization?
@@ -1222,6 +1237,7 @@ final class WorkspaceViewModel: ObservableObject {
             case let .gitRepository(repositoryURL):
                 try await dataSource.registerProject(at: repositoryURL)
                 await load(force: true)
+                await offerProjectMemory(for: repositoryURL)
             case let .requiresInitialization(directoryURL):
                 pendingProjectInitialization = WorkspacePendingProjectInitialization(
                     folderURL: directoryURL
@@ -1759,6 +1775,41 @@ final class WorkspaceViewModel: ObservableObject {
     /// the moment someone wonders why there is nothing there. The pass is
     /// deterministic and every memory it writes carries the commit, pull request or
     /// document it came from, so this is not the app inventing project knowledge.
+    /// Selects a freshly added repository, opens the Context tab on it, and offers to
+    /// read its history — but only when the graph really is empty.
+    ///
+    /// A project that already has memories is never asked: re-adding a repository
+    /// should not read as "start over". Nothing is offered when the read failed
+    /// either, because `byori init` needs the same engine that just did not answer.
+    private func offerProjectMemory(for repositoryURL: URL) async {
+        let wanted = repositoryURL.standardizedFileURL.path
+        guard let project = projects.first(where: {
+            $0.repositoryURL.standardizedFileURL.path == wanted
+        }) else { return }
+
+        selection = .project(project.id)
+        inspectorTab = .context
+        await loadInspector()
+        guard case .ready = contextPhase,
+              contextSnapshot?.items.isEmpty ?? true,
+              selection == .project(project.id) else { return }
+        projectMemoryOffer = WorkspaceProjectMemoryOffer(
+            projectID: project.id,
+            projectName: project.name
+        )
+    }
+
+    func declineProjectMemoryOffer() {
+        projectMemoryOffer = nil
+    }
+
+    func acceptProjectMemoryOffer() async {
+        guard let offer = projectMemoryOffer else { return }
+        projectMemoryOffer = nil
+        select(.project(offer.projectID))
+        await buildProjectMemory()
+    }
+
     func buildProjectMemory() async {
         guard !isBuildingProjectMemory, let project = selectedLineage?.project else { return }
         isBuildingProjectMemory = true
@@ -1968,9 +2019,7 @@ final class WorkspaceViewModel: ObservableObject {
     }
 
     private func loadInspector() async {
-        guard phase == .ready,
-              let lineage = selectedLineage,
-              let sourceTree = lineage.sourceTree else {
+        guard phase == .ready, let lineage = selectedLineage else {
             inspectorRequestToken = UUID()
             contextRequestToken = UUID()
             inspectorSnapshot = nil
@@ -1980,61 +2029,97 @@ final class WorkspaceViewModel: ObservableObject {
             return
         }
 
-        let request = WorkspaceInspectorRequest(
+        let token = UUID()
+        inspectorRequestToken = token
+        // Files and Git describe a checkout, so they need one named. A project row
+        // does not name one, and inventing a checkout for it would show files that
+        // are not what the selection means.
+        let inspectorTask: Task<WorkspaceInspectorSnapshot, Error>?
+        if let sourceTree = lineage.sourceTree {
+            let request = inspectorRequest(for: lineage, sourceTree: sourceTree)
+            inspectorPhase = .loading
+            inspectorTask = Task { try await dataSource.loadInspector(request) }
+        } else {
+            inspectorSnapshot = nil
+            inspectorPhase = .idle
+            inspectorTask = nil
+        }
+
+        let contextToken = UUID()
+        contextRequestToken = contextToken
+        let contextTask: Task<WorkspaceContextSnapshot, Error>?
+        if let sourceTree = contextSourceTree(for: lineage) {
+            let request = inspectorRequest(for: lineage, sourceTree: sourceTree)
+            contextPhase = .loading
+            contextTask = Task { try await dataSource.loadContext(request) }
+        } else {
+            contextSnapshot = nil
+            contextPhase = .idle
+            contextTask = nil
+        }
+
+        if let inspectorTask {
+            do {
+                let snapshot = try await inspectorTask.value
+                guard inspectorRequestToken == token else { return }
+                inspectorSnapshot = snapshot
+                inspectorPhase = .ready
+            } catch {
+                guard inspectorRequestToken == token else { return }
+                inspectorSnapshot = nil
+                inspectorPhase = .failed(error.localizedDescription)
+            }
+        }
+
+        if let contextTask {
+            do {
+                let snapshot = try await contextTask.value
+                guard contextRequestToken == contextToken else { return }
+                contextSnapshot = snapshot
+                contextPhase = .ready
+            } catch {
+                guard contextRequestToken == contextToken else { return }
+                contextSnapshot = nil
+                contextPhase = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    private func inspectorRequest(
+        for lineage: WorkspaceLineage,
+        sourceTree: WorkspaceSourceTreeItem
+    ) -> WorkspaceInspectorRequest {
+        WorkspaceInspectorRequest(
             projectID: lineage.project.id,
             sourceTreeID: sourceTree.id,
             taskID: lineage.task?.id,
             sessionID: lineage.session?.id,
             contextDepth: contextDepth
         )
-        let token = UUID()
-        let contextToken = UUID()
-        inspectorRequestToken = token
-        contextRequestToken = contextToken
-        inspectorPhase = .loading
-        contextPhase = .loading
-        let inspectorTask = Task { try await dataSource.loadInspector(request) }
-        let contextTask = Task { try await dataSource.loadContext(request) }
+    }
 
-        do {
-            let snapshot = try await inspectorTask.value
-            guard inspectorRequestToken == token else { return }
-            inspectorSnapshot = snapshot
-            inspectorPhase = .ready
-        } catch {
-            guard inspectorRequestToken == token else { return }
-            inspectorSnapshot = nil
-            inspectorPhase = .failed(error.localizedDescription)
-        }
-
-        do {
-            let snapshot = try await contextTask.value
-            guard contextRequestToken == contextToken else { return }
-            contextSnapshot = snapshot
-            contextPhase = .ready
-        } catch {
-            guard contextRequestToken == contextToken else { return }
-            contextSnapshot = nil
-            contextPhase = .failed(error.localizedDescription)
-        }
+    /// Which checkout a context read is made from.
+    ///
+    /// A memory space belongs to the project, not to a checkout, so the project row
+    /// is a perfectly good place to ask what Byori remembers. Gating the read on a
+    /// selected source tree meant clicking a project answered with a spinner that
+    /// never resolved — and the empty-graph affordance behind it was never reached.
+    private func contextSourceTree(for lineage: WorkspaceLineage) -> WorkspaceSourceTreeItem? {
+        lineage.sourceTree
+            ?? lineage.project.sourceTrees.first(where: { $0.kind == .primary })
+            ?? lineage.project.sourceTrees.first
     }
 
     private func loadContext() async {
         guard phase == .ready,
               let lineage = selectedLineage,
-              let sourceTree = lineage.sourceTree else {
+              let sourceTree = contextSourceTree(for: lineage) else {
             contextRequestToken = UUID()
             contextSnapshot = nil
             contextPhase = .idle
             return
         }
-        let request = WorkspaceInspectorRequest(
-            projectID: lineage.project.id,
-            sourceTreeID: sourceTree.id,
-            taskID: lineage.task?.id,
-            sessionID: lineage.session?.id,
-            contextDepth: contextDepth
-        )
+        let request = inspectorRequest(for: lineage, sourceTree: sourceTree)
         let token = UUID()
         contextRequestToken = token
         contextPhase = .loading

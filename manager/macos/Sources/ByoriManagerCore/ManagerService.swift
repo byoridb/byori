@@ -232,23 +232,56 @@ public actor ManagerService {
         commitLimit: Int = 20_000
     ) async throws -> OperationResult {
         try Task.checkCancellation()
-        guard fileManager.isExecutableFile(atPath: paths.byoriCLI.path) else {
-            throw ManagerError.missingResource(paths.byoriCLI.path)
-        }
-        let result = await runner.run(CommandSpec(
-            executable: paths.byoriCLI.path,
-            arguments: [
-                "init", projectRoot.path,
-                "--space", space,
-                "--limit", String(commitLimit),
-            ],
-            environment: commonEnvironment,
-            // A large repository is minutes of Git, not seconds; the summary at the
-            // end is what the caller shows.
-            timeout: 1_800
+        let result = await runner.run(try projectMemoryCommand(
+            projectRoot: projectRoot,
+            space: space,
+            commitLimit: commitLimit
         ))
+        // An installed CLI older than this app answers argparse's usage text, which
+        // says nothing about what to do. Name the cause and the one-step recovery.
+        if result.output.contains("invalid choice: 'init'") {
+            throw ManagerError.verificationFailed(
+                "설치된 Byori CLI가 이 앱보다 오래되어 init을 모릅니다. "
+                + "Settings의 ByoriDB에서 설치/업데이트를 한 번 실행해 주세요."
+            )
+        }
         try require(result, label: "프로젝트 기억 생성")
         return OperationResult(summary: "프로젝트 기억 생성 완료", detail: result.output)
+    }
+
+    /// Prefers the CLI that shipped with this app over the installed one, because
+    /// only the bundled copy is guaranteed to know the subcommands this app calls.
+    func projectMemoryCommand(
+        projectRoot: URL,
+        space: String,
+        commitLimit: Int
+    ) throws -> CommandSpec {
+        let arguments = [
+            "init", projectRoot.path,
+            "--space", space,
+            "--limit", String(commitLimit),
+        ]
+        // A large repository is minutes of Git, not seconds; the summary at the end
+        // is what the caller shows.
+        let timeout: TimeInterval = 1_800
+        if fileManager.fileExists(atPath: paths.bundledByoriCLI.path),
+           let python = paths.executable(named: "python3") {
+            return CommandSpec(
+                executable: python.path,
+                arguments: [paths.bundledByoriCLI.path] + arguments,
+                environment: commonEnvironment,
+                timeout: timeout
+            )
+        }
+        guard fileManager.isExecutableFile(atPath: paths.byoriCLI.path) else {
+            throw ManagerError.missingResource(paths.bundledByoriCLI.path)
+        }
+        return CommandSpec(
+            executable: paths.byoriCLI.path,
+            arguments: arguments,
+            environment: commonEnvironment,
+            timeout: timeout
+        )
     }
 
     /// The bundled installer when the app carries one, otherwise the installer from
