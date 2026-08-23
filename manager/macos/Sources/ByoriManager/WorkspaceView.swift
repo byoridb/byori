@@ -227,6 +227,22 @@ struct WorkspaceView<TerminalHost: View>: View {
                 Text("\(request.displayName) is not a Git repository. Byori will run git init with a main branch in \(request.folderURL.path), make one empty commit so that branch exists, then add it as a trusted project. Existing files stay in place, uncommitted, and no remote is added.")
             }
         }
+        // Asked once, right after the repository is added, and never for a project
+        // that already remembers something.
+        .confirmationDialog(
+            "히스토리로 기억을 만들까요?",
+            isPresented: projectMemoryOfferPresentation,
+            titleVisibility: .visible
+        ) {
+            Button("기억 만들기") {
+                Task { await model.acceptProjectMemoryOffer() }
+            }
+            Button("나중에", role: .cancel) { model.declineProjectMemoryOffer() }
+        } message: {
+            if let offer = model.projectMemoryOffer {
+                Text("\(offer.projectName)의 기억이 비어 있습니다. 커밋이 참조한 이슈, 되돌린 변경, PR, 결정 문서를 읽어 시작 그래프를 만듭니다. 추론은 하지 않고 각 기억은 근거가 된 커밋·문서를 함께 기록하며, 저장소는 읽기만 합니다. 큰 저장소는 몇 분 걸리고, 나중에 Context 탭에서 다시 실행할 수 있습니다.")
+            }
+        }
     }
 
     @ViewBuilder
@@ -381,6 +397,13 @@ struct WorkspaceView<TerminalHost: View>: View {
         Binding(
             get: { model.pendingProjectInitialization != nil },
             set: { if !$0 { model.cancelProjectInitialization() } }
+        )
+    }
+
+    private var projectMemoryOfferPresentation: Binding<Bool> {
+        Binding(
+            get: { model.projectMemoryOffer != nil },
+            set: { if !$0 { model.declineProjectMemoryOffer() } }
         )
     }
 
@@ -1478,14 +1501,18 @@ private struct WorkspaceInspector: View {
 
     @ViewBuilder
     private var inspectorContent: some View {
-        if model.selectedSourceTree == nil {
+        // A memory space belongs to the project, so Context answers from a project
+        // row. Files and Git describe a checkout, so they still need one selected —
+        // requiring one for all three hid this tab exactly where a new project is
+        // clicked first.
+        if model.inspectorTab == .context, model.selectedProject != nil {
+            contextContent
+        } else if model.selectedSourceTree == nil {
             WorkspaceUnavailableView(
                 icon: "sidebar.right",
                 title: "No source tree",
-                detail: "Select a source tree to inspect its files, Git state, and context."
+                detail: "Select a source tree to inspect its files and Git state."
             )
-        } else if model.inspectorTab == .context {
-            contextContent
         } else {
             switch model.inspectorPhase {
             case .idle, .loading:
@@ -1527,7 +1554,7 @@ private struct WorkspaceInspector: View {
     @ViewBuilder
     private var contextContent: some View {
         switch model.contextPhase {
-        case .idle, .loading:
+        case .loading:
             WorkspaceUnavailableView(
                 icon: "cylinder.split.1x2",
                 title: "Loading context",
@@ -1542,7 +1569,10 @@ private struct WorkspaceInspector: View {
                 primaryTitle: "Try Again",
                 primaryAction: { Task { await model.refreshInspector() } }
             )
-        case .ready:
+        // `.idle` means nothing has been read yet, which for a selected project is
+        // the same thing an empty graph is: nothing to show, and one way to fix it.
+        // It used to render as a spinner that never resolved.
+        case .idle, .ready:
             // An empty graph is where someone first wonders what this tab is for, so
             // it is where the answer belongs: the repository's own history, read
             // deterministically, with the commit or document behind every memory.

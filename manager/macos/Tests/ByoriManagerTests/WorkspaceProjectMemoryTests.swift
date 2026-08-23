@@ -65,6 +65,95 @@ final class WorkspaceProjectMemoryTests: XCTestCase {
         XCTAssertNil(model.alert)
     }
 
+    /// Adding a repository is the one moment the user is certainly looking, so it is
+    /// where the offer belongs. Waiting for them to find the Context tab left the
+    /// product's whole point invisible on the first run.
+    func testAddingARepositoryOffersToReadItsHistory() async {
+        let repository = URL(fileURLWithPath: "/tmp/byori", isDirectory: true)
+        let dataSource = ProjectMemoryDataSource(snapshot: WorkspacePresentationSnapshot(projects: []))
+        dataSource.snapshotAfterRegistration = makeSnapshot()
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+
+        await model.addProjectFolder(at: repository)
+
+        XCTAssertEqual(model.projectMemoryOffer?.projectID, "project123")
+        XCTAssertEqual(model.projectMemoryOffer?.projectName, "Byori")
+        // The tab it is about is already open behind the dialog, so declining still
+        // leaves the answer in view.
+        XCTAssertEqual(model.inspectorTab, .context)
+        XCTAssertEqual(model.selection, .project("project123"))
+        XCTAssertTrue(dataSource.builtProjectIDs.isEmpty, "nothing runs until it is accepted")
+    }
+
+    func testAcceptingTheOfferBuildsThatProjectsMemory() async {
+        let repository = URL(fileURLWithPath: "/tmp/byori", isDirectory: true)
+        let dataSource = ProjectMemoryDataSource(snapshot: WorkspacePresentationSnapshot(projects: []))
+        dataSource.snapshotAfterRegistration = makeSnapshot()
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+        await model.addProjectFolder(at: repository)
+
+        await model.acceptProjectMemoryOffer()
+
+        XCTAssertNil(model.projectMemoryOffer)
+        XCTAssertEqual(dataSource.builtProjectIDs, ["project123"])
+    }
+
+    /// Re-adding a repository that already has memories must not read as "start
+    /// over", so a populated graph is never asked.
+    func testAProjectThatAlreadyRemembersSomethingIsNotAsked() async {
+        let repository = URL(fileURLWithPath: "/tmp/byori", isDirectory: true)
+        let dataSource = ProjectMemoryDataSource(snapshot: WorkspacePresentationSnapshot(projects: []))
+        dataSource.snapshotAfterRegistration = makeSnapshot()
+        dataSource.contextItems = [
+            WorkspaceContextItem(
+                id: "1", kind: "decision", title: "decision:use-redb",
+                summary: "Adopt pure-Rust redb.", provenance: "commit 71a98f",
+                updatedAt: nil, tags: []
+            )
+        ]
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+
+        await model.addProjectFolder(at: repository)
+
+        XCTAssertNil(model.projectMemoryOffer)
+    }
+
+    /// `byori init` needs the engine that just failed to answer, so an offer here
+    /// would only produce a second error.
+    func testAFailedContextReadOffersNothing() async {
+        let repository = URL(fileURLWithPath: "/tmp/byori", isDirectory: true)
+        let dataSource = ProjectMemoryDataSource(snapshot: WorkspacePresentationSnapshot(projects: []))
+        dataSource.snapshotAfterRegistration = makeSnapshot()
+        dataSource.contextFailure = WorkspaceAdapterError.invalidState("the engine is not answering")
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+
+        await model.addProjectFolder(at: repository)
+
+        XCTAssertNil(model.projectMemoryOffer)
+    }
+
+    /// A memory space belongs to the project, not to a checkout. Selecting a project
+    /// row used to leave the tab on a spinner that never resolved, which is where the
+    /// empty-graph affordance was supposed to be.
+    func testSelectingAProjectRowReadsItsContext() async {
+        let dataSource = ProjectMemoryDataSource(snapshot: makeSnapshot())
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+
+        model.select(.project("project123"))
+        for _ in 0..<200 where dataSource.contextRequests.isEmpty {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(dataSource.contextRequests.map(\.projectID), ["project123"])
+        // Read from the primary checkout, since a project row names none.
+        XCTAssertEqual(dataSource.contextRequests.map(\.sourceTreeID), ["primary123"])
+    }
+
     private func makeSnapshot() -> WorkspacePresentationSnapshot {
         let sourceTree = WorkspaceSourceTreeItem(
             id: "primary123",
@@ -93,8 +182,13 @@ final class WorkspaceProjectMemoryTests: XCTestCase {
 @MainActor
 private final class ProjectMemoryDataSource: WorkspaceDataSource {
     var snapshot: WorkspacePresentationSnapshot
+    /// What `loadWorkspace` returns once a project has been registered.
+    var snapshotAfterRegistration: WorkspacePresentationSnapshot?
     var builtProjectIDs: [String] = []
     var contextLoads = 0
+    var contextRequests: [WorkspaceInspectorRequest] = []
+    var contextItems: [WorkspaceContextItem] = []
+    var contextFailure: Error?
     var failure: Error?
     var gate = false
     private var continuation: CheckedContinuation<Void, Never>?
@@ -120,7 +214,19 @@ private final class ProjectMemoryDataSource: WorkspaceDataSource {
 
     func loadContext(_ request: WorkspaceInspectorRequest) async throws -> WorkspaceContextSnapshot {
         contextLoads += 1
-        return WorkspaceContextSnapshot(items: [], isTruncated: false)
+        contextRequests.append(request)
+        if let contextFailure { throw contextFailure }
+        return WorkspaceContextSnapshot(items: contextItems, isTruncated: false)
+    }
+
+    func inspectProjectFolder(at folderURL: URL) async throws -> WorkspaceProjectFolderStatus {
+        .gitRepository(folderURL)
+    }
+
+    func registerProject(at repositoryURL: URL) async throws {
+        if let snapshotAfterRegistration {
+            snapshot = snapshotAfterRegistration
+        }
     }
 
     func buildProjectMemory(projectID: String) async throws -> String {

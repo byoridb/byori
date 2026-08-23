@@ -20,6 +20,13 @@ public struct ManagerPaths: Sendable {
     public var serverBinary: URL { byoriHome.appendingPathComponent("bin/byoridb-server") }
     /// The installed multi-agent CLI, which is also where `init` and `doctor` live.
     public var byoriCLI: URL { byoriHome.appendingPathComponent("bin/byori") }
+    /// The CLI carried inside this build.
+    ///
+    /// `bin/byori` is only rewritten when the engine is installed, so an app that
+    /// updated on its own keeps whatever CLI was there before — and a button added
+    /// in this release asks it for a subcommand it has never heard of. The copy that
+    /// shipped with the app always matches the app's own expectations.
+    public var bundledByoriCLI: URL { runtimeRoot.appendingPathComponent("cli/byori.py") }
     /// What the installer recorded about the engine it installed. The binary
     /// itself cannot be asked.
     public var engineManifest: URL { byoriHome.appendingPathComponent("engine.json") }
