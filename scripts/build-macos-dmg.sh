@@ -158,6 +158,7 @@ fi
 [ -f "$REPO_ROOT/mcp/byoridb_mcp.py" ] || die "missing MCP bridge: mcp/byoridb_mcp.py"
 [ -f "$REPO_ROOT/cli/byori.py" ] || die "missing multi-agent CLI: cli/byori.py"
 [ -f "$REPO_ROOT/cli/archaeology.py" ] || die "missing archaeology reader: cli/archaeology.py"
+[ -f "$REPO_ROOT/cli/doctor.py" ] || die "missing doctor checks: cli/doctor.py"
 [ -f "$REPO_ROOT/manager/macos/THIRD_PARTY_NOTICES.md" ] || \
   die "missing third-party notices: manager/macos/THIRD_PARTY_NOTICES.md"
 [ -f "$REPO_ROOT/LICENSE" ] || die "missing project license: LICENSE"
@@ -286,6 +287,7 @@ install -m 755 "$REPO_ROOT/install.sh" "$RUNTIME_DIR/install.sh"
 install -m 644 "$REPO_ROOT/mcp/byoridb_mcp.py" "$RUNTIME_DIR/mcp/byoridb_mcp.py"
 install -m 644 "$REPO_ROOT/cli/byori.py" "$RUNTIME_DIR/cli/byori.py"
 install -m 644 "$REPO_ROOT/cli/archaeology.py" "$RUNTIME_DIR/cli/archaeology.py"
+install -m 644 "$REPO_ROOT/cli/doctor.py" "$RUNTIME_DIR/cli/doctor.py"
 mkdir -p "$RUNTIME_DIR/templates"
 # Package only the runtime contract above. A recursive directory copy could
 # silently include an ignored local file such as templates/.env in a shared DMG.
