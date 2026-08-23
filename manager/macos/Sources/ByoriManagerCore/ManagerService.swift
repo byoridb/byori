@@ -219,6 +219,38 @@ public actor ManagerService {
         return OperationResult(summary: "ByoriDB 설치/업데이트 완료", detail: result.output)
     }
 
+    /// Builds a project's starting memory out of its own Git history.
+    ///
+    /// The graph used to start empty, which meant the first weeks of using Byori
+    /// were spent earning the thing it advertises. The history that explains a
+    /// codebase is already in the clone, so this reads it — `byori init`, whose pass
+    /// is deterministic and records the commit, pull request or document behind every
+    /// memory it writes. Re-running updates rather than duplicating.
+    public func buildProjectMemory(
+        projectRoot: URL,
+        space: String,
+        commitLimit: Int = 20_000
+    ) async throws -> OperationResult {
+        try Task.checkCancellation()
+        guard fileManager.isExecutableFile(atPath: paths.byoriCLI.path) else {
+            throw ManagerError.missingResource(paths.byoriCLI.path)
+        }
+        let result = await runner.run(CommandSpec(
+            executable: paths.byoriCLI.path,
+            arguments: [
+                "init", projectRoot.path,
+                "--space", space,
+                "--limit", String(commitLimit),
+            ],
+            environment: commonEnvironment,
+            // A large repository is minutes of Git, not seconds; the summary at the
+            // end is what the caller shows.
+            timeout: 1_800
+        ))
+        try require(result, label: "프로젝트 기억 생성")
+        return OperationResult(summary: "프로젝트 기억 생성 완료", detail: result.output)
+    }
+
     /// The bundled installer when the app carries one, otherwise the installer from
     /// the latest release. Both ask for the newest engine release.
     func byoriInstallCommand() -> CommandSpec {

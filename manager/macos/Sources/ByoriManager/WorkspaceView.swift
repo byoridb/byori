@@ -535,6 +535,12 @@ private struct WorkspaceSidebar: View {
                         newTerminal: { target in
                             Task { await model.startShellSession(target: target) }
                         },
+                        buildMemory: { projectID in
+                            Task {
+                                model.select(.project(projectID))
+                                await model.buildProjectMemory()
+                            }
+                        },
                         addSourceTree: { projectID in
                             Task { await model.prepareNewSourceTree(projectID: projectID) }
                         },
@@ -724,6 +730,7 @@ private struct WorkspaceSidebarBranch: View {
     let node: WorkspaceSidebarNode
     let newSession: (WorkspaceNewSessionTarget) -> Void
     let newTerminal: (WorkspaceNewSessionTarget) -> Void
+    let buildMemory: (String) -> Void
     let addSourceTree: (String) -> Void
     let requestRemoval: (WorkspaceRemovalRequest) -> Void
     let restoreSourceTree: (WorkspaceHiddenSourceTreeItem) -> Void
@@ -744,6 +751,7 @@ private struct WorkspaceSidebarBranch: View {
                         node: child,
                         newSession: newSession,
                         newTerminal: newTerminal,
+                        buildMemory: buildMemory,
                         addSourceTree: addSourceTree,
                         requestRemoval: requestRemoval,
                         restoreSourceTree: restoreSourceTree,
@@ -781,6 +789,7 @@ private struct WorkspaceSidebarBranch: View {
             node: node,
             newSession: newSession,
             newTerminal: newTerminal,
+            buildMemory: buildMemory,
             addSourceTree: addSourceTree,
             requestRemoval: requestRemoval,
             restoreSourceTree: restoreSourceTree,
@@ -794,6 +803,7 @@ private struct WorkspaceSidebarRow: View {
     let node: WorkspaceSidebarNode
     let newSession: (WorkspaceNewSessionTarget) -> Void
     let newTerminal: (WorkspaceNewSessionTarget) -> Void
+    let buildMemory: (String) -> Void
     let addSourceTree: (String) -> Void
     let requestRemoval: (WorkspaceRemovalRequest) -> Void
     let restoreSourceTree: (WorkspaceHiddenSourceTreeItem) -> Void
@@ -946,6 +956,10 @@ private struct WorkspaceSidebarRow: View {
     @ViewBuilder
     private var primaryActionMenuItems: some View {
         if let projectID = node.addSourceTreeProjectID {
+            // Reachable without opening the Context tab: someone who already knows
+            // what this does should not have to go looking for the empty state.
+            Button("히스토리로 기억 만들기") { buildMemory(projectID) }
+                .disabled(isMutatingWorkspace)
             Button("Add Source Tree…") { addSourceTree(projectID) }
                 .disabled(isMutatingWorkspace)
         }
@@ -1529,12 +1543,31 @@ private struct WorkspaceInspector: View {
                 primaryAction: { Task { await model.refreshInspector() } }
             )
         case .ready:
-            if let snapshot = model.contextSnapshot {
+            // An empty graph is where someone first wonders what this tab is for, so
+            // it is where the answer belongs: the repository's own history, read
+            // deterministically, with the commit or document behind every memory.
+            if let snapshot = model.contextSnapshot, !snapshot.items.isEmpty {
                 WorkspaceContextInspector(
                     records: snapshot.items,
                     isTruncated: snapshot.isTruncated,
                     depth: model.contextDepth,
                     setDepth: model.setContextDepth
+                )
+            } else if model.selectedLineage?.project != nil {
+                WorkspaceUnavailableView(
+                    icon: "clock.arrow.circlepath",
+                    title: model.isBuildingProjectMemory
+                        ? "히스토리를 읽고 있습니다"
+                        : "이 프로젝트의 기억이 비어 있습니다",
+                    detail: model.isBuildingProjectMemory
+                        ? "커밋·PR·이슈·결정 문서에서 그래프를 만들고 있습니다. 큰 저장소는 몇 분 걸립니다."
+                        : "커밋이 참조한 이슈, 되돌린 변경, PR, 결정 문서로 시작 그래프를 만들 수 있습니다. "
+                          + "추론은 하지 않고, 각 기억은 근거가 된 커밋·문서를 함께 기록합니다.",
+                    showsProgress: model.isBuildingProjectMemory,
+                    primaryTitle: model.isBuildingProjectMemory ? nil : "히스토리로 기억 만들기",
+                    primaryAction: model.isBuildingProjectMemory
+                        ? nil
+                        : { Task { await model.buildProjectMemory() } }
                 )
             } else {
                 WorkspaceUnavailableView(

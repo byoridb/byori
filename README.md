@@ -6,24 +6,36 @@
   <img src="assets/byori-app-icon.png" width="160" alt="Byori app icon">
 </p>
 
-> **The multi-agent coding workspace that remembers your project.**
+> **The memory of your software project.**
+>
+> Git remembers what changed. Byori remembers why.
 
-Run Claude Code and Codex side by side in one native workspace, over a shared graph memory that
-outlives every session.
+Every coding agent forgets. Your project shouldn't.
 
 ```text
-Session 1 — Claude Code
-  ✓ found the bug   ✓ fixed it   ✓ explained why it had to be that way
-
-A month later — new session, maybe a different agent
-  "I have no memory of this project."
-  → re-reads the repository, re-derives the rationale, and still misses
-    everything that was never written down
-
-The same moment, with Byori
-  "I remember. This bug came from decision #42, which superseded #17.
-   Option B was rejected after incident #18."
+$ byori init                       # reads the repository's own history
+analyzed
+  11,814 commits · 1,858 tracked files · 1,042 pull requests
+discovered
+  module 24 · bug 72 · task 64 · decision 19 · relations 453
 ```
+
+```text
+$ ask any agent: "why was sendfile removed from replication?"
+
+without Byori   "I can only see the current implementation. There is no
+                 sendfile code here, so I cannot say whether it ever existed."
+
+with Byori      bug:redis-revert-61074b43   (evidence-backed)
+                Reverted on 2020-06-06: "Implements sendfile for redis."
+                  (commit 9cf500a3f67e)
+                A revert is the history stating the change was wrong; why it
+                was wrong is not in the commit, so it is not recorded here.
+```
+
+**On redis's full history: 8/8 questions answered with the graph, 0/8 without it**, where a pass means
+the answer cited a commit or pull request a reader can open. Ingest took 11 seconds.
+Reproduce it: [`benchmarks/why.py`](benchmarks/why.py).
 
 Byori preserves that chain rather than a pile of summaries:
 
@@ -32,11 +44,20 @@ incident ──caused_by──> bug ──fixed_by──> decision ──affects
                                       └──supersedes──> previous decision
 ```
 
-Vector search recalls a similar paragraph; this recalls the reason. In a dogfood run, a session
-connected to Byori answered five such questions in ≈40 s and ≈$0.43 against ≈125 s and ≈$1.15
-without it, and recovered 20/20 facts that were absent from the code, versus 0/20 unconnected.
-That is one run per condition on a synthetic repository — see the
-[preliminary benchmark](#preliminary-benchmark-dogfood) for what it does and does not show.
+Vector search recalls a similar paragraph; this recalls the reason — and says what it is standing on.
+Every memory is labelled `evidence-backed` or `unsourced`, and a decision that something newer
+replaced comes back marked `stale`, because a memory nobody can check is worth less than one that
+cites a commit, and last year's decision presented as current is worse than no answer.
+
+## What it is made of
+
+| | |
+|---|---|
+| **`byori init`** | Builds the starting graph from Git alone — issue trailers, reverts, pull requests, ADRs, the directory tree. Deterministic: no model, no guessed causes, and the commit or document behind every memory recorded with it. |
+| **`memory_why`** | An MCP tool any agent can call. The *server* assembles the answer — cause, what resolved it, what it superseded, what superseded it, evidence — so a model cannot summarise the evidence away. |
+| **ByoriDB** | The local graph engine underneath: typed causal edges, provenance, bitemporal history, `AS OF`. |
+| **The workspace** | A native macOS app that runs Claude Code, Codex and a plain terminal over per-project memory. It exists so the graph keeps being written; it is not the point. |
+| **`byori doctor`** | Checks the engine, its service, the credential, this project's memory and the agent wiring — and prints the command that fixes whatever failed. |
 
 ## What Byori is
 
@@ -112,6 +133,31 @@ Dependencies flow downward only. ByoriDB knows nothing about Byori; Byori instal
 validated engine release. Raw terminal prompts and transcripts are not stored in ByoriDB.
 
 ## Quick start
+
+### From zero to a project that remembers
+
+```bash
+# 1. install the runtime (engine, MCP server, CLI, skills, checkpoint hooks)
+curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh | bash
+
+# 2. build this project's memory from its own history
+cd ~/code/your-project
+~/.byoridb/bin/byori init
+
+# 3. ask an agent why something is the way it is
+#    (Claude Code and Codex are wired up by the installer)
+
+# whenever something looks wrong
+~/.byoridb/bin/byori doctor
+```
+
+`byori init` is deterministic and idempotent: it reads Git, never a model, and re-running updates the
+memories it already wrote instead of duplicating them. `byori doctor` checks the engine, its service,
+the credential, this project's memory and the agent wiring, and prints the command that fixes whatever
+failed.
+
+In the macOS app, the same thing is offered where its absence is visible: a project whose Context tab is
+empty shows **히스토리로 기억 만들기**, and every project row has it in the context menu.
 
 ### Byori macOS app
 
