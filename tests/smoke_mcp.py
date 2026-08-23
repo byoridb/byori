@@ -449,6 +449,9 @@ def main():
     })
     readonly_tools = {
         "memory_recall", "memory_query_read", "memory_read", "memory_export",
+        # Answering "why" reads and traverses; a worker needs it for the recall it
+        # is supposed to do before working.
+        "memory_why",
     }
     discovered = {t["name"] for t in call("tools/list")["tools"]}
     assert discovered == readonly_tools, f"FAIL: readonly tools={discovered}"
@@ -459,6 +462,15 @@ def main():
         )
     text = tool("memory_recall", {"text": marker, "limit": 10})
     assert marker in text, f"FAIL: readonly recall dispatch={text}"
+    # A why answer against the real engine: the shape has to survive a round trip,
+    # not only a unit test with a stubbed graph.
+    why = json.loads(tool("memory_why", {"question": marker, "limit": 3}))
+    assert why["answers"], f"FAIL: why found nothing for {marker}: {why}"
+    first = why["answers"][0]
+    for field in ("type", "name", "body", "confidence", "evidence"):
+        assert field in first, f"FAIL: why answer missing {field}: {first}"
+    assert first["confidence"] in ("evidence-backed", "unsourced"), first["confidence"]
+    print("ok why answer over the real engine")
     proc.kill()
     proc.wait(timeout=5)
     print("ok readonly profile filtering")
