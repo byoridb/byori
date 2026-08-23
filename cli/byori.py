@@ -1354,6 +1354,72 @@ def command_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_doctor(args: argparse.Namespace) -> int:
+    """Check the things that broke in the field, and say what to run.
+
+    Every incident this project had was diagnosable in three commands and cost
+    somebody a detour to find them. They ship as one now.
+    """
+    import doctor  # noqa: PLC0415 - installed beside this file
+
+    byoridb_home = default_byoridb_home()
+    env_values = read_runtime_env(byoridb_home / "env")
+    http = env_values.get("BYORIDB_HTTP", "http://127.0.0.1:19669").rstrip("/")
+    service_kind = "launchd" if sys.platform == "darwin" else "systemd"
+    label = os.environ.get("BYORIDB_LABEL", "com.byoridb.local")
+
+    project_root = None
+    space = args.space
+    if space is None:
+        with contextlib.suppress(ByoriError):
+            project_root = repository_root(pathlib.Path(args.path))
+        if project_root is not None:
+            project = ProjectRegistry(default_byori_home()).find(project_root)
+            space = (project or {}).get("space") or memory_space_for_root(project_root)
+    if space is None:
+        # Nothing to resolve a project from: report on the runtime alone rather
+        # than inventing a space that nobody uses.
+        space = env_values.get("BYORIDB_MEMORY_SPACE", "claude_memory")
+
+    facts = doctor.gather(
+        byoridb_home=byoridb_home,
+        byori_home=default_byori_home(),
+        space=space,
+        http=http,
+        service_label=label,
+        service_kind=service_kind,
+        env_values=env_values,
+        project_root=project_root,
+    )
+    facts.update({"http": http, "service_label": label, "service_kind": service_kind})
+    checks = doctor.judge(facts)
+
+    if args.json:
+        print(json.dumps({
+            "status": doctor.worst(checks),
+            "space": space,
+            "project": str(project_root) if project_root else None,
+            "checks": [dataclasses.asdict(check) for check in checks],
+        }, ensure_ascii=False, indent=2))
+    else:
+        marks = {doctor.OK: "ok  ", doctor.WARN: "warn", doctor.FAIL: "FAIL"}
+        print("byori doctor — %s" % (project_root or byoridb_home))
+        for check in checks:
+            print("  [%s] %-16s %s" % (marks[check.status], check.name, check.detail))
+            if check.fix and check.status != doctor.OK:
+                print("        fix: %s" % check.fix)
+        summary = doctor.worst(checks)
+        print()
+        if summary == doctor.OK:
+            print("everything checks out.")
+        elif summary == doctor.WARN:
+            print("usable, with the warnings above.")
+        else:
+            print("something is broken; the fix lines above are the shortest way back.")
+    # Exit code is for scripts and for the app: warnings are not failures.
+    return 1 if doctor.worst(checks) == doctor.FAIL else 0
+
+
 def command_project_add(args: argparse.Namespace) -> int:
     registry = ProjectRegistry(default_byori_home())
     project, created = registry.add(pathlib.Path(args.path), args.space)
@@ -1594,6 +1660,15 @@ def build_parser() -> argparse.ArgumentParser:
     provider_list = provider_commands.add_parser("list", help="list provider availability")
     provider_list.add_argument("--json", action="store_true")
     provider_list.set_defaults(handler=command_provider_list)
+
+    doctor_command = commands.add_parser(
+        "doctor",
+        help="check the engine, its service, the credential, and this project's memory",
+    )
+    doctor_command.add_argument("path", nargs="?", default=".")
+    doctor_command.add_argument("--space", help="check this memory space instead of the project's")
+    doctor_command.add_argument("--json", action="store_true")
+    doctor_command.set_defaults(handler=command_doctor)
 
     init = commands.add_parser(
         "init",
