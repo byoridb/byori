@@ -39,6 +39,9 @@ protocol WorkspaceDataSource: AnyObject {
     func reattachSession(id: String) async throws -> WorkspaceSessionLaunchResult
     /// Why sessions started now will not outlive the app, or nil when they will.
     func sessionPersistenceWarning() async -> String?
+    /// Builds this project's starting memory from its own Git history, returning
+    /// what was written.
+    func buildProjectMemory(projectID: String) async throws -> String
 }
 
 extension WorkspaceDataSource {
@@ -127,6 +130,10 @@ extension WorkspaceDataSource {
     }
 
     func sessionPersistenceWarning() async -> String? { nil }
+
+    func buildProjectMemory(projectID: String) async throws -> String {
+        throw WorkspaceAdapterError.unsupported("Building project memory is not connected yet.")
+    }
 
 
 }
@@ -791,6 +798,10 @@ final class WorkspaceViewModel: ObservableObject {
     @Published private(set) var inspectorSnapshot: WorkspaceInspectorSnapshot?
     @Published private(set) var contextPhase: WorkspaceInspectorPhase = .idle
     @Published private(set) var contextSnapshot: WorkspaceContextSnapshot?
+    /// Set while `byori init` is reading a project's history, so the affordance
+    /// that started it can show progress instead of looking ignored.
+    @Published private(set) var isBuildingProjectMemory = false
+    @Published private(set) var lastProjectMemorySummary: String?
     @Published private(set) var isRefreshing = false
     @Published private(set) var isRegisteringProject = false
     @Published private(set) var pendingProjectInitialization: WorkspacePendingProjectInitialization?
@@ -1739,6 +1750,28 @@ final class WorkspaceViewModel: ObservableObject {
         } catch {
             isStartingSession = false
             newSessionError = error.localizedDescription
+        }
+    }
+
+    /// Builds this project's memory from its own Git history.
+    ///
+    /// Offered where the absence is visible — an empty Context tab — because that is
+    /// the moment someone wonders why there is nothing there. The pass is
+    /// deterministic and every memory it writes carries the commit, pull request or
+    /// document it came from, so this is not the app inventing project knowledge.
+    func buildProjectMemory() async {
+        guard !isBuildingProjectMemory, let project = selectedLineage?.project else { return }
+        isBuildingProjectMemory = true
+        defer { isBuildingProjectMemory = false }
+        do {
+            let summary = try await dataSource.buildProjectMemory(projectID: project.id)
+            lastProjectMemorySummary = summary
+            await loadContext()
+        } catch {
+            alert = WorkspaceAlert(
+                title: "프로젝트 기억을 만들지 못했습니다",
+                message: error.localizedDescription
+            )
         }
     }
 

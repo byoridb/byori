@@ -858,6 +858,21 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         }
     }
 
+    func buildProjectMemory(projectID: String) async throws -> String {
+        try await operationGate.perform { [self] in
+            guard let project = coreProjects[projectID] else {
+                throw WorkspaceAdapterError.invalidState(
+                    "Refresh the workspace before building this project's memory."
+                )
+            }
+            let result = try await managerService.buildProjectMemory(
+                projectRoot: URL(fileURLWithPath: project.rootPath, isDirectory: true),
+                space: project.memorySpace
+            )
+            return result.detail
+        }
+    }
+
     func reattachSession(id: String) async throws -> WorkspaceSessionLaunchResult {
         try await operationGate.perform { [self] in
             try await reattachSessionLocked(id: id)

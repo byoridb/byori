@@ -6,37 +6,57 @@
   <img src="../../assets/byori-app-icon.png" width="160" alt="Byori 앱 아이콘">
 </p>
 
-> **프로젝트를 기억하는 멀티 에이전트 코딩 워크스페이스.**
+> **당신 소프트웨어 프로젝트의 기억.**
+>
+> Git은 무엇이 바뀌었는지 기억합니다. Byori는 왜 그렇게 됐는지 기억합니다.
 
-Claude Code와 Codex를 하나의 네이티브 워크스페이스에서 나란히 돌리되, 세션이 끝나도 남는
-공유 그래프 메모리 위에서 돌립니다.
+모든 코딩 에이전트는 잊습니다. 프로젝트는 잊으면 안 됩니다.
 
 ```text
-Session 1 — Claude Code
-  ✓ 버그를 찾고   ✓ 고치고   ✓ 왜 그렇게 해야 했는지까지 설명함
-
-한 달 뒤 — 새 세션, 어쩌면 다른 에이전트
-  "이 프로젝트는 처음 봅니다."
-  → 저장소를 다시 읽고, 근거를 다시 유추하고,
-    애초에 코드에 적히지 않은 것은 끝내 놓침
-
-같은 순간, Byori가 있다면
-  "기억합니다. 이 버그는 decision #42에서 왔고, 그 결정이 #17을 대체했습니다.
-   option B는 incident #18 이후에 기각됐습니다."
+$ byori init                       # 저장소의 히스토리를 읽는다
+analyzed
+  11,814 commits · 1,858 tracked files · 1,042 pull requests
+discovered
+  module 24 · bug 72 · task 64 · decision 19 · relations 453
 ```
 
-Byori는 요약 더미가 아니라 이 사슬을 보존합니다.
+```text
+$ 에이전트에게: "sendfile은 왜 replication에서 사라졌어?"
+
+Byori 없이   "현재 구현만 볼 수 있습니다. 여기에 sendfile 코드가 없으니
+              애초에 있었는지도 말할 수 없습니다."
+
+Byori와      bug:redis-revert-61074b43   (evidence-backed)
+             2020-06-06에 되돌림: "Implements sendfile for redis."
+               (commit 9cf500a3f67e)
+             revert는 그 변경이 잘못이었다는 히스토리의 진술이며,
+             왜 잘못이었는지는 커밋에 없으므로 기록하지 않습니다.
+```
+
+**redis 전체 히스토리에서 그래프와 함께 8/8, 빈 그래프로 0/8.** 통과 기준은 답이 열어볼 수 있는
+커밋이나 PR을 인용했는지입니다. ingest는 11초였습니다. 재현: [`benchmarks/why.py`](../../benchmarks/why.py).
+
+Byori는 요약 더미가 아니라 이 사슬을 보존합니다:
 
 ```text
 incident ──caused_by──> bug ──fixed_by──> decision ──affects──> module
                                       └──supersedes──> previous decision
 ```
 
-벡터 검색은 비슷한 문단을 찾아 주지만, 이 구조는 이유를 찾아 줍니다. dogfood 실행에서
-Byori에 연결된 세션은 이런 질문 다섯 개를 ≈40초·≈$0.43에 답했고, 연결하지 않은 세션은
-≈125초·≈$1.15가 들었습니다. 코드에 없는 사실은 연결 시 20/20, 미연결 시 0/20을 복원했습니다.
-합성 저장소에 대한 조건별 1회 실행이며, 무엇을 보여 주고 무엇을 보여 주지 못하는지는
-[예비 벤치마크](#예비-벤치마크-dogfood)를 참고하세요.
+벡터 검색은 비슷한 문단을 찾아 주지만, 이 구조는 이유를 찾아 주고 **무엇에 근거했는지 말합니다.**
+모든 기억은 `evidence-backed` 또는 `unsourced`로 표시되고, 더 새로운 것이 대체한 결정은 `stale`로
+돌아옵니다 — 확인할 수 없는 기억은 커밋을 인용하는 기억보다 값이 낮고, 작년 결정을 현재처럼
+답하는 것은 답이 없는 것보다 나쁘기 때문입니다.
+
+## 무엇으로 이루어져 있나
+
+| | |
+|---|---|
+| **`byori init`** | Git만으로 시작 그래프를 만듭니다 — 이슈 트레일러·revert·PR·ADR·디렉터리 트리. 결정론입니다: 모델도, 추측한 인과도 없고, 각 기억의 근거가 된 커밋·문서를 함께 기록합니다. |
+| **`memory_why`** | 어떤 에이전트든 호출하는 MCP 도구. **서버가** 답을 조립합니다 — 원인, 무엇이 해결했는지, 무엇을 대체했고 무엇에 의해 대체됐는지, 증거. 모델이 증거를 요약으로 지울 자리가 없습니다. |
+| **ByoriDB** | 아래에 있는 로컬 그래프 엔진: 타입 있는 인과 엣지, provenance, bitemporal 히스토리, `AS OF`. |
+| **워크스페이스** | Claude Code·Codex·평범한 터미널을 프로젝트별 기억 위에서 돌리는 macOS 앱. 그래프가 계속 쓰이게 하기 위해 존재하며, 그것이 제품의 핵심은 아닙니다. |
+| **`byori doctor`** | 엔진·서비스·자격증명·이 프로젝트의 기억·에이전트 배선을 점검하고, 실패한 것을 되돌리는 명령을 출력합니다. |
 
 ## Byori는 무엇인가
 
@@ -111,6 +131,31 @@ Byori
 설치·관리합니다. 터미널의 raw prompt와 transcript는 ByoriDB에 저장하지 않습니다.
 
 ## 빠른 시작
+
+### 0에서 기억하는 프로젝트까지
+
+```bash
+# 1. 런타임 설치 (엔진·MCP 서버·CLI·스킬·체크포인트 훅)
+curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh | bash
+
+# 2. 이 프로젝트의 기억을 히스토리로 만든다
+cd ~/code/your-project
+~/.byoridb/bin/byori init
+
+# 3. 에이전트에게 왜 그런지 물어본다
+#    (설치기가 Claude Code와 Codex를 연결해 둡니다)
+
+# 뭔가 이상할 때
+~/.byoridb/bin/byori doctor
+```
+
+`byori init`은 결정론이고 재실행이 안전합니다 — Git만 읽고 모델은 쓰지 않으며, 이미 쓴 기억은
+중복이 아니라 갱신됩니다. `byori doctor`는 엔진·서비스·자격증명·이 프로젝트의 기억·에이전트
+배선을 점검하고 실패한 것을 되돌리는 명령을 출력합니다.
+
+macOS 앱에서는 그 부재가 보이는 자리에 같은 기능이 있습니다 — Context 탭이 빈 프로젝트에
+**히스토리로 기억 만들기**가 나타나고, 모든 프로젝트 행의 컨텍스트 메뉴에도 있습니다.
+
 
 ### Byori macOS 앱
 

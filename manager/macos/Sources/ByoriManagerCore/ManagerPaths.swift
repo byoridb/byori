@@ -18,6 +18,8 @@ public struct ManagerPaths: Sendable {
     public var managerHome: URL { home.appendingPathComponent(".byori-manager", isDirectory: true) }
     public var backups: URL { managerHome.appendingPathComponent("backups", isDirectory: true) }
     public var serverBinary: URL { byoriHome.appendingPathComponent("bin/byoridb-server") }
+    /// The installed multi-agent CLI, which is also where `init` and `doctor` live.
+    public var byoriCLI: URL { byoriHome.appendingPathComponent("bin/byori") }
     /// What the installer recorded about the engine it installed. The binary
     /// itself cannot be asked.
     public var engineManifest: URL { byoriHome.appendingPathComponent("engine.json") }
