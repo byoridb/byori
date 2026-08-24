@@ -55,6 +55,8 @@ class InstallEngineTagTests(unittest.TestCase):
         self.root = pathlib.Path(self.temporary.name)
         self.stub_directory = self.root / "stub"
         self.stub_directory.mkdir()
+        self.home = self.root / "home"
+        self.home.mkdir()
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -67,6 +69,11 @@ class InstallEngineTagTests(unittest.TestCase):
         environment.update(
             PATH=f"{self.stub_directory}{os.pathsep}{environment['PATH']}",
             BYORIDB_HOME=str(self.root / "byoridb-home"),
+            # $HOME too, not only $BYORIDB_HOME. A run that gets past the engine step
+            # links `~/.local/bin/byori`, and with the real home that pointed the
+            # developer's own command at this test's temporary directory — measured,
+            # after the downgrade cases below made the installer reach that step.
+            HOME=str(self.home),
             RESOLVED_TAG=resolved_tag,
         )
         # PIPESTATUS is not asserted: the point of each run is the message on the
@@ -145,6 +152,21 @@ class InstallEngineTagTests(unittest.TestCase):
         self.assertIn("keeping installed engine v9.9.9", output)
         self.assertIn("--allow-engine-downgrade", output)
         self.assertNotIn("downloading engine", output)
+
+    def test_the_cli_link_obeys_the_home_it_was_given(self):
+        """Skipping the engine step lets the run reach the `~/.local/bin` link, which
+        is how this was found: with the real `$HOME`, a test run repointed the
+        developer's own `byori` at its own temporary directory, and the command
+        stopped working once the directory was cleaned up."""
+        self.install_engine_record("v9.9.9")
+
+        self.install(RESOLVING_CURL)
+
+        link = self.home / ".local" / "bin" / "byori"
+        self.assertTrue(link.is_symlink(), "the installer must link the CLI")
+        self.assertEqual(
+            os.readlink(link), str(self.root / "byoridb-home" / "bin" / "byori")
+        )
 
     def test_a_downgrade_is_available_when_it_is_asked_for(self):
         self.install_engine_record("v9.9.9")
