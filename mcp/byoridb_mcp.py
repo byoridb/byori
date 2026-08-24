@@ -115,6 +115,14 @@ MUTATING_STATEMENTS = {
 SCHEMA_VERSION = 2
 SCHEMA_VERSION_NAME = "byori:schema-version"
 
+# How a login throttle (HTTP 429) is absorbed. The engine's failure budgets are
+# 60-second windows, so one is worth waiting out in-process; a 300-second lockout is
+# not — an MCP client that slept that long would look hung, and each poll keeps the
+# source key hot. Above the ceiling the wait is reported instead of taken.
+LOGIN_THROTTLE_CEILING = 75.0
+LOGIN_THROTTLE_MAX_WAITS = 2
+LOGIN_THROTTLE_DEFAULT_WAIT = 60.0
+
 # Additive-only statements (IF NOT EXISTS): re-running against a space that
 # already carries the dogfood PoC schema is safe, existing tags keep their
 # shape. `status` is an nGQL reserved word — properties use state/resolved.
@@ -368,8 +376,88 @@ def _post(path, payload, timeout=30):
         return resp.status, json.loads(resp.read().decode() or "{}")
 
 
+class LoginRefused(RuntimeError):
+    """401/403 on `POST /api/v1/session`: the credential was evaluated and rejected.
+
+    Retrying spends the account's failure budget and walks it toward a lockout, so
+    nothing retries this. It is its own type because the caller that has to know the
+    difference is not always the one that made the request.
+    """
+
+    def __init__(self, status, detail):
+        self.status = status
+        super().__init__(
+            f"authentication failed (HTTP {status}); check BYORIDB_ROOT_PASSWORD. "
+            "Not retried, so the account is not driven into a lockout. "
+            f"Engine said: {_short(detail)}"
+        )
+
+
+class LoginThrottled(RuntimeError):
+    """429 on `POST /api/v1/session`: nothing was checked.
+
+    Either a failure budget is spent (20/60s per account, 60/60s per source) or the
+    account is locked for 300s after five consecutive failures. A throttled attempt
+    is not counted as a failure, so waiting and retrying the *same* password is the
+    correct response — the opposite of `LoginRefused`.
+    """
+
+    def __init__(self, seconds, detail):
+        self.seconds = seconds
+        super().__init__(
+            f"the engine is refusing logins for another {seconds:.0f}s: a failure "
+            "budget is spent, or the account is locked. The password was not checked, "
+            "so the same one will work after the wait. "
+            f"Engine said: {_short(detail)}"
+        )
+
+
+def _short(detail, limit=200):
+    text = " ".join(str(detail or "").split())
+    return text[:limit] if text else "(no detail)"
+
+
+def _retry_after_seconds(error, detail):
+    """How long the engine says to wait.
+
+    It sets `Retry-After` on every 429 and repeats the window in the body ("Retry in
+    299s."), so the body is the fallback for a proxy that dropped the header. An
+    HTTP-date `Retry-After` is deliberately not parsed: the number in the body is
+    more useful than the zero a failed conversion would produce.
+    """
+    header = None
+    headers = getattr(error, "headers", None)
+    if headers is not None:
+        try:
+            header = headers.get("Retry-After")
+        except AttributeError:
+            header = None
+    if header:
+        try:
+            seconds = float(str(header).strip())
+            if seconds >= 0:
+                return seconds
+        except ValueError:
+            pass
+    match = re.search(r"retry in (\d+(?:\.\d+)?)\s*s", str(detail or ""), re.IGNORECASE)
+    if match:
+        return float(match.group(1))
+    return LOGIN_THROTTLE_DEFAULT_WAIT
+
+
 def _login():
-    status, body = _post("/api/v1/session", {"username": USER, "password": PASSWORD})
+    try:
+        status, body = _post("/api/v1/session", {"username": USER, "password": PASSWORD})
+    except urllib.error.HTTPError as e:
+        # Classified here rather than at each call site: a 429 used to escape
+        # `_raw_query` as a raw urllib exception because that one path did not
+        # remember to look at the status.
+        detail = e.read().decode(errors="replace") if hasattr(e, "read") else str(e)
+        if e.code == 429:
+            raise LoginThrottled(_retry_after_seconds(e, detail), detail) from e
+        if e.code in (401, 403):
+            raise LoginRefused(e.code, detail) from e
+        raise
     sid = body.get("session_id")
     if not sid:
         raise RuntimeError(f"login failed (status={status}): {body}")
@@ -458,9 +546,20 @@ def _raw_query(ngql, read_only=False):
         detail = e.read().decode(errors="replace") if hasattr(e, "read") else str(e)
         if _is_session_lost(e.code, detail):
             _login()
-            _post("/api/v1/query", {"session_id": _session["id"], "query": f"USE {SPACE}"})
-            payload["session_id"] = _session["id"]
-            _, body = _post("/api/v1/query", payload)
+            try:
+                _post("/api/v1/query", {"session_id": _session["id"], "query": f"USE {SPACE}"})
+                payload["session_id"] = _session["id"]
+                _, body = _post("/api/v1/query", payload)
+            except urllib.error.HTTPError as retried:
+                # Without this the second attempt's status escaped as a urllib
+                # exception, one layer below every other error this returns.
+                again = (
+                    retried.read().decode(errors="replace")
+                    if hasattr(retried, "read") else str(retried)
+                )
+                raise RuntimeError(
+                    f"query failed after re-login ({retried.code}): {_short(again)}"
+                ) from retried
             return body
         raise RuntimeError(f"query failed ({e.code}): {detail}")
 
@@ -531,6 +630,11 @@ def _ensure_ready():
             _login()
             _raw_query(f"USE {SPACE}")
             version = _schema_version()
+        except (LoginRefused, LoginThrottled) as e:
+            # These already say what happened and what to do. Wrapping them in
+            # "bootstrap it with a writer profile" would blame the wrong thing.
+            _session["id"] = None
+            raise RuntimeError(str(e))
         except Exception as e:
             _session["id"] = None
             raise RuntimeError(
@@ -547,7 +651,14 @@ def _ensure_ready():
         log(f"readonly memory space '{SPACE}' ready (schema v{version})")
         return
     last = None
-    for attempt in range(30):
+    # The 30 attempts exist for a server that has not opened its port yet. A login
+    # throttle is a different thing and gets its own budget, because spending the
+    # startup one on a window the client cannot outlast is how "locked for four more
+    # minutes" used to be reported as "could not bootstrap".
+    attempts_left = 30
+    throttle_waits_left = LOGIN_THROTTLE_MAX_WAITS
+    while attempts_left > 0:
+        attempts_left -= 1
         try:
             _login()
             for stmt in (
@@ -567,9 +678,26 @@ def _ensure_ready():
             )
             _report_legacy_shared_space()
             return
+        except LoginRefused as e:
+            # The credential was evaluated and rejected. Retrying it is what walks
+            # the account into a lockout, so this is where bootstrap stops.
+            _session["id"] = None
+            raise RuntimeError(str(e))
+        except LoginThrottled as e:
+            _session["id"] = None
+            if throttle_waits_left <= 0 or e.seconds > LOGIN_THROTTLE_CEILING:
+                # Naming the window is the whole point: a 300-second lockout is not a
+                # server that failed to start, and polling it would only keep the
+                # source key hot.
+                raise RuntimeError(str(e))
+            throttle_waits_left -= 1
+            attempts_left += 1  # a throttle is not one of the startup attempts
+            log(f"login throttled; waiting {e.seconds:.0f}s as the engine asked")
+            time.sleep(e.seconds + 1)
         except urllib.error.HTTPError as e:
-            # Fail fast on auth errors: retrying a wrong password would trip the
-            # server's failed-login lockout. Only transient/startup errors retry.
+            # Backstop for a status that reached here from something other than the
+            # login (`_raw_query` posts directly on its re-login path). `_login`
+            # itself now raises the two classified types above.
             if e.code in (401, 403):
                 raise RuntimeError(
                     f"authentication failed (HTTP {e.code}); check BYORIDB_ROOT_PASSWORD. "

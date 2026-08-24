@@ -161,6 +161,220 @@ class SessionLossClassificationTests(unittest.TestCase):
                 self.assertFalse(MCP._is_session_lost(code, "{}"))
 
 
+def _http_error(status, body="", headers=None):
+    return MCP.urllib.error.HTTPError(
+        "http://127.0.0.1:19669/api/v1/session", status, "stub", headers or {},
+        io.BytesIO(body.encode()),
+    )
+
+
+class LoginFailureClassTests(unittest.TestCase):
+    """The four ways `POST /api/v1/session` can fail, and why they are not one thing.
+
+    Engine 0.4.0+ separates a credential that was *evaluated and rejected* (401/403)
+    from one that was *never checked* (429, a spent failure budget or a 300s lockout).
+    The difference decides the correct response, and getting it backwards is harmful
+    in both directions: retrying a rejected password walks the account into a lockout,
+    while refusing to wait out a throttle turns a transient window into a failure.
+
+    Before this, 429 fell through to the generic branch — 30 attempts × 2s of blind
+    polling that ignored `Retry-After`, ending in "could not bootstrap ByoriDB", which
+    reads as "the engine never came up" rather than "locked for four more minutes".
+    """
+
+    def setUp(self):
+        MCP._session["id"] = None
+        MCP._session["ready"] = False
+        self.addCleanup(lambda: MCP._session.update({"id": None, "ready": False}))
+
+    def test_a_rejected_credential_is_classified_and_says_what_to_check(self):
+        for status in (401, 403):
+            with self.subTest(status=status), mock.patch.object(
+                MCP, "_post", side_effect=_http_error(status, '{"code":"AUTH_FAILED"}')
+            ):
+                with self.assertRaises(MCP.LoginRefused) as raised:
+                    MCP._login()
+                self.assertEqual(raised.exception.status, status)
+                self.assertIn("BYORIDB_ROOT_PASSWORD", str(raised.exception))
+                self.assertIn("Not retried", str(raised.exception))
+
+    def test_a_throttle_carries_the_window_from_the_header(self):
+        error = _http_error(429, '{"code":"TOO_MANY_ATTEMPTS"}', {"Retry-After": "5"})
+        with mock.patch.object(MCP, "_post", side_effect=error):
+            with self.assertRaises(MCP.LoginThrottled) as raised:
+                MCP._login()
+
+        self.assertEqual(raised.exception.seconds, 5.0)
+        self.assertIn("not checked", str(raised.exception))
+
+    def test_the_body_supplies_the_window_when_the_header_is_missing(self):
+        """A proxy that drops `Retry-After` must not turn a 300s lockout into a
+        guess: the engine repeats the number in the message."""
+        error = _http_error(429, "Too many authentication attempts. Retry in 299s.")
+        with mock.patch.object(MCP, "_post", side_effect=error):
+            with self.assertRaises(MCP.LoginThrottled) as raised:
+                MCP._login()
+
+        self.assertEqual(raised.exception.seconds, 299.0)
+
+    def test_an_http_date_falls_back_to_the_bodys_number_not_zero(self):
+        error = _http_error(
+            429, "Retry in 42s", {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}
+        )
+        self.assertEqual(MCP._retry_after_seconds(error, "Retry in 42s"), 42.0)
+
+    def test_with_no_hint_at_all_the_budget_window_is_assumed(self):
+        self.assertEqual(
+            MCP._retry_after_seconds(_http_error(429, "no numbers here"), "no numbers here"),
+            MCP.LOGIN_THROTTLE_DEFAULT_WAIT,
+        )
+
+    def test_a_status_that_is_not_an_auth_class_still_propagates(self):
+        """503 while the server is starting must stay retryable, not be reclassified
+        as an authentication problem."""
+        with mock.patch.object(MCP, "_post", side_effect=_http_error(503, "starting")):
+            with self.assertRaises(MCP.urllib.error.HTTPError):
+                MCP._login()
+
+
+class BootstrapThrottleTests(unittest.TestCase):
+    """How `_ensure_ready` spends its retry budget when the engine is throttling."""
+
+    def setUp(self):
+        MCP._session["id"] = None
+        MCP._session["ready"] = False
+        self.addCleanup(lambda: MCP._session.update({"id": None, "ready": False}))
+        self.slept = []
+        patches = [
+            mock.patch.object(MCP.time, "sleep", self.slept.append),
+            mock.patch.object(MCP, "_raw_query", lambda *a, **k: {}),
+            mock.patch.object(MCP, "_migrate", lambda: None),
+            mock.patch.object(MCP, "_describe_space_contents", lambda: "0 memories"),
+            mock.patch.object(MCP, "_report_legacy_shared_space", lambda: None),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_a_short_window_is_waited_out_and_the_same_password_reused(self):
+        attempts = []
+
+        def login():
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise MCP.LoginThrottled(5.0, "Retry in 5s")
+            MCP._session["id"] = "1"
+
+        with mock.patch.object(MCP, "_login", login):
+            MCP._ensure_ready()
+
+        self.assertEqual(len(attempts), 2)
+        self.assertTrue(MCP._session["ready"])
+        # The engine's own number, plus a second so the retry lands after the window
+        # rather than on its boundary. Not the old blind 2s.
+        self.assertEqual(self.slept, [6.0])
+
+    def test_a_lockout_is_reported_immediately_instead_of_polled(self):
+        """The case that used to burn 30 attempts and then blame the bootstrap."""
+        attempts = []
+
+        def login():
+            attempts.append(1)
+            raise MCP.LoginThrottled(300.0, "Too many authentication attempts. Retry in 300s.")
+
+        with mock.patch.object(MCP, "_login", login):
+            with self.assertRaises(RuntimeError) as raised:
+                MCP._ensure_ready()
+
+        message = str(raised.exception)
+        self.assertIn("300s", message)
+        self.assertNotIn("could not bootstrap", message)
+        self.assertEqual(len(attempts), 1, "a lockout must not be polled")
+        self.assertEqual(self.slept, [], "nobody should sleep five minutes in-process")
+
+    def test_repeated_short_windows_stop_rather_than_loop(self):
+        attempts = []
+
+        def login():
+            attempts.append(1)
+            raise MCP.LoginThrottled(5.0, "Retry in 5s")
+
+        with mock.patch.object(MCP, "_login", login):
+            with self.assertRaises(RuntimeError):
+                MCP._ensure_ready()
+
+        self.assertEqual(len(attempts), MCP.LOGIN_THROTTLE_MAX_WAITS + 1)
+
+    def test_a_rejected_credential_stops_at_the_first_attempt(self):
+        attempts = []
+
+        def login():
+            attempts.append(1)
+            raise MCP.LoginRefused(401, '{"code":"AUTH_FAILED"}')
+
+        with mock.patch.object(MCP, "_login", login):
+            with self.assertRaises(RuntimeError) as raised:
+                MCP._ensure_ready()
+
+        self.assertEqual(len(attempts), 1, "retrying a rejected password locks the account")
+        self.assertIn("BYORIDB_ROOT_PASSWORD", str(raised.exception))
+
+    def test_a_starting_server_still_gets_its_retries(self):
+        """The throttle budget is separate; the startup budget must be untouched."""
+        attempts = []
+
+        def login():
+            attempts.append(1)
+            if len(attempts) < 4:
+                raise OSError("connection refused")
+            MCP._session["id"] = "1"
+
+        with mock.patch.object(MCP, "_login", login):
+            MCP._ensure_ready()
+
+        self.assertEqual(len(attempts), 4)
+        self.assertEqual(self.slept, [2, 2, 2])
+
+
+class ThrottledQueryTests(unittest.TestCase):
+    """A tool call that needs a fresh session while the engine is throttling."""
+
+    def setUp(self):
+        MCP._session["id"] = None
+        MCP._session["ready"] = True
+        self.addCleanup(lambda: MCP._session.update({"id": None, "ready": False}))
+
+    def test_a_throttle_reaches_the_caller_as_an_actionable_error(self):
+        """`_raw_query` calls `_login()` outside its own `try`, so a 429 there used to
+        surface to the MCP caller as a raw urllib exception."""
+        error = _http_error(429, "Retry in 299s.", {"Retry-After": "299"})
+        with mock.patch.object(MCP, "_post", side_effect=error):
+            with self.assertRaises(RuntimeError) as raised:
+                MCP._raw_query("MATCH (n) RETURN n")
+
+        self.assertNotIsInstance(raised.exception, MCP.urllib.error.HTTPError)
+        self.assertIn("299s", str(raised.exception))
+
+    def test_a_failure_on_the_re_login_retry_is_also_a_plain_error(self):
+        calls = []
+
+        def post(path, payload, timeout=30):
+            calls.append(path)
+            if len(calls) == 1:
+                raise _http_error(401, '{"code":"SESSION_EXPIRED"}')
+            raise _http_error(503, "engine restarting")
+
+        MCP._session["id"] = "1"
+        with mock.patch.object(MCP, "_post", post), \
+             mock.patch.object(MCP, "_login", lambda: MCP._session.update({"id": "2"})):
+            with self.assertRaises(RuntimeError) as raised:
+                MCP._raw_query("MATCH (n) RETURN n")
+
+        self.assertNotIsInstance(raised.exception, MCP.urllib.error.HTTPError)
+        self.assertIn("after re-login", str(raised.exception))
+        self.assertIn("503", str(raised.exception))
+
+
 class SignOutTests(unittest.TestCase):
     """`DELETE /api/v1/session` releases the session instead of leaving it for the
     24h TTL. It runs while the process is already exiting, so it must never raise."""
