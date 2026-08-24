@@ -136,6 +136,52 @@ final class WorkspaceProjectMemoryTests: XCTestCase {
         XCTAssertNil(model.projectMemoryOffer)
     }
 
+    /// `byori open` registers the repository itself and then asks the app to open it,
+    /// so the app's job is to notice the new project and land on it.
+    func testOpeningARepositoryTheCLIAlreadyRegisteredSelectsItAndOffers() async {
+        let dataSource = ProjectMemoryDataSource(snapshot: WorkspacePresentationSnapshot(projects: []))
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+        // What `byori open` did before the app was asked: wrote the registry entry.
+        dataSource.snapshot = makeSnapshot()
+
+        await model.openProject(at: URL(fileURLWithPath: "/tmp/byori", isDirectory: true))
+
+        XCTAssertTrue(dataSource.registeredURLs.isEmpty, "it was already registered")
+        XCTAssertEqual(model.selection, .project("project123"))
+        XCTAssertEqual(model.inspectorTab, .context)
+        XCTAssertEqual(model.projectMemoryOffer?.projectID, "project123")
+    }
+
+    /// A folder opened from Finder, or `open -a Byori <folder>`, was never registered
+    /// by anything. Refusing it would be an app that opens only what it already knows.
+    func testAnUnregisteredRepositoryIsRegisteredFirst() async {
+        let dataSource = ProjectMemoryDataSource(snapshot: WorkspacePresentationSnapshot(projects: []))
+        dataSource.snapshotAfterRegistration = makeSnapshot()
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+
+        await model.openProject(at: URL(fileURLWithPath: "/tmp/byori", isDirectory: true))
+
+        XCTAssertEqual(dataSource.registeredURLs.map(\.path), ["/tmp/byori"])
+        XCTAssertEqual(model.projectMemoryOffer?.projectID, "project123")
+        XCTAssertNil(model.alert)
+    }
+
+    func testAFolderThatCannotBeRegisteredIsReportedNotIgnored() async {
+        let dataSource = ProjectMemoryDataSource(snapshot: WorkspacePresentationSnapshot(projects: []))
+        dataSource.registrationFailure = WorkspaceAdapterError
+            .invalidState("repository is not a Git repository")
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+
+        await model.openProject(at: URL(fileURLWithPath: "/tmp/plain", isDirectory: true))
+
+        XCTAssertEqual(model.alert?.title, "프로젝트를 열지 못했습니다")
+        XCTAssertTrue(model.alert?.message.contains("not a Git repository") == true)
+        XCTAssertNil(model.projectMemoryOffer)
+    }
+
     /// A memory space belongs to the project, not to a checkout. Selecting a project
     /// row used to leave the tab on a spinner that never resolved, which is where the
     /// empty-graph affordance was supposed to be.
@@ -189,6 +235,8 @@ private final class ProjectMemoryDataSource: WorkspaceDataSource {
     var contextRequests: [WorkspaceInspectorRequest] = []
     var contextItems: [WorkspaceContextItem] = []
     var contextFailure: Error?
+    var registrationFailure: Error?
+    var registeredURLs: [URL] = []
     var failure: Error?
     var gate = false
     private var continuation: CheckedContinuation<Void, Never>?
@@ -224,6 +272,8 @@ private final class ProjectMemoryDataSource: WorkspaceDataSource {
     }
 
     func registerProject(at repositoryURL: URL) async throws {
+        if let registrationFailure { throw registrationFailure }
+        registeredURLs.append(repositoryURL)
         if let snapshotAfterRegistration {
             snapshot = snapshotAfterRegistration
         }

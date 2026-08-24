@@ -47,6 +47,12 @@ struct ByoriManagerApp: App {
         appDelegate.openWorkspaceWindow = windowCoordinator.showWindow
         appDelegate.openSettingsWindow = settingsCoordinator.showWindow
         appDelegate.managerModel = managerModel
+        // `byori open` in a checkout ends here: bring the workspace forward, then let
+        // it select that project and offer to read its history.
+        appDelegate.openProject = { [weak workspaceModel] root in
+            windowCoordinator.showWindow()
+            Task { @MainActor in await workspaceModel?.openProject(at: root) }
+        }
         DispatchQueue.main.async {
             windowCoordinator.showWindow()
         }
@@ -109,9 +115,20 @@ struct ByoriManagerApp: App {
 private final class ByoriApplicationDelegate: NSObject, NSApplicationDelegate {
     var openWorkspaceWindow: (@MainActor () -> Void)?
     var openSettingsWindow: (@MainActor () -> Void)?
+    var openProject: (@MainActor (URL) -> Void)?
     weak var managerModel: ManagerViewModel?
     private var terminationTask: Task<Void, Never>?
     private var hasDrainedForTermination = false
+
+    /// Delivers `byori://project?root=…` from `byori open`, and a folder opened with
+    /// Byori from Finder. A URL that is not a request to open a repository is
+    /// ignored rather than turned into a guess about which directory was meant.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            guard let request = ByoriOpenRequest(url: url) else { continue }
+            openProject?(request.root)
+        }
+    }
 
     func applicationShouldHandleReopen(
         _ sender: NSApplication,

@@ -257,6 +257,25 @@ chmod 644 "$BYORIDB_HOME/bin/byori.py" "$BYORIDB_HOME/bin/archaeology.py" "$BYOR
 chmod +x "$BYORIDB_HOME/bin/run-server.sh" "$BYORIDB_HOME/bin/run-mcp.sh" \
   "$BYORIDB_HOME/bin/byori"
 
+# 2a) Put `byori` somewhere a shell will find it. Documenting `byori init` while the
+#     command resolved nowhere meant the second line of the quick start failed. A
+#     symlink in ~/.local/bin is enough, and it keeps the engine binaries next to it
+#     out of PATH. Shell startup files are left alone: rewriting someone's rc file is
+#     hard to undo, and which file to write is a guess.
+CLI_LINK_DIR="$HOME/.local/bin"
+CLI_LINK="$CLI_LINK_DIR/byori"
+cli_link_state="skipped"
+mkdir -p "$CLI_LINK_DIR"
+if [ -L "$CLI_LINK" ] || [ ! -e "$CLI_LINK" ]; then
+  ln -sfn "$BYORIDB_HOME/bin/byori" "$CLI_LINK"
+  cli_link_state="linked"
+elif [ "$(readlink "$CLI_LINK" 2>/dev/null)" = "$BYORIDB_HOME/bin/byori" ]; then
+  cli_link_state="linked"
+else
+  # Not ours and not a symlink: leave whatever the user put there.
+  warn "left existing $CLI_LINK alone — run $BYORIDB_HOME/bin/byori directly"
+fi
+
 # 3) env: preserve the root secret across reinstalls (including the legacy
 #    BYORIDB_PASSWORD key) so an existing data directory remains accessible.
 #    Always rewrite derived endpoint/user so server and clients stay aligned.
@@ -437,10 +456,21 @@ printf '  home     : %s\n' "$BYORIDB_HOME"
 printf '  server   : http://%s  (health: curl -s http://%s/health)\n' "$HTTP_ADDR" "$HTTP_ADDR"
 printf '  engine   : %s  (recorded in %s/engine.json)\n' "${engine_ref:-local binary}" "$BYORIDB_HOME"
 printf '  mcp      : %s/bin/run-mcp.sh\n' "$BYORIDB_HOME"
-printf '  cli      : %s/bin/byori  (try: %s/bin/byori --help)\n' "$BYORIDB_HOME" "$BYORIDB_HOME"
+if [ "$cli_link_state" = "linked" ]; then
+  printf '  cli      : %s  (try: byori --help, then byori init)\n' "$CLI_LINK"
+else
+  printf '  cli      : %s/bin/byori  (try: %s/bin/byori --help)\n' "$BYORIDB_HOME" "$BYORIDB_HOME"
+fi
 case ":${PATH}:" in
-  *":${BYORIDB_HOME}/bin:"*) ;;
-  *) printf '  path     : export PATH="%s/bin:$PATH"\n' "$BYORIDB_HOME" ;;
+  *":${CLI_LINK_DIR}:"*) ;;
+  *)
+    if [ "$cli_link_state" = "linked" ]; then
+      printf '  path     : %s is not in PATH yet — add it to your shell profile:\n' "$CLI_LINK_DIR"
+      printf '             export PATH="%s:$PATH"\n' "$CLI_LINK_DIR"
+    else
+      printf '  path     : export PATH="%s/bin:$PATH"\n' "$BYORIDB_HOME"
+    fi
+    ;;
 esac
 if [ "$NO_CLAUDE" != 1 ]; then
   printf '  skills   : %s/{%s,%s}/   (claude mcp list -> byoridb)\n' \

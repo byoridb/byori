@@ -140,21 +140,32 @@ curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh 
 
 # 2. 이 프로젝트의 기억을 히스토리로 만든다
 cd ~/code/your-project
-~/.byoridb/bin/byori init
+byori init
 
 # 3. 에이전트에게 왜 그런지 물어본다
 #    (설치기가 Claude Code와 Codex를 연결해 둡니다)
 
 # 뭔가 이상할 때
-~/.byoridb/bin/byori doctor
+byori doctor
 ```
+
+설치기가 `byori`를 `~/.local/bin`에 링크합니다. 그 디렉터리가 아직 `PATH`에 없으면 추가할 줄을
+출력합니다 — 셸 설정 파일은 건드리지 않습니다. `~/.byoridb/bin/byori`도 그대로 동작합니다.
 
 `byori init`은 결정론이고 재실행이 안전합니다 — Git만 읽고 모델은 쓰지 않으며, 이미 쓴 기억은
 중복이 아니라 갱신됩니다. `byori doctor`는 엔진·서비스·자격증명·이 프로젝트의 기억·에이전트
 배선을 점검하고 실패한 것을 되돌리는 명령을 출력합니다.
 
-macOS 앱에서는 그 부재가 보이는 자리에 같은 기능이 있습니다 — Context 탭이 빈 프로젝트에
-**히스토리로 기억 만들기**가 나타나고, 모든 프로젝트 행의 컨텍스트 메뉴에도 있습니다.
+### 앱에서 시작하려면
+
+```bash
+cd ~/code/your-project
+byori                              # `byori open .`과 같습니다
+```
+
+체크아웃을 프로젝트로 등록하고 앱을 그 프로젝트 위로 띄웁니다. 그래프가 비어 있으면 앱이 그 자리에서
+히스토리를 읽을지 묻습니다. 앱에서 프로젝트를 추가할 때도 같은 제안이 뜨고, 모든 프로젝트 행의
+컨텍스트 메뉴에도 남아 있습니다.
 
 
 ### Byori macOS 앱

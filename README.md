@@ -142,22 +142,33 @@ curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh 
 
 # 2. build this project's memory from its own history
 cd ~/code/your-project
-~/.byoridb/bin/byori init
+byori init
 
 # 3. ask an agent why something is the way it is
 #    (Claude Code and Codex are wired up by the installer)
 
 # whenever something looks wrong
-~/.byoridb/bin/byori doctor
+byori doctor
 ```
+
+The installer links `byori` into `~/.local/bin`; if that is not on your `PATH` yet, it prints the line
+to add. It never edits your shell profile. `~/.byoridb/bin/byori` always works too.
 
 `byori init` is deterministic and idempotent: it reads Git, never a model, and re-running updates the
 memories it already wrote instead of duplicating them. `byori doctor` checks the engine, its service,
 the credential, this project's memory and the agent wiring, and prints the command that fixes whatever
 failed.
 
-In the macOS app, the same thing is offered where its absence is visible: a project whose Context tab is
-empty shows **히스토리로 기억 만들기**, and every project row has it in the context menu.
+### Or from the app
+
+```bash
+cd ~/code/your-project
+byori                              # same as `byori open .`
+```
+
+That registers the checkout and brings the app forward on it, and when its graph is empty the app
+offers to read the repository's history right there. The same offer appears whenever a project is
+added in the app, and every project row keeps it in the context menu.
 
 ### Byori macOS app
 

@@ -54,11 +54,13 @@ revision, status, branch, and diff-summary metadata, so treat even its summary t
 
 ## Install and find the CLI
 
-The normal installer places the launcher at `~/.byoridb/bin/byori`:
+The installer places the launcher at `~/.byoridb/bin/byori` and links it into `~/.local/bin`, so
+`byori` resolves once that directory is on `PATH`. It does not edit your shell profile; if
+`~/.local/bin` is missing from `PATH`, the installer prints the line to add.
 
 ```sh
 curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh | bash
-export PATH="$HOME/.byoridb/bin:$PATH"
+export PATH="$HOME/.local/bin:$PATH"   # only if it is not there already
 
 byori --help
 byori provider list
