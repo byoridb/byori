@@ -1775,6 +1775,42 @@ final class WorkspaceViewModel: ObservableObject {
     /// the moment someone wonders why there is nothing there. The pass is
     /// deterministic and every memory it writes carries the commit, pull request or
     /// document it came from, so this is not the app inventing project knowledge.
+    /// Opens a repository named from outside the app — `byori open` in a checkout, a
+    /// folder dropped on the icon, `open -a Byori <folder>`.
+    ///
+    /// The CLI registers the project itself, so the usual path here is a reload that
+    /// finds it. A root that is not registered yet still opens: registration goes
+    /// through the app's own validated path rather than being refused for arriving
+    /// from Finder. Either way it ends where `byori init` is one click away.
+    func openProject(at root: URL) async {
+        guard !isRegisteringProject else { return }
+        await load(force: true)
+        let wanted = root.standardizedFileURL.path
+        if !projects.contains(where: { $0.repositoryURL.standardizedFileURL.path == wanted }) {
+            isRegisteringProject = true
+            do {
+                try await dataSource.registerProject(at: root)
+                await load(force: true)
+            } catch {
+                isRegisteringProject = false
+                alert = WorkspaceAlert(
+                    title: "프로젝트를 열지 못했습니다",
+                    message: error.localizedDescription
+                )
+                return
+            }
+            isRegisteringProject = false
+        }
+        guard projects.contains(where: { $0.repositoryURL.standardizedFileURL.path == wanted }) else {
+            alert = WorkspaceAlert(
+                title: "프로젝트를 열지 못했습니다",
+                message: "\(root.path)를 등록된 프로젝트에서 찾지 못했습니다."
+            )
+            return
+        }
+        await offerProjectMemory(for: root)
+    }
+
     /// Selects a freshly added repository, opens the Context tab on it, and offers to
     /// read its history — but only when the graph really is empty.
     ///

@@ -104,12 +104,17 @@ For an isolated test:
 
 ## Foreground multi-CLI compatibility path
 
-The installer deliberately does not create a global symlink. Add its bin directory to the current
-shell or invoke the full path:
+The installer links `byori` into `~/.local/bin` — a user-owned directory, and never over a file it
+did not create — so the command resolves once that directory is on `PATH`. It does not write your
+shell profile; it prints the line to add when `~/.local/bin` is missing from `PATH`. Invoking
+`~/.byoridb/bin/byori` directly always works.
 
 ```sh
-export PATH="$HOME/.byoridb/bin:$PATH"
+export PATH="$HOME/.local/bin:$PATH"   # only if it is not there already
 byori provider list
+
+cd /path/to/a/git/repository
+byori            # register this checkout and open the app on it (same as `byori open .`)
 
 cd /path/to/a/git/repository
 byori project add .

@@ -22,6 +22,21 @@
   <string>@MARKETING_VERSION@</string>
   <key>CFBundleVersion</key>
   <string>@BUILD_NUMBER@</string>
+  <key>CFBundleURLTypes</key>
+  <!-- How `byori open` reaches the app: `open byori://project?root=<path>` both
+       launches it and delivers the request, whether or not it was running. -->
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>Byori Project</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>byori</string>
+      </array>
+    </dict>
+  </array>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.developer-tools</string>
   <key>LSMinimumSystemVersion</key>

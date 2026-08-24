@@ -25,7 +25,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 
 VERSION = "0.3.0-dev"
@@ -1430,6 +1430,70 @@ def command_project_add(args: argparse.Namespace) -> int:
     return 0
 
 
+def app_open_url(root: pathlib.Path) -> str:
+    """The URL the app parses. One spelling, two implementations: keep this in step
+    with `ByoriOpenRequest` in manager/macos/Sources/ByoriManagerCore."""
+    return "byori://project?root=%s" % quote(str(root), safe="/")
+
+
+def open_in_app(root: pathlib.Path) -> int:
+    """Launch or activate Byori on this repository.
+
+    `open(1)` does both halves — it starts the app when it is not running and
+    delivers the URL when it is — so there is no separate "is it running" branch to
+    get wrong.
+    """
+    if sys.platform != "darwin":
+        print(
+            "byori: the Byori app is macOS only; the project is registered.",
+            file=sys.stderr,
+        )
+        return 1
+    result = subprocess.run(
+        ["/usr/bin/open", app_open_url(root)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        errors="replace",
+    )
+    if result.returncode == 0:
+        print("opening Byori")
+        return 0
+    # An app older than this release does not register the URL scheme, which
+    # LaunchServices reports the same way as no app at all. Both are fixed by
+    # installing or updating it, and the registration above already happened.
+    detail = ((result.stderr or result.stdout) or "").strip().splitlines()
+    print(
+        "byori: could not open the Byori app: %s"
+        % (detail[-1] if detail else "open exited %d" % result.returncode),
+        file=sys.stderr,
+    )
+    print(
+        "byori: the project is registered. Install or update Byori (0.8.20 or newer) "
+        "and it will be listed.",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def command_open(args: argparse.Namespace) -> int:
+    """Register this repository and open it in the app.
+
+    Typed in a checkout, `byori` is the whole first run: the folder becomes a
+    project, the app comes forward on it, and — when its graph is empty — it offers
+    to read the repository's history.
+    """
+    registry = ProjectRegistry(default_byori_home())
+    project, created = registry.add(pathlib.Path(args.path), args.space)
+    root = pathlib.Path(project["root"])
+    print("%s: %s" % ("registered" if created else "already registered", root))
+    print("project: %s" % project["id"])
+    print("space:   %s" % project["space"])
+    if args.no_launch:
+        return 0
+    return open_in_app(root)
+
+
 def command_project_list(args: argparse.Namespace) -> int:
     projects = ProjectRegistry(default_byori_home()).list()
     if args.json:
@@ -1688,6 +1752,18 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--json", action="store_true", help="also print the plan as JSON")
     init.set_defaults(handler=command_init)
 
+    open_command = commands.add_parser(
+        "open",
+        help="register this repository and open it in the Byori app",
+    )
+    open_command.add_argument("path", nargs="?", default=".")
+    open_command.add_argument("--space", help="stable ByoriDB memory space")
+    open_command.add_argument(
+        "--no-launch", action="store_true",
+        help="register the project without opening the app",
+    )
+    open_command.set_defaults(handler=command_open)
+
     project = commands.add_parser("project", help="manage trusted projects")
     project_commands = project.add_subparsers(dest="project_command", required=True)
     project_add = project_commands.add_parser("add", help="register and trust a Git project")
@@ -1738,9 +1814,27 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def inside_repository(path: pathlib.Path) -> bool:
+    try:
+        repository_root(path)
+    except ByoriError:
+        return False
+    return True
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    # Typed in a checkout with nothing else to say, `byori` means "open this
+    # repository" — the shape `code .` already taught everyone. Outside a repository
+    # there is nothing to open, so the help remains the answer.
+    if not arguments:
+        try:
+            if inside_repository(pathlib.Path.cwd()):
+                arguments = ["open"]
+        except OSError:
+            pass
+    args = parser.parse_args(arguments)
     if getattr(args, "timeout", 1) <= 0:
         parser.error("--timeout must be greater than zero")
     try:

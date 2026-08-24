@@ -53,11 +53,13 @@ diff summary metadata가 들어가므로 그 요약문도 graph data로 취급�
 
 ## CLI 설치와 경로
 
-기본 설치기는 launcher를 `~/.byoridb/bin/byori`에 배치합니다.
+설치기는 launcher를 `~/.byoridb/bin/byori`에 배치하고 `~/.local/bin`에 링크합니다. 그 디렉터리가
+`PATH`에 있으면 `byori`로 바로 실행됩니다. 셸 설정 파일은 건드리지 않고, `PATH`에 없으면 추가할
+줄을 출력합니다.
 
 ```sh
 curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh | bash
-export PATH="$HOME/.byoridb/bin:$PATH"
+export PATH="$HOME/.local/bin:$PATH"   # 이미 있으면 생략
 
 byori --help
 byori provider list

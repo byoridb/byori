@@ -91,15 +91,17 @@ process가 이미 port를 점유할 수 있으므로 인증 없는 `/health` 응
 
 ## Foreground 멀티 CLI 호환 경로
 
-설치기는 전역 symlink를 의도적으로 만들지 않는다. 현재 shell의 bin 경로에 추가하거나
-전체 경로로 실행한다.
+설치기는 `byori`를 `~/.local/bin`에 링크한다 — 사용자 소유 디렉터리이고, 자기가 만들지 않은
+파일 위에는 절대 쓰지 않는다. 그 디렉터리가 `PATH`에 있으면 `byori`로 바로 실행된다. 셸 설정
+파일은 쓰지 않고, `PATH`에 없으면 추가할 줄을 출력한다. `~/.byoridb/bin/byori` 직접 실행도
+언제나 동작한다.
 
 ```sh
-export PATH="$HOME/.byoridb/bin:$PATH"
+export PATH="$HOME/.local/bin:$PATH"   # 이미 있으면 생략
 byori provider list
 
 cd /path/to/a/git/repository
-byori project add .
+byori            # 이 체크아웃을 등록하고 앱을 그 위로 띄운다 (`byori open .`과 같다)
 byori run --agent claude --agent codex "요청한 변경을 구현해"
 byori runs list
 ```
