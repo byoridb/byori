@@ -17,14 +17,20 @@
 #   --tag        pins the byori asset version (default: latest byori release)
 #   --engine-tag ByoriDB engine release to install: a tag, or `latest` to resolve
 #                the newest engine release (default: the validated pinned tag)
+#   --allow-engine-downgrade
+#                replace an installed engine with an older one. Refused by default:
+#                the pinned tag is a floor, not an instruction to roll back a data
+#                directory a newer engine has already written.
 # Env:     BYORIDB_HOME (~/.byoridb) BYORIDB_HTTP_PORT (19669) BYORIDB_GRAPH_PORT (9669)
 #          BYORIDB_LABEL (com.byoridb.local)
 set -euo pipefail
 
 ASSET_REPO="byoridb/byori"        # install.sh / MCP / skill / templates
 ENGINE_REPO="byoridb/byoridb"     # byoridb-server binary releases
-ENGINE_TAG_DEFAULT="v0.4.0"       # engine version this byori version is tested against,
-                                  # and the fallback when `latest` cannot be resolved
+ENGINE_TAG_DEFAULT="v0.4.2"       # engine version this byori version is tested against
+                                  # (CI installs exactly this and runs the engine
+                                  # contract smoke against it), and the fallback when
+                                  # `latest` cannot be resolved
 BYORIDB_HOME="${BYORIDB_HOME:-$HOME/.byoridb}"
 HTTP_PORT="${BYORIDB_HTTP_PORT:-19669}"
 GRAPH_PORT="${BYORIDB_GRAPH_PORT:-9669}"
@@ -38,6 +44,7 @@ DESIGN_SKILL_NAME="byori-design"
 
 TAG=""; ENGINE_TAG="${BYORI_ENGINE_TAG:-$ENGINE_TAG_DEFAULT}"
 WITH_HOOKS=1; UNINSTALL=0; BINARY=""; ASSETS=""; NO_SERVICE=0; NO_CLAUDE=0; NO_CODEX=0
+ALLOW_ENGINE_DOWNGRADE=0; SKIP_ENGINE=0
 
 c_blue=$'\033[34m'; c_red=$'\033[31m'; c_dim=$'\033[2m'; c_off=$'\033[0m'
 log()  { printf '%s==>%s %s\n' "$c_blue" "$c_off" "$*"; }
@@ -53,6 +60,7 @@ while [ $# -gt 0 ]; do
     --no-service) NO_SERVICE=1 ;;
     --no-claude)  NO_CLAUDE=1 ;;
     --no-codex)   NO_CODEX=1 ;;
+    --allow-engine-downgrade) ALLOW_ENGINE_DOWNGRADE=1 ;;
     --tag)        TAG="${2:-}"; shift ;;
     --engine-tag) ENGINE_TAG="${2:-}"; shift ;;
     --binary)     BINARY="${2:-}"; shift ;;
@@ -194,7 +202,82 @@ render "$WORK/run-byori.sh" "$WORK/run-byori.rendered.sh"
 bash -n "$WORK/run-server.rendered.sh" "$WORK/run-mcp.rendered.sh" \
   "$WORK/run-byori.rendered.sh"
 
+# 0) refuse to roll an installed engine backwards.
+#
+# The pinned tag is the version this byori release is tested against — a floor, not
+# an instruction to replace something newer. Running the documented one-liner on a
+# machine already carrying a later engine used to downgrade it silently, against a
+# data directory that newer engine had already written. Recorded tag, not the binary:
+# engines before 0.4.0 ignore `--version` and would start a server to answer.
+installed_engine_tag=""
+if [ -f "$BYORIDB_HOME/engine.json" ] && [ -x "$BYORIDB_HOME/bin/byoridb-server" ]; then
+  installed_engine_tag="$("$PYTHON" - "$BYORIDB_HOME/engine.json" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        print(json.load(handle).get("tag") or "")
+except Exception:
+    pass
+PY
+)"
+fi
+if [ -n "$installed_engine_tag" ] && [ -z "$BINARY" ] && [ "$installed_engine_tag" != "$ENGINE_TAG" ]; then
+  # Compares release order, so v0.4.10 is newer than v0.4.9 rather than sorting
+  # before it the way strings do.
+  if "$PYTHON" - "$installed_engine_tag" "$ENGINE_TAG" <<'PY'
+import re, sys
+
+
+def parts(tag):
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", tag or "")
+    return tuple(int(value) for value in match.groups()) if match else None
+
+
+installed, requested = parts(sys.argv[1]), parts(sys.argv[2])
+# Exit 0 only when the installed engine is strictly newer than what was asked for.
+raise SystemExit(0 if installed and requested and installed > requested else 1)
+PY
+  then
+    if [ "$ALLOW_ENGINE_DOWNGRADE" = 1 ]; then
+      warn "downgrading engine $installed_engine_tag -> $ENGINE_TAG (--allow-engine-downgrade)"
+    else
+      warn "keeping installed engine $installed_engine_tag (newer than $ENGINE_TAG)"
+      warn "to roll it back on purpose: --engine-tag $ENGINE_TAG --allow-engine-downgrade"
+      ENGINE_TAG="$installed_engine_tag"
+      SKIP_ENGINE=1
+    fi
+  fi
+fi
+
+# Stop the running server before its own file is replaced.
+#
+# Overwriting the binary a live process was launched from invalidates that process's
+# code signature, and macOS kills it — `launchctl print` reports
+# `last exit reason = OS_REASON_CODESIGNING`. launchd then restarts it while the
+# installer is still copying files, which is how a perfectly good install ended in
+# "server did not become healthy" and skipped MCP registration.
+stop_service_for_replacement() {
+  [ "$NO_SERVICE" = 1 ] && return 0
+  if [ "$SERVICE" = launchd ]; then
+    plist="${HOME}/Library/LaunchAgents/${LABEL}.plist"
+    [ -f "$plist" ] || return 0
+    launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null \
+      || launchctl unload "$plist" 2>/dev/null || true
+  else
+    systemctl --user stop "${LABEL}.service" 2>/dev/null || true
+  fi
+  # The new server has to bind the same port, so wait for the old one to let go.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    curl -fsS "http://${HTTP_ADDR}/health" >/dev/null 2>&1 || return 0
+    sleep 1
+  done
+  warn "the previous server is still answering on ${HTTP_ADDR}; continuing anyway"
+}
+
 # 1) stage and install the engine binary (from ENGINE_REPO at the resolved ENGINE_TAG)
+if [ "$SKIP_ENGINE" = 1 ]; then
+  log "engine unchanged: ${installed_engine_tag} (already installed)"
+else
 mkdir -p "$WORK/engine"
 if [ -n "$BINARY" ]; then
   log "using local binary: $BINARY"
@@ -206,6 +289,7 @@ else
   tar -xzf "$WORK/b.tar.gz" -C "$WORK/engine"
 fi
 [ -f "$WORK/engine/byoridb-server" ] || die "engine archive is missing byoridb-server"
+stop_service_for_replacement
 cp "$WORK/engine/byoridb-server" "$BYORIDB_HOME/bin/byoridb-server"
 [ -f "$WORK/engine/byoridb-cli" ] && cp "$WORK/engine/byoridb-cli" "$BYORIDB_HOME/bin/byoridb-cli"
 chmod +x "$BYORIDB_HOME/bin/byoridb-server" 2>/dev/null || true
@@ -243,6 +327,7 @@ json.dump(
 ' "$BYORIDB_HOME/engine.json" "$engine_ref" "$TARGET" "$engine_source" "$engine_sha" \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$BYORIDB_HOME/bin/byoridb-server"
 log "recorded engine build: ${engine_ref:-local} (${engine_sha:0:12})"
+fi
 
 # 2) MCP server + multi-agent CLI + rendered wrappers
 log "installing MCP server + multi-agent CLI + service wrappers"
@@ -323,13 +408,47 @@ else
 fi
 
 # 5) wait for health
+wait_for_health() {
+  for _ in $(seq 1 "$1"); do
+    if curl -fsS "http://${HTTP_ADDR}/health" >/dev/null 2>&1; then return 0; fi
+    sleep 1
+  done
+  return 1
+}
+
 log "waiting for server on http://${HTTP_ADDR} ..."
 ok=0
-for _ in $(seq 1 30); do
-  if curl -fsS "http://${HTTP_ADDR}/health" >/dev/null 2>&1; then ok=1; break; fi
-  sleep 1
-done
-[ "$ok" = 1 ] || die "server did not become healthy on http://${HTTP_ADDR} — see $BYORIDB_HOME/logs/server.err (not registering MCP)"
+if wait_for_health 30; then
+  ok=1
+elif [ "$NO_SERVICE" != 1 ] && [ "$SERVICE" = launchd ]; then
+  # A first start can lose the race with Gatekeeper's check of a freshly downloaded
+  # binary, or be the process macOS just killed for a signature that no longer
+  # matched. Both recover from one deliberate restart, so ask for one before
+  # declaring an install failed and leaving MCP unregistered.
+  warn "not healthy yet — restarting the service once"
+  launchctl kickstart -k "gui/$(id -u)/${LABEL}" >/dev/null 2>&1 || true
+  wait_for_health 30 && ok=1
+fi
+
+if [ "$ok" != 1 ]; then
+  # The old message pointed at server.err, which is empty in exactly this case:
+  # a process killed for its code signature never gets to write anything. The
+  # reason lives in launchd's own record, so print that too.
+  warn "diagnosis for http://${HTTP_ADDR}:"
+  if [ "$SERVICE" = launchd ]; then
+    launchctl print "gui/$(id -u)/${LABEL}" 2>/dev/null \
+      | grep -E "state = |last exit (reason|code) = |path = " | sed 's/^/    /' || true
+  else
+    systemctl --user status "${LABEL}.service" --no-pager 2>&1 | tail -5 | sed 's/^/    /' || true
+  fi
+  for logfile in "$BYORIDB_HOME/logs/server.err" "$BYORIDB_HOME/logs/server.log"; do
+    if [ -s "$logfile" ]; then
+      printf '    --- %s (last 5 lines)\n' "$logfile"
+      tail -5 "$logfile" | sed 's/^/    /'
+    fi
+  done
+  die "server did not become healthy on http://${HTTP_ADDR} (not registering MCP)"
+fi
 log "server healthy"
 
 # Health is intentionally unauthenticated and can be served by a stale process

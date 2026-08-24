@@ -8,8 +8,10 @@ the tag it resolved, which is the decision under test. Nothing is downloaded, no
 engine is started, and `--assets` keeps every Byori-owned file local.
 """
 
+import json
 import os
 import pathlib
+import re
 import stat
 import subprocess
 import tempfile
@@ -18,7 +20,11 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "install.sh"
-PINNED_TAG = "v0.4.0"
+# Read from the installer, the way CI does, so bumping the pin cannot leave these
+# tests asserting a version nothing installs any more.
+PINNED_TAG = re.search(
+    r'^ENGINE_TAG_DEFAULT="([^"]+)"', INSTALLER.read_text(encoding="utf-8"), re.MULTILINE
+).group(1)
 
 # Answers the engine releases API and fails every other request, so the run stops
 # at the engine download with the resolved tag in the message.
@@ -117,6 +123,53 @@ class InstallEngineTagTests(unittest.TestCase):
 
         self.assertIn(f"downloading engine {PINNED_TAG}", output)
         self.assertNotIn("v9.9.9", output)
+
+    def install_engine_record(self, tag):
+        """Pretend an engine is already installed, the way a real machine would."""
+        home = self.root / "byoridb-home"
+        (home / "bin").mkdir(parents=True, exist_ok=True)
+        server = home / "bin" / "byoridb-server"
+        server.write_text("#!/bin/sh\n", encoding="utf-8")
+        server.chmod(server.stat().st_mode | stat.S_IXUSR)
+        (home / "engine.json").write_text(
+            json.dumps({"tag": tag, "sha256": "0" * 64}), encoding="utf-8"
+        )
+
+    def test_a_newer_installed_engine_is_kept_instead_of_rolled_back(self):
+        """Running the documented one-liner on a machine with a later engine used to
+        downgrade it silently, against a data directory that engine had written."""
+        self.install_engine_record("v9.9.9")
+
+        output = self.install(RESOLVING_CURL)
+
+        self.assertIn("keeping installed engine v9.9.9", output)
+        self.assertIn("--allow-engine-downgrade", output)
+        self.assertNotIn("downloading engine", output)
+
+    def test_a_downgrade_is_available_when_it_is_asked_for(self):
+        self.install_engine_record("v9.9.9")
+
+        output = self.install(RESOLVING_CURL, "--allow-engine-downgrade")
+
+        self.assertIn(f"downgrading engine v9.9.9 -> {PINNED_TAG}", output)
+        self.assertIn(f"downloading engine {PINNED_TAG}", output)
+
+    def test_an_older_installed_engine_is_still_upgraded(self):
+        """The guard is about direction, not about refusing to touch anything."""
+        self.install_engine_record("v0.1.0")
+
+        output = self.install(RESOLVING_CURL)
+
+        self.assertIn(f"downloading engine {PINNED_TAG}", output)
+        self.assertNotIn("keeping installed engine", output)
+
+    def test_release_order_decides_not_string_order(self):
+        """v0.4.10 is newer than v0.4.9, which sorting as text gets backwards."""
+        self.install_engine_record("v0.4.10")
+
+        output = self.install(RESOLVING_CURL, "--engine-tag", "v0.4.9")
+
+        self.assertIn("keeping installed engine v0.4.10", output)
 
     def test_a_resolved_tag_that_could_alter_a_url_is_refused(self):
         output = self.install(
