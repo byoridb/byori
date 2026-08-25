@@ -462,7 +462,7 @@ private struct OverviewView: View {
                         VStack(alignment: .leading, spacing: 0) {
                             SettingsRequirementRow(
                                 title: "ByoriDB",
-                                state: byoriStatusLabel(snapshot.byori),
+                                state: snapshot.byori.condition.label,
                                 detail: byoriDetail(snapshot.byori),
                                 isSatisfied: snapshot.byori.isHealthy,
                                 action: byoriAction(snapshot.byori)
@@ -516,12 +516,6 @@ private struct OverviewView: View {
             }
             .padding(24)
         }
-    }
-
-    private func byoriStatusLabel(_ status: ByoriStatus) -> String {
-        if status.isHealthy { return "실행 중" }
-        if status.serviceLoaded { return "응답 없음" }
-        return status.isInstalled ? "중지됨" : "설치 필요"
     }
 
     /// The consequence, not the install path. A stopped engine does not fail
@@ -1666,11 +1660,13 @@ private func displayPath(_ path: String) -> String {
 
 /// The engine's own page.
 ///
-/// Split into what Byori observed, what runs the service, and what installs it.
-/// These were one row of five equally weighted buttons, where an ordinary
-/// restart and a destructive stop looked like the same kind of thing.
+/// Split into what Byori observed, what runs the service, what installs it, and
+/// what it writes. These were one row of five equally weighted buttons, where an
+/// ordinary restart and a destructive stop looked like the same kind of thing.
 private struct ByoriDatabaseView: View {
     @EnvironmentObject private var model: ManagerViewModel
+    @State private var isShowingServerLog = false
+    @State private var isCheckingEngineRelease = false
 
     var body: some View {
         ScrollView {
@@ -1680,105 +1676,552 @@ private struct ByoriDatabaseView: View {
                     subtitle: "지식 엔진의 로컬 서비스와 설치를 관리합니다."
                 )
 
-                GroupBox("상태") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        LabeledContent("설치") {
-                            Text(model.snapshot?.byori.isInstalled == true ? "설치됨" : "설치 필요")
-                        }
-                        LabeledContent("서버 응답") {
-                            Text(model.snapshot?.byori.isHealthy == true ? "정상" : "응답 없음")
-                        }
-                        LabeledContent("launchd") {
-                            Text(model.snapshot?.byori.serviceLoaded == true ? "로드됨" : "중지됨")
-                        }
-                        LabeledContent("Python 3") {
-                            Text(model.snapshot?.byori.pythonAvailable == true ? "사용 가능" : "필요")
-                        }
-                        // The engine binary answers no version question, so this
-                        // is what the installer recorded. "기록 없음" is a real
-                        // state, not a failure: engines installed before Byori
-                        // began recording it have no entry.
-                        LabeledContent("엔진 빌드") {
-                            if let identity = model.snapshot?.byori.serverVersion {
-                                Text(identity)
-                                    .font(.body.monospaced())
-                                    .textSelection(.enabled)
-                            } else {
-                                Text("기록 없음")
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        if model.snapshot?.byori.serverVersion == nil {
-                            Text("설치·업데이트를 한 번 실행하면 어떤 엔진이 설치되어 있는지 기록합니다.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    .padding(10)
-                }
-
-                GroupBox("서비스") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Button("시작") { model.request(.startByori) }
-                            Button("재시작") { model.request(.restartByori) }
-                            Spacer()
-                            Button("중지", role: .destructive) {
-                                model.request(.stopByori, confirmation: true)
-                            }
-                        }
-                        Text("에이전트 세션은 ByoriDB를 통해 프로젝트 메모리를 읽고 씁니다. 중지하면 세션은 계속 실행되지만 메모리 없이 동작합니다.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                // One action, because there was never a decision to make here.
-                // The two buttons this replaced ("bundled assets" and "online
-                // update") differed in which engine version each happened to
-                // land, and both could install one older than what was already
-                // running. Byori now always fetches the newest engine release.
-                GroupBox("설치") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Button(
-                                model.snapshot?.byori.isInstalled == true
-                                    ? "최신 엔진으로 업데이트"
-                                    : "ByoriDB 설치"
-                            ) {
-                                model.request(.installByori, confirmation: true)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            Spacer()
-                        }
-                        Text("GitHub의 최신 ByoriDB 엔진 릴리스를 내려받아 설치합니다. 변경 전 runtime을 백업하며, 검증에 실패하면 이전 상태로 되돌립니다. 엔진 릴리스를 확인할 수 없으면 이 앱과 함께 검증된 버전을 설치합니다.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                GroupBox("파일") {
-                    HStack {
-                        Button("서버 로그 열기") { model.openLogs() }
-                        Button("설정 백업 열기") { model.openBackups() }
-                        Spacer()
-                        Text(model.snapshot?.byori.homePath ?? "~/.byoridb")
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(10)
-                }
+                statusSection
+                serviceSection
+                engineSection
+                filesSection
             }
             .padding(24)
         }
         .disabled(model.isBusy)
+        .sheet(isPresented: $isShowingServerLog) {
+            ServerLogSheet()
+                .environmentObject(model)
+        }
+        // The background check runs every few hours, which is fine for a badge and
+        // not for the page where the user decides whether to install. Opening it is
+        // a deliberate act, so it is a fair moment to ask GitHub once more.
+        .task { await checkEngineRelease() }
+    }
+
+    /// A check that leaves the last known release in place when it fails, and says
+    /// while it runs that it is running: "확인할 수 없음" arriving without a visible
+    /// attempt reads as a verdict rather than as a network result.
+    private func checkEngineRelease() async {
+        isCheckingEngineRelease = true
+        await model.refreshEngineRelease()
+        isCheckingEngineRelease = false
+    }
+
+    /// The state first, then the checks it was derived from.
+    ///
+    /// This was five label/value pairs of equal weight — install, endpoint,
+    /// launchd, Python, engine build — which made "is the engine working" a
+    /// question the reader had to answer by combining four of them. The page now
+    /// answers it once and keeps the individual checks as the evidence, in the
+    /// same row grammar the Overview page uses for local requirements.
+    private var statusSection: some View {
+        GroupBox("상태") {
+            if let byori = model.snapshot?.byori {
+                VStack(alignment: .leading, spacing: 0) {
+                    ByoriConditionSummary(status: byori)
+                    Divider().padding(.leading, 26)
+                    SettingsRequirementRow(
+                        title: "서버 응답",
+                        state: byori.isHealthy ? "정상" : "응답 없음",
+                        detail: byori.isHealthy
+                            ? "설정된 클라이언트로 인증까지 확인했습니다."
+                            : "포트가 응답하지 않거나 인증이 확인되지 않습니다. 재시작으로 대부분 해결됩니다.",
+                        isSatisfied: byori.isHealthy,
+                        action: nil
+                    )
+                    Divider().padding(.leading, 26)
+                    SettingsRequirementRow(
+                        title: "launchd 등록",
+                        state: byori.serviceLoaded ? "로드됨" : "등록되지 않음",
+                        detail: byori.serviceLoaded
+                            ? "로그인할 때 자동으로 시작되고, 꺼지면 다시 올라옵니다."
+                            : "지금은 자동으로 시작되지 않습니다. 시작을 누르면 다시 등록합니다.",
+                        isSatisfied: byori.serviceLoaded,
+                        action: nil
+                    )
+                    Divider().padding(.leading, 26)
+                    SettingsRequirementRow(
+                        title: "Python 3",
+                        state: byori.pythonAvailable ? "사용 가능" : "필요",
+                        detail: byori.pythonAvailable
+                            ? "ByoriDB MCP 런타임이 사용합니다."
+                            : "MCP 런타임에 필요합니다. 설치·업데이트도 Python 3 없이는 실행하지 않습니다.",
+                        isSatisfied: byori.pythonAvailable,
+                        action: nil
+                    )
+                }
+                .padding(10)
+            } else {
+                ProgressView("ByoriDB 상태 확인 중…")
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var serviceSection: some View {
+        GroupBox("서비스") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Button("시작") { model.request(.startByori) }
+                    Button("재시작") { model.request(.restartByori) }
+                    Spacer()
+                    Button("중지", role: .destructive) {
+                        model.request(.stopByori, confirmation: true)
+                    }
+                }
+                Text("에이전트 세션은 ByoriDB를 통해 프로젝트 메모리를 읽고 씁니다. 중지하면 세션은 계속 실행되지만 메모리 없이 동작합니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// What is installed, what exists, and the one action between them.
+    ///
+    /// The installed build used to sit among the health checks while its action
+    /// lived two groups below under the name "설치", and neither said which engine
+    /// release existed. So "최신 엔진으로 업데이트" was a button whose outcome the
+    /// page could not show — including the case that matters most, where the
+    /// installer fails to reach GitHub and silently lands its pinned tag.
+    private var engineSection: some View {
+        GroupBox("엔진") {
+            VStack(alignment: .leading, spacing: 12) {
+                Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 14, verticalSpacing: 8) {
+                    GridRow {
+                        Text("설치된 빌드")
+                            .foregroundStyle(.secondary)
+                            .gridColumnAlignment(.leading)
+                        installedEngineText
+                    }
+                    GridRow {
+                        Text("최신 릴리스")
+                            .foregroundStyle(.secondary)
+                        latestEngineText
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Divider()
+
+                HStack(spacing: 10) {
+                    EngineInstallButton(
+                        isInstalled: model.snapshot?.byori.isInstalled == true,
+                        availability: model.engineAvailability
+                    ) {
+                        model.request(.installByori, confirmation: true)
+                    }
+                    Button("릴리스 다시 확인") {
+                        Task { await checkEngineRelease() }
+                    }
+                    .disabled(isCheckingEngineRelease)
+                    if isCheckingEngineRelease {
+                        ProgressView().controlSize(.small)
+                    }
+                    Spacer()
+                    if let url = model.latestEngineRelease?.releaseURL {
+                        Link("릴리스 노트", destination: url)
+                            .font(.caption)
+                    }
+                }
+
+                Text(engineDetail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// The engine binary answers `--version` from 0.4.0 on; below that this is
+    /// what the installer recorded. "기록 없음" is a real state, not a failure:
+    /// engines installed before Byori began recording it have no entry.
+    @ViewBuilder
+    private var installedEngineText: some View {
+        if let identity = model.snapshot?.byori.serverVersion {
+            Text(identity)
+                .font(.body.monospaced())
+                .textSelection(.enabled)
+        } else if model.snapshot?.byori.isInstalled == true {
+            Text("기록 없음")
+                .foregroundStyle(.secondary)
+        } else {
+            Text("설치되지 않음")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var latestEngineText: some View {
+        switch model.engineAvailability {
+        case .unknown:
+            Text("확인할 수 없음")
+                .foregroundStyle(.secondary)
+        case let .available(release):
+            // Orange is what this app already uses for an available app update,
+            // so the same fact keeps the same colour on both pages.
+            Text(release.tag)
+                .font(.body.monospaced())
+                .foregroundStyle(.orange)
+                .textSelection(.enabled)
+        case let .upToDate(release), let .installedUnknown(release):
+            Text(release.tag)
+                .font(.body.monospaced())
+                .textSelection(.enabled)
+        }
+    }
+
+    private var engineDetail: String {
+        switch model.engineAvailability {
+        case .unknown:
+            return "GitHub의 엔진 릴리스를 확인하지 못했습니다. 지금 설치하면 설치기가 다시 확인하고, 그래도 실패하면 이 앱과 함께 검증된 버전을 설치합니다. 변경 전 runtime은 백업하며 검증에 실패하면 되돌립니다."
+        case .installedUnknown:
+            return "설치된 엔진의 빌드 기록이 없어 최신 여부를 비교할 수 없습니다. 설치를 한 번 실행하면 어떤 엔진이 설치되어 있는지 기록합니다. 변경 전 runtime은 백업하며 검증에 실패하면 되돌립니다."
+        case .upToDate:
+            return "설치된 엔진이 가장 최신 릴리스입니다. 다시 설치하면 같은 릴리스를 검증한 뒤 교체하고, 바이트가 같으면 실행 중인 엔진을 건드리지 않습니다."
+        case .available:
+            return "표시된 릴리스를 내려받아 설치합니다. 변경 전 runtime을 백업하며, 검증에 실패하면 이전 상태로 되돌립니다. 데이터와 root 비밀번호는 보존됩니다."
+        }
+    }
+
+    /// Reading a log is a different act from finding its folder, so the row offers
+    /// both instead of naming one and doing the other.
+    private var filesSection: some View {
+        GroupBox("파일") {
+            VStack(alignment: .leading, spacing: 0) {
+                ByoriFileRow(
+                    title: "서버 로그",
+                    detail: "엔진이 남긴 최근 기록입니다. 파일에는 색상 제어문자가 섞여 있어 앱에서 정리해 보여줍니다.",
+                    primary: .init(title: "로그 보기") { isShowingServerLog = true },
+                    secondary: .init(title: "폴더 열기") { model.openLogs() }
+                )
+                Divider()
+                ByoriFileRow(
+                    title: "설정 백업",
+                    detail: "MCP·Skill·runtime을 변경하기 전에 남긴 사본입니다.",
+                    primary: .init(title: "폴더 열기") { model.openBackups() },
+                    secondary: nil
+                )
+                Divider()
+                HStack {
+                    Text("ByoriDB 홈")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 12)
+                    Text(model.snapshot?.byori.homePath ?? "~/.byoridb")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .padding(.top, 10)
+            }
+            .padding(10)
+        }
+    }
+}
+
+/// Answers "is the engine working right now" once, above the checks it is
+/// derived from, with the consequence rather than the mechanism.
+private struct ByoriConditionSummary: View {
+    let status: ByoriStatus
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: symbol)
+                .font(.title3)
+                .foregroundStyle(tint)
+                .frame(width: 16)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(status.condition.label)
+                    .font(.body.weight(.semibold))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+        }
+        .padding(.vertical, 9)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("ByoriDB \(status.condition.label)")
+        .accessibilityHint(detail)
+    }
+
+    /// Red only for the state where something is registered and broken; orange
+    /// for the ones Byori or the user can simply start or install.
+    private var tint: Color {
+        switch status.condition {
+        case .running: return .green
+        case .unresponsive: return .red
+        case .stopped, .notInstalled: return .orange
+        }
+    }
+
+    private var symbol: String {
+        switch status.condition {
+        case .running: return "checkmark.circle.fill"
+        case .unresponsive: return "exclamationmark.octagon.fill"
+        case .stopped: return "pause.circle.fill"
+        case .notInstalled: return "arrow.down.circle"
+        }
+    }
+
+    private var detail: String {
+        switch status.condition {
+        case .running:
+            return "에이전트 세션이 프로젝트 메모리를 읽고 쓰는 중입니다."
+        case .unresponsive:
+            return "서비스는 등록되어 있지만 응답하지 않습니다. 지금 열리는 세션은 메모리 없이 동작합니다."
+        case .stopped:
+            return "지금은 에이전트가 메모리 없이 동작합니다. 시작을 누르면 다시 등록하고 올립니다."
+        case .notInstalled:
+            return "설치해야 에이전트가 프로젝트 메모리를 사용할 수 있습니다."
+        }
+    }
+}
+
+/// Says what the last release check found, not just what the click will do — the
+/// same rule as the app's own update button.
+private struct EngineInstallButton: View {
+    let isInstalled: Bool
+    let availability: EngineUpdateAvailability
+    let action: () -> Void
+
+    var body: some View {
+        switch (isInstalled, availability) {
+        case (false, _):
+            Button("ByoriDB 설치", action: action)
+                .buttonStyle(.borderedProminent)
+        case let (true, .available(release)):
+            // The version goes in parentheses rather than into the sentence:
+            // Korean particles change with the preceding sound.
+            Button("엔진 업데이트 (\(release.tag))", action: action)
+                .buttonStyle(.borderedProminent)
+        case (true, .upToDate):
+            Button(action: action) {
+                Label("이미 최신 엔진", systemImage: "checkmark.circle.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.green)
+            .help("같은 릴리스를 다시 설치·검증하려면 누르세요.")
+        case (true, .unknown), (true, .installedUnknown):
+            Button("최신 엔진으로 업데이트", action: action)
+        }
+    }
+}
+
+/// One file Byori owns: what it is, and the ways to reach it.
+private struct ByoriFileRow: View {
+    struct Action {
+        let title: String
+        let perform: () -> Void
+    }
+
+    let title: String
+    let detail: String
+    let primary: Action
+    let secondary: Action?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.body.weight(.medium))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityElement(children: .combine)
+            Spacer(minLength: 16)
+            if let secondary {
+                Button(secondary.title, action: secondary.perform)
+                    .controlSize(.small)
+            }
+            Button(primary.title, action: primary.perform)
+                .controlSize(.small)
+        }
+        .padding(.vertical, 9)
+    }
+}
+
+/// Reads the engine's log inside Byori.
+///
+/// The old action revealed `~/.byoridb/logs` in the Finder and left the rest to
+/// the user: two files with no explanation of which is which, one of them tens of
+/// megabytes, and every line wrapped in the ANSI sequences a text editor shows
+/// literally. This shows the end of one file at a time, stripped and bounded, and
+/// still offers the folder for the whole thing.
+private struct ServerLogSheet: View {
+    @EnvironmentObject private var model: ManagerViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var file: ServerLogFile = .output
+    @State private var tail: ServerLogTail?
+    @State private var isLoading = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("ByoriDB 로그")
+                        .font(.title3.weight(.semibold))
+                    Text(file.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 12)
+                Picker("로그 파일", selection: $file) {
+                    ForEach(ServerLogFile.allCases) { candidate in
+                        Text(candidate.displayName).tag(candidate)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 200)
+            }
+
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            HStack(spacing: 10) {
+                Text(footer)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 12)
+                if isLoading {
+                    ProgressView().controlSize(.small)
+                }
+                Button("새로 고침") { Task { await load() } }
+                Button("복사") { copy() }
+                    .disabled(tail?.text == nil)
+                Button("폴더 열기") { model.openLogs() }
+                Button("닫기") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 720, idealWidth: 820, minHeight: 460, idealHeight: 560)
+        // Re-reads when the file changes as well as on open, so the picker is the
+        // only control needed to switch.
+        .task(id: file) { await load() }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch tail?.content {
+        case let .text(text):
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(text)
+                            .font(.system(size: 11, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        // The newest line is what a log is opened for, so the
+                        // view starts at the end rather than at the top of a
+                        // window that begins mid-history.
+                        Color.clear.frame(height: 1).id(Self.bottomAnchor)
+                    }
+                    .padding(10)
+                }
+                .background(Color(nsColor: .textBackgroundColor))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(Color(nsColor: .separatorColor))
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                // Runs on first appearance and after every reload, one yield later:
+                // the anchor is created in the same update that asks to scroll to
+                // it, and it cannot be reached before that update is laid out.
+                .task(id: text) {
+                    await Task.yield()
+                    proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
+                }
+            }
+        case .empty:
+            LogPlaceholder(
+                symbol: "text.append",
+                title: file == .error ? "오류 기록이 없습니다." : "기록이 비어 있습니다.",
+                detail: file == .error
+                    ? "엔진이 표준 오류로 남긴 내용이 없습니다. 정상적인 상태입니다."
+                    : "서비스가 아직 아무 것도 기록하지 않았습니다."
+            )
+        case .missing:
+            LogPlaceholder(
+                symbol: "doc.questionmark",
+                title: "\(file.displayName) 파일이 없습니다.",
+                detail: "서비스를 한 번 시작하면 launchd가 이 파일을 만듭니다."
+            )
+        case nil:
+            LogPlaceholder(symbol: "clock", title: "로그를 읽는 중…", detail: "")
+        }
+    }
+
+    private static let bottomAnchor = "byori-log-bottom"
+
+    private var footer: String {
+        guard let tail else { return " " }
+        var parts: [String] = []
+        if tail.lineCount > 0 {
+            parts.append("마지막 \(tail.lineCount)줄")
+        }
+        if tail.byteSize > 0 {
+            parts.append(
+                "전체 " + ByteCountFormatter.string(fromByteCount: tail.byteSize, countStyle: .file)
+            )
+        }
+        if let modifiedAt = tail.modifiedAt {
+            parts.append(
+                "기록 " + modifiedAt.formatted(date: .abbreviated, time: .standard)
+            )
+        }
+        if tail.isTruncated {
+            parts.append("이전 기록은 파일에 남아 있습니다")
+        }
+        return parts.isEmpty ? tail.path : parts.joined(separator: " · ")
+    }
+
+    private func load() async {
+        isLoading = true
+        tail = await model.serverLogTail(file)
+        isLoading = false
+    }
+
+    private func copy() {
+        guard let text = tail?.text else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+}
+
+private struct LogPlaceholder: View {
+    let symbol: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: symbol)
+                .font(.system(size: 30))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Text(title).font(.headline)
+            if !detail.isEmpty {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 380)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
     }
 }
 

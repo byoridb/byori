@@ -84,9 +84,12 @@ struct MenuBarView: View {
     }
 
     private var statusColor: Color {
-        guard let status = model.snapshot?.byori else { return .orange }
-        if status.isHealthy { return .green }
-        return status.serviceLoaded ? .red : .orange
+        guard let condition = model.snapshot?.byori.condition else { return .orange }
+        switch condition {
+        case .running: return .green
+        case .unresponsive: return .red
+        case .stopped, .notInstalled: return .orange
+        }
     }
 
     private var statusText: String {
@@ -95,11 +98,15 @@ struct MenuBarView: View {
         guard let status = model.snapshot?.byori else {
             return sessions == 0 ? "Checking ByoriDB" : "\(sessions) active session\(sessions == 1 ? "" : "s")"
         }
-        let database = status.isHealthy
-            ? "ByoriDB running"
-            : status.serviceLoaded
-                ? "ByoriDB unavailable"
-                : status.isInstalled ? "ByoriDB stopped" : "ByoriDB setup needed"
+        // Derived from the same condition every other surface reports, so the
+        // menu bar cannot call the engine stopped while Settings calls it broken.
+        let database: String
+        switch status.condition {
+        case .running: database = "ByoriDB running"
+        case .unresponsive: database = "ByoriDB unavailable"
+        case .stopped: database = "ByoriDB stopped"
+        case .notInstalled: database = "ByoriDB setup needed"
+        }
         guard sessions > 0 else { return database }
         return "\(database) · \(sessions) active session\(sessions == 1 ? "" : "s")"
     }

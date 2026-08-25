@@ -250,6 +250,28 @@ public enum ReleaseCatalog {
             releaseURL: release.htmlURL.flatMap(URL.init(string:))
         )
     }
+
+    /// The newest engine release, which is only ever reported and handed to the
+    /// installer — Byori never downloads an engine binary itself.
+    ///
+    /// No asset is required here, unlike an app update: the installer picks the
+    /// archive for the running architecture, and refusing a release for carrying
+    /// no `.dmg` would refuse every engine release there is.
+    public static func latestEngineRelease(from data: Data) throws -> EngineRelease {
+        let release = try JSONDecoder().decode(Release.self, from: data)
+        guard !release.draft, !release.prerelease else {
+            throw ManagerError.prerequisite("최신 엔진 릴리스가 초안 또는 프리릴리스입니다.")
+        }
+        let tag = release.tagName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let version = AppVersion(tag), EngineRelease.isSafeTag(tag) else {
+            throw ManagerError.prerequisite("엔진 릴리스 태그를 해석할 수 없습니다: \(release.tagName)")
+        }
+        return EngineRelease(
+            tag: tag,
+            version: version,
+            releaseURL: release.htmlURL.flatMap(URL.init(string:))
+        )
+    }
 }
 
 /// Downloads, verifies, and installs a newer Byori.app.

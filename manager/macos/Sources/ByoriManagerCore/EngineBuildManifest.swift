@@ -41,6 +41,19 @@ public struct EngineBuildManifest: Equatable, Sendable {
         }
     }
 
+    /// Recovers the comparable version from whatever identity was reported.
+    ///
+    /// Both forms this app produces start with the version — `0.4.2 (commit …,
+    /// release)` from the binary and `v0.4.2 · digest` from the manifest — so the
+    /// leading token is the whole answer. A local build (`로컬 빌드 · digest`)
+    /// deliberately yields nil: it has no place in the release ordering, and
+    /// calling it older than the newest tag would offer to overwrite a binary the
+    /// user installed on purpose.
+    public static func installedVersion(fromIdentity identity: String) -> AppVersion? {
+        guard let token = identity.split(separator: " ").first else { return nil }
+        return AppVersion(String(token))
+    }
+
     /// The first engine release that parses its arguments instead of ignoring
     /// them. Below this, `--version` starts a server.
     public static let versionFlagMinimum = "v0.4.0"

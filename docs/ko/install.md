@@ -70,8 +70,11 @@ install.sh [--no-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z|latest] [--uninstall
   `~/.claude`를 전혀 건드리지 않으려면 두 옵션을 함께 넘긴다.
 - `--tag` — byori 자산(MCP/스킬/템플릿) 버전 고정(기본: 최신 byori 릴리스).
 - `--engine-tag` — 설치할 ByoriDB 엔진 릴리스(기본: 이 byori 버전과 함께 검증된 고정 태그).
-  `latest`를 주면 최신 엔진 릴리스를 조회해 설치한다 — macOS 앱의 설치 버튼이 이 방식이다.
-  조회가 실패하면(네트워크 없음, GitHub API rate limit) 고정 태그를 설치하고 그 사실을 로그로 남긴다.
+  `latest`를 주면 최신 엔진 릴리스를 조회해 설치한다. 조회가 실패하면(네트워크 없음, GitHub API
+  rate limit) 고정 태그를 설치하고 그 사실을 로그로 남긴다. macOS 앱은 ByoriDB 페이지에서 이미
+  조회해 표시한 릴리스 태그를 그대로 넘기고, 앱이 조회하지 못했을 때만 `latest`로 위임한다.
+  앱이 더 새로운 릴리스를 표시하는 동안 설치기가 조용히 고정 태그를 설치하면, 사용자가 방금
+  낡았다고 들은 엔진을 설치하는 셈이기 때문이다.
 - `--uninstall` — 서비스 중지·해제, Claude/Codex MCP 등록 해제, Byori skill 두 개 제거.
   **데이터는 확인 후 보존/삭제 선택.** merge되지 않은 사용자 변경이 있을 수 있어
   `~/.byori`의 오케스트레이션 record와 worktree는 보존한다.

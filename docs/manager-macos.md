@@ -137,7 +137,11 @@ next session without relaunching Byori:
 
 - Install or repair the bundled MCP and Skill assets and a downloaded compatible
   ByoriDB engine; update to the latest release; and check authenticated readiness and launchd status
-- Start, stop, and restart ByoriDB, and open server logs
+- Report the installed engine build next to the newest published engine release, so
+  "up to date" is a verified statement rather than an assumption. When the release lookup
+  fails, the page says so instead of implying the installed engine is current
+- Start, stop, and restart ByoriDB, and read the end of its server or error log inside the
+  app, with the log folder still one click away
 - Detect Claude Code, Codex, Gemini CLI, Cursor CLI, and OpenCode, and install or update them
   through each vendor's official installation command
 - Register any other coding CLI by its executable path, with optional default arguments that are
@@ -303,7 +307,10 @@ shell environment variables, the app inspects the existing launchd plist and ren
   and service assets carried in the app bundle — the ones this build was tested with, replaced
   by the app updater — and always fetches the newest ByoriDB engine release, falling back to
   the version validated with this build when that lookup fails. Existing data and the root
-  password are preserved. Health and authenticated session creation must both succeed; this
+  password are preserved. The engine tag comes from the release check the ByoriDB page already
+  displayed; the installer resolves it itself only when the app could not. Otherwise a
+  rate-limited lookup inside the installer would quietly land its pinned tag while the page
+  reported a newer release. Health and authenticated session creation must both succeed; this
   prevents a different process on the same port from being reported as ready. On failure, the
   app restores the runtime files and re-verifies a previously working connection.
 - Failure details appear under **Settings → Diagnostics** as the app's activity log.

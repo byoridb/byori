@@ -15,23 +15,33 @@ public actor ManagerService {
     private let graphProvider: any KnowledgeGraphProviding
     private let fileManager: FileManager
     private let serviceVerifier: LocalServiceVerifier
+    /// Reads release metadata for the engine. The app's own updater keeps its
+    /// fetcher, because that one also downloads and verifies a disk image; this
+    /// one never downloads anything.
+    private let releaseFetcher: any ReleaseFetching
     /// Settings' own tmux probe. Deliberately separate from the terminal
     /// controller's: this one answers status questions, and both caches are
     /// refreshed after an install so neither can keep reporting the old answer.
     private let tmux: TmuxSessionService
+
+    /// The engine ships from its own repository, so its releases move without an
+    /// app release. Kept next to the installer's `ENGINE_REPO`.
+    static let engineRepository = "byoridb/byoridb"
 
     public init(
         paths: ManagerPaths = .applicationDefault(),
         runner: any CommandRunning = ProcessCommandRunner(),
         files: ManagedFileInstaller = ManagedFileInstaller(),
         graphProvider: any KnowledgeGraphProviding = ByoriGraphClient(),
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        releaseFetcher: any ReleaseFetching = URLSessionReleaseFetcher()
     ) {
         self.paths = paths
         self.runner = runner
         self.files = files
         self.graphProvider = graphProvider
         self.fileManager = fileManager
+        self.releaseFetcher = releaseFetcher
         serviceVerifier = LocalServiceVerifier(runner: runner)
         // Takes the default FileManager rather than this service's: the status
         // and install paths only run `tmux -V`, and handing a non-Sendable
@@ -196,9 +206,17 @@ public actor ManagerService {
     ///   replacing them is what the app updater is for. A build with no bundled
     ///   assets — `swift run` during development — has none to use, so it falls
     ///   back to the installer from the latest release.
-    /// - **The engine** is resolved at install time by `--engine-tag latest`, which
-    ///   falls back to the installer's pinned tag when GitHub cannot be reached.
-    public func installOrUpdateByori() async throws -> OperationResult {
+    /// - **The engine** is the release the caller already reported on screen when
+    ///   there is one, and otherwise `--engine-tag latest`, which the installer
+    ///   resolves itself and falls back to its pinned tag when GitHub cannot be
+    ///   reached.
+    ///
+    /// Passing the tag matters: the installer's own resolution is a bare
+    /// `curl | awk` that gives up quietly on a rate limit, and a fallback to the
+    /// pinned tag while the page says a newer release exists installs an engine
+    /// the user was just told was outdated. Byori resolved it once for that page,
+    /// so the install uses that answer instead of asking again.
+    public func installOrUpdateByori(engineTag: String? = nil) async throws -> OperationResult {
         try Task.checkCancellation()
         guard paths.executable(named: "python3") != nil else {
             throw ManagerError.prerequisite(
@@ -207,7 +225,7 @@ public actor ManagerService {
         }
         let snapshot = try await createRuntimeSnapshot()
         try Task.checkCancellation()
-        let result = await runner.run(byoriInstallCommand())
+        let result = await runner.run(byoriInstallCommand(engineTag: engineTag))
         do {
             try require(result, label: "ByoriDB 설치")
             try await verifyByori()
@@ -285,9 +303,15 @@ public actor ManagerService {
     }
 
     /// The bundled installer when the app carries one, otherwise the installer from
-    /// the latest release. Both ask for the newest engine release.
-    func byoriInstallCommand() -> CommandSpec {
-        let engineArguments = ["--engine-tag", "latest", "--no-claude", "--no-codex"]
+    /// the latest release. Both install the engine release the caller resolved, or
+    /// ask the installer to resolve the newest one when it could not be checked.
+    ///
+    /// A tag outside the installer's own charset is dropped rather than passed on:
+    /// it is interpolated into a download URL and recorded in the engine manifest,
+    /// and `latest` is a correct install where a rejected tag is no install at all.
+    func byoriInstallCommand(engineTag: String? = nil) -> CommandSpec {
+        let tag = engineTag.flatMap { EngineRelease.isSafeTag($0) ? $0 : nil } ?? "latest"
+        let engineArguments = ["--engine-tag", tag, "--no-claude", "--no-codex"]
         guard fileManager.fileExists(atPath: paths.installer.path) else {
             let command = "/usr/bin/curl -fsSL "
                 + "https://github.com/byoridb/byori/releases/latest/download/install.sh "
@@ -310,6 +334,37 @@ public actor ManagerService {
     /// Reports whether a newer signed release exists, without downloading it.
     public func checkForAppUpdate() async throws -> AppUpdateStatus {
         try await makeAppUpdater().check()
+    }
+
+    /// The newest published engine release, so the page can say which engine is
+    /// installed *and* which one exists. Nothing is downloaded or installed by
+    /// checking, and no comparison happens here: the caller pairs this with the
+    /// installed identity through `EngineUpdateAvailability`.
+    public func checkForEngineRelease() async throws -> EngineRelease {
+        let endpoint = URL(
+            string: "https://api.github.com/repos/\(Self.engineRepository)/releases/latest"
+        )
+        guard let endpoint else {
+            throw ManagerError.prerequisite("엔진 릴리스 주소를 만들 수 없습니다.")
+        }
+        return try ReleaseCatalog.latestEngineRelease(
+            from: try await releaseFetcher.data(from: endpoint)
+        )
+    }
+
+    /// A bounded, display-safe tail of one engine log file.
+    ///
+    /// `nonisolated`, and deliberately so: this only reads a file whose location is
+    /// already known. Putting it on the actor would queue "show me the log" behind
+    /// a running install, which is exactly when someone opens the log.
+    public nonisolated func serverLogTail(
+        _ file: ServerLogFile,
+        limit: Int = ServerLogReader.defaultTailBytes
+    ) async -> ServerLogTail {
+        let directory = paths.logs
+        return await Task.detached(priority: .userInitiated) {
+            ServerLogReader().tail(of: file, in: directory, limit: limit)
+        }.value
     }
 
     /// Verifies a newer release and hands the swap to a detached helper. Only

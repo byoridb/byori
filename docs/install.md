@@ -76,9 +76,11 @@ install.sh [--no-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z|latest] [--uninstall
   is the latest Byori release.
 - `--engine-tag` — which ByoriDB engine release to install. The default is the pinned
   engine version verified with this Byori release. Pass `latest` to resolve the newest
-  engine release instead, which is what the macOS app's install button does; when that
-  lookup fails — no network, or a GitHub API rate limit — the pinned version is installed
-  and the run says so.
+  engine release instead; when that lookup fails — no network, or a GitHub API rate
+  limit — the pinned version is installed and the run says so. The macOS app passes the
+  release tag it already resolved and displayed on its ByoriDB page, and falls back to
+  `latest` only when it could not check: a silent fallback to the pinned tag while the
+  app reports a newer release would install an engine the user was told was outdated.
 - `--uninstall` — stops and unregisters the service, unregisters the Claude/Codex
   MCP integration, and removes both Byori skills. **You are prompted to keep or delete the data.**
   Orchestration records and worktrees under `~/.byori` are preserved because they may contain

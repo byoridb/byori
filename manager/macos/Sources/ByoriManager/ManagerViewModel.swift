@@ -248,9 +248,23 @@ final class ManagerViewModel: ObservableObject {
     /// things: having failed to reach GitHub is not the same as being current.
     @Published private(set) var updateAvailability: AppUpdateAvailability = .unknown
 
+    /// The newest engine release the last check saw, kept apart from the app's own
+    /// update state: the engine ships from its own repository and moves without an
+    /// app release, so one of the two can be current while the other is not.
+    @Published private(set) var latestEngineRelease: EngineRelease?
+
     var availableUpdate: AvailableUpdate? {
         if case let .available(update) = updateAvailability { return update }
         return nil
+    }
+
+    /// The engine's installed-versus-published state, resolved in one place so the
+    /// version rows and the install button cannot disagree.
+    var engineAvailability: EngineUpdateAvailability {
+        EngineUpdateAvailability.resolve(
+            installedIdentity: snapshot?.byori.serverVersion,
+            latest: latestEngineRelease
+        )
     }
 
     let service: ManagerService
@@ -321,6 +335,7 @@ final class ManagerViewModel: ObservableObject {
         updateCheckTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.checkForUpdateQuietly()
+                await self?.checkForEngineReleaseQuietly()
                 try? await Task.sleep(for: Self.updateCheckInterval)
             }
         }
@@ -337,6 +352,24 @@ final class ManagerViewModel: ObservableObject {
         case let .available(update):
             updateAvailability = .available(update)
         }
+    }
+
+    /// Same rule as the app's check: offline, rate-limited, and dev builds are all
+    /// ordinary. The engine page then reports "확인할 수 없음" rather than implying
+    /// the installed engine is the newest one.
+    private func checkForEngineReleaseQuietly() async {
+        guard let release = try? await service.checkForEngineRelease() else { return }
+        latestEngineRelease = release
+    }
+
+    /// Re-checks on demand, for the one moment where a stale answer is worst: the
+    /// user is looking at the engine section deciding whether to install.
+    func refreshEngineRelease() async {
+        await checkForEngineReleaseQuietly()
+    }
+
+    func serverLogTail(_ file: ServerLogFile) async -> ServerLogTail {
+        await service.serverLogTail(file)
     }
 
     func refresh() async {
@@ -593,7 +626,11 @@ final class ManagerViewModel: ObservableObject {
             case let .installCLI(kind):
                 result = try await service.installOrUpdateCLI(kind)
             case .installByori:
-                result = try await service.installOrUpdateByori()
+                // The tag the page is showing, so the install cannot land an older
+                // engine than the one the user was just told exists.
+                result = try await service.installOrUpdateByori(
+                    engineTag: latestEngineRelease?.tag
+                )
             case .updateApp:
                 // Replacing the bundle needs the app to quit. Refuse before
                 // downloading anything: verifying a release and then failing
