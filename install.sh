@@ -45,6 +45,9 @@ DESIGN_SKILL_NAME="byori-design"
 TAG=""; ENGINE_TAG="${BYORI_ENGINE_TAG:-$ENGINE_TAG_DEFAULT}"
 WITH_HOOKS=1; UNINSTALL=0; BINARY=""; ASSETS=""; NO_SERVICE=0; NO_CLAUDE=0; NO_CODEX=0
 ALLOW_ENGINE_DOWNGRADE=0; SKIP_ENGINE=0
+# Whether the engine binary on disk changed in this run. A service reload is only
+# needed when it did — the running server is executing the old one.
+engine_replaced=0
 
 c_blue=$'\033[34m'; c_red=$'\033[31m'; c_dim=$'\033[2m'; c_off=$'\033[0m'
 log()  { printf '%s==>%s %s\n' "$c_blue" "$c_off" "$*"; }
@@ -274,6 +277,32 @@ stop_service_for_replacement() {
   warn "the previous server is still answering on ${HTTP_ADDR}; continuing anyway"
 }
 
+file_sha() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    printf ''
+  fi
+}
+
+# Replace a binary without ever writing into the file a running process is executing.
+#
+# Copying over it in place corrupted the engine: the bytes on disk stopped matching
+# their own signature, so macOS killed every start (`codesign -v` answered "code or
+# signature have been modified") and one install produced three different sha256
+# values — the archive's, the one recorded right after `cp`, and the one on disk
+# afterwards. Renaming swaps the directory entry instead, leaving the old inode
+# whole for whatever still holds it open.
+install_binary() {
+  src="$1"; dest="$2"
+  tmp="$(dirname "$dest")/.$(basename "$dest").new"
+  cp "$src" "$tmp"
+  chmod +x "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$dest"
+}
+
 # 1) stage and install the engine binary (from ENGINE_REPO at the resolved ENGINE_TAG)
 if [ "$SKIP_ENGINE" = 1 ]; then
   log "engine unchanged: ${installed_engine_tag} (already installed)"
@@ -289,21 +318,47 @@ else
   tar -xzf "$WORK/b.tar.gz" -C "$WORK/engine"
 fi
 [ -f "$WORK/engine/byoridb-server" ] || die "engine archive is missing byoridb-server"
-stop_service_for_replacement
-cp "$WORK/engine/byoridb-server" "$BYORIDB_HOME/bin/byoridb-server"
-[ -f "$WORK/engine/byoridb-cli" ] && cp "$WORK/engine/byoridb-cli" "$BYORIDB_HOME/bin/byoridb-cli"
-chmod +x "$BYORIDB_HOME/bin/byoridb-server" 2>/dev/null || true
-[ -f "$BYORIDB_HOME/bin/byoridb-cli" ] && chmod +x "$BYORIDB_HOME/bin/byoridb-cli"
+staged_sha="$(file_sha "$WORK/engine/byoridb-server")"
+
+# Refuse a downloaded binary macOS would kill on sight, while a working one is still
+# in place. Checked before installing, so a bad download cannot become the engine.
+# A `--binary` build is the caller's own deliberate choice — an unsigned local build
+# is normal there, so it only warns.
+if [ "$OS" = Darwin ] && command -v codesign >/dev/null 2>&1; then
+  if ! codesign -v "$WORK/engine/byoridb-server" >/dev/null 2>&1; then
+    if [ -n "$BINARY" ]; then
+      warn "the binary you passed is not validly signed; macOS may refuse to run it"
+    else
+      die "the downloaded engine fails its own signature check (sha ${staged_sha:0:12}); not installing it"
+    fi
+  fi
+fi
+
+current_sha=""
+[ -f "$BYORIDB_HOME/bin/byoridb-server" ] && \
+  current_sha="$(file_sha "$BYORIDB_HOME/bin/byoridb-server")"
+if [ -n "$staged_sha" ] && [ "$staged_sha" = "$current_sha" ]; then
+  # Same bytes: replacing the file and restarting the service would buy nothing and
+  # cost every reinstall a downtime window. Reinstalling to pick up a new MCP server
+  # or CLI must not disturb a healthy engine.
+  log "engine bytes unchanged (${staged_sha:0:12}); leaving the running server alone"
+else
+  engine_replaced=1
+  stop_service_for_replacement
+  install_binary "$WORK/engine/byoridb-server" "$BYORIDB_HOME/bin/byoridb-server"
+  [ -f "$WORK/engine/byoridb-cli" ] && \
+    install_binary "$WORK/engine/byoridb-cli" "$BYORIDB_HOME/bin/byoridb-cli"
+fi
 
 # 1b) record which engine this is. byoridb-server exposes no --version and
 #     ignores its arguments, so without this file identifying an installed
 #     engine means running `strings` over the binary.
-if command -v shasum >/dev/null 2>&1; then
-  engine_sha="$(shasum -a 256 "$BYORIDB_HOME/bin/byoridb-server" | awk '{print $1}')"
-elif command -v sha256sum >/dev/null 2>&1; then
-  engine_sha="$(sha256sum "$BYORIDB_HOME/bin/byoridb-server" | awk '{print $1}')"
-else
-  engine_sha=""
+engine_sha="$(file_sha "$BYORIDB_HOME/bin/byoridb-server")"
+# The record has to describe the bytes that are actually there. A mismatch here is
+# how a corrupted install looked like a successful one (byori#57 caught it after the
+# fact; this is where it must not happen).
+if [ -n "$staged_sha" ] && [ -n "$engine_sha" ] && [ "$engine_sha" != "$staged_sha" ]; then
+  die "installed engine does not match what was staged (${engine_sha:0:12} vs ${staged_sha:0:12}); refusing to record it"
 fi
 if [ -n "$BINARY" ]; then engine_source="local-binary"; engine_ref=""; else engine_source="$url"; engine_ref="$ENGINE_TAG"; fi
 # Written by python rather than a heredoc: the values include a path and a URL,
@@ -384,17 +439,36 @@ chmod 600 "$BYORIDB_HOME/env"
 log "wrote $BYORIDB_HOME/env (secret ${credential_state}; endpoint=http://${HTTP_ADDR})"
 
 # 4) service (always-on)
+#
+# Rendered to a staging file and compared first: when the definition is identical and
+# the server is answering, reloading the job would restart a healthy engine for
+# nothing. Every restart is a window where a session dies mid-request, and it is the
+# window two failed installs happened inside.
 start_service() {
   if [ "$SERVICE" = launchd ]; then
     plist="${HOME}/Library/LaunchAgents/${LABEL}.plist"
     cp "$WORK/service.template" "$WORK/svc.plist"
-    mkdir -p "${HOME}/Library/LaunchAgents"; render "$WORK/svc.plist" "$plist"
+    render "$WORK/svc.plist" "$WORK/svc.rendered"
+    if [ "$engine_replaced" = 0 ] && cmp -s "$WORK/svc.rendered" "$plist" 2>/dev/null \
+       && curl -fsS "http://${HTTP_ADDR}/health" >/dev/null 2>&1; then
+      log "service definition unchanged and the server is healthy; leaving it running"
+      return 0
+    fi
+    mkdir -p "${HOME}/Library/LaunchAgents"
+    cp "$WORK/svc.rendered" "$plist"
     launchctl unload "$plist" 2>/dev/null || true
     launchctl load -w "$plist"
   else
     unit="${HOME}/.config/systemd/user/${LABEL}.service"
     cp "$WORK/service.template" "$WORK/svc.service"
-    mkdir -p "${HOME}/.config/systemd/user"; render "$WORK/svc.service" "$unit"
+    render "$WORK/svc.service" "$WORK/svc.rendered"
+    if [ "$engine_replaced" = 0 ] && cmp -s "$WORK/svc.rendered" "$unit" 2>/dev/null \
+       && curl -fsS "http://${HTTP_ADDR}/health" >/dev/null 2>&1; then
+      log "service definition unchanged and the server is healthy; leaving it running"
+      return 0
+    fi
+    mkdir -p "${HOME}/.config/systemd/user"
+    cp "$WORK/svc.rendered" "$unit"
     systemctl --user daemon-reload
     systemctl --user enable --now "${LABEL}.service"
   fi

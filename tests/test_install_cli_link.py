@@ -50,6 +50,23 @@ class InstallCLILinkTests(unittest.TestCase):
                     "install.sh must not write %s" % profile,
                 )
 
+    def test_aReinstallDoesNotRestartAnUnchangedHealthyService(self):
+        """Every restart is a window where a live session dies mid-request, and it is
+        the window two failed installs happened inside. Reinstalling to pick up a new
+        MCP server must leave a healthy engine running, so the reload is gated on the
+        engine binary having changed, the rendered definition differing, or the server
+        not answering. CI runs with `--no-service`, so this path is asserted here and
+        exercised by hand: a repeat install kept both the sha and the pid.
+        """
+        self.assertRegex(
+            INSTALLER_SOURCE,
+            r'if \[ "\$engine_replaced" = 0 \] && cmp -s "\$WORK/svc\.rendered"',
+        )
+        self.assertIn("service definition unchanged and the server is healthy", INSTALLER_SOURCE)
+        # The rendered definition goes to a staging path first; writing it straight to
+        # the plist would leave nothing to compare against.
+        self.assertIn('render "$WORK/svc.plist" "$WORK/svc.rendered"', INSTALLER_SOURCE)
+
     def test_pathAdviceNamesTheDirectoryThatWasLinked(self):
         advice = re.search(r'path     : (.+)', INSTALLER_SOURCE)
         self.assertIsNotNone(advice, "the summary must still tell the user about PATH")
