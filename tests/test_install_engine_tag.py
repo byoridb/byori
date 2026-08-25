@@ -193,6 +193,70 @@ class InstallEngineTagTests(unittest.TestCase):
 
         self.assertIn("keeping installed engine v0.4.10", output)
 
+    def test_identical_bytes_leave_the_running_engine_alone(self):
+        """Reinstalling to pick up a new MCP server or CLI must not restart a healthy
+        engine. Same sha means replacing the file would buy nothing and cost a
+        downtime window — and every replacement is a chance to corrupt the binary."""
+        staged, digest = self.stage_local_engine()
+        home = self.root / "byoridb-home"
+        (home / "bin").mkdir(parents=True, exist_ok=True)
+        installed = home / "bin" / "byoridb-server"
+        installed.write_bytes(staged.read_bytes())
+        (home / "engine.json").write_text(
+            json.dumps({"tag": "v0.4.2", "sha256": digest}), encoding="utf-8"
+        )
+
+        output = self.install(FAILING_CURL, "--binary", str(staged))
+
+        self.assertIn("engine bytes unchanged", output)
+        self.assertIn(digest[:12], output)
+
+    def test_different_bytes_are_installed_by_rename_not_written_in_place(self):
+        """The corruption that killed the engine: copying over the file a running
+        process is executing left bytes that no longer matched their own signature,
+        and macOS killed every start. Rename swaps the directory entry instead, so the
+        inode a live process holds is never touched — which is observable here as the
+        installed file being a *different* inode than the one that was there before."""
+        staged, digest = self.stage_local_engine(content=b"#!/bin/sh\n# new build\n")
+        home = self.root / "byoridb-home"
+        (home / "bin").mkdir(parents=True, exist_ok=True)
+        installed = home / "bin" / "byoridb-server"
+        installed.write_bytes(b"#!/bin/sh\n# old build\n")
+        before = installed.stat().st_ino
+
+        output = self.install(FAILING_CURL, "--binary", str(staged))
+
+        self.assertNotIn("engine bytes unchanged", output)
+        self.assertEqual(installed.read_bytes(), b"#!/bin/sh\n# new build\n")
+        self.assertNotEqual(
+            installed.stat().st_ino, before,
+            "an in-place write keeps the inode, and that is what corrupted a running engine",
+        )
+        # Nothing is left behind for the next run to trip over.
+        self.assertEqual(
+            list((home / "bin").glob(".byoridb-server*")), [],
+            "the staging file must be renamed, not left in place",
+        )
+
+    def test_the_record_describes_the_bytes_that_are_actually_installed(self):
+        staged, digest = self.stage_local_engine(content=b"#!/bin/sh\n# recorded\n")
+        output = self.install(FAILING_CURL, "--binary", str(staged))
+
+        record = json.loads(
+            (self.root / "byoridb-home" / "engine.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(record["sha256"], digest)
+        self.assertIn(f"recorded engine build: local ({digest[:12]})", output)
+
+    def stage_local_engine(self, content=b"#!/bin/sh\nexit 0\n"):
+        """A `--binary` engine, so these cases need no download and no signature."""
+        import hashlib
+
+        staged = self.root / "staged-byoridb-server"
+        staged.write_bytes(content)
+        staged.chmod(staged.stat().st_mode | stat.S_IXUSR)
+        return staged, hashlib.sha256(content).hexdigest()
+
     def test_a_resolved_tag_that_could_alter_a_url_is_refused(self):
         output = self.install(
             RESOLVING_CURL,
