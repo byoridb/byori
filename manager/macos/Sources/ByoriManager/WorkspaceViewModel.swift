@@ -929,28 +929,68 @@ final class WorkspaceViewModel: ObservableObject {
         return nil
     }
 
-    var canStartSession: Bool {
-        guard !isStartingSession,
-              !newSessionDraft.projectID.isEmpty,
-              sessionNameValidationMessage == nil,
-              launchConstraintMessage == nil,
-              let providerID = newSessionDraft.providerID,
-              let modelID = newSessionDraft.modelID,
-              let provider = sessionOptions.first(where: { $0.id == providerID }),
-              provider.availability.isAvailable,
-              let model = provider.models.first(where: { $0.id == modelID }),
-              model.availability.isAvailable else {
-            return false
+    /// Why Start Session refuses, or nil when it does not.
+    ///
+    /// A disabled button is the sheet saying no, and it used to say it silently:
+    /// every requirement collapsed into `canStartSession`, and the sentence naming
+    /// the unmet one sat inside `startSession()` behind a guard the disabled button
+    /// made unreachable — so it could never be read. The requirement most often
+    /// unmet is also the one furthest down: the Agent section scrolls out of view on
+    /// a short window, which leaves a sheet that looks complete, a dead button, and
+    /// nothing on screen to explain either.
+    ///
+    /// Ordered the way the sheet reads, top to bottom, so the reason names the first
+    /// thing still to do rather than the last thing checked.
+    var startSessionBlockedReason: String? {
+        guard !newSessionDraft.projectID.isEmpty else {
+            return "Choose the project this session runs in."
         }
-        if model.acceptsCustomIdentifier,
-           newSessionDraft.customModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return false
+        if let message = sessionNameValidationMessage { return message }
+        if let message = launchConstraintMessage { return message }
+        if case .newTask = newSessionDraft.taskChoice,
+           newSessionDraft.newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Give the new task a title."
         }
 
-        if case .newTask = newSessionDraft.taskChoice {
-            return !newSessionDraft.newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // The provider list is read when the sheet opens, so "nothing is chosen"
+        // and "there is nothing to choose from yet" are different sentences. Only
+        // the first one asks the user for anything.
+        switch sessionOptionsPhase {
+        case .idle, .loading:
+            return "Reading the installed provider models…"
+        case let .failed(message):
+            return message
+        case .ready:
+            break
         }
-        return true
+        guard !sessionOptions.isEmpty else {
+            return "No installed provider is available. Open Settings to connect one."
+        }
+        guard let providerID = newSessionDraft.providerID else {
+            return "Choose the launch provider under Agent."
+        }
+        guard let provider = sessionOptions.first(where: { $0.id == providerID }) else {
+            return "That provider is no longer installed. Choose another under Agent."
+        }
+        if let reason = provider.availability.unavailableReason { return reason }
+        guard let modelID = newSessionDraft.modelID else {
+            return "Choose the model under Agent."
+        }
+        guard let model = provider.models.first(where: { $0.id == modelID }) else {
+            return "\(provider.displayName) no longer offers that model. Choose another under Agent."
+        }
+        if let reason = model.availability.unavailableReason { return reason }
+        if model.acceptsCustomIdentifier,
+           newSessionDraft.customModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Enter the model identifier for \(model.displayName)."
+        }
+        return nil
+    }
+
+    /// A launch in progress is not a refusal to explain — the button says
+    /// "Starting…" for itself — so it gates here rather than in the reason.
+    var canStartSession: Bool {
+        !isStartingSession && startSessionBlockedReason == nil
     }
 
     /// Where the session will run, as the sheet states it rather than asks it.
@@ -1711,7 +1751,12 @@ final class WorkspaceViewModel: ObservableObject {
               let providerID = newSessionDraft.providerID,
               let modelID = newSessionDraft.modelID,
               let selectedModel = availableModels.first(where: { $0.id == modelID }) else {
-            newSessionError = "Name the session, choose an available provider and model, then complete the task details."
+            // Reached only by a caller that did not check first — the button
+            // cannot be pressed while this refuses. It still names the reason
+            // rather than a generic list, so a keyboard shortcut or a test is
+            // told the same thing the footer shows.
+            newSessionError = startSessionBlockedReason
+                ?? "Choose an available provider and model, then start the session again."
             return
         }
 

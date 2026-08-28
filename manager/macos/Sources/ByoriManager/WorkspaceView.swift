@@ -2009,10 +2009,18 @@ private struct NewWorkspaceSessionSheet: View {
             Divider()
 
             HStack {
+                // A disabled Start Session is a refusal, and the requirement it
+                // waits on is often scrolled out of view — Agent sits at the
+                // bottom of the form. Saying it here puts the reason beside the
+                // button that is refusing, which is where it gets read.
+                if let blocked = model.startSessionBlockedReason {
+                    Label(blocked, systemImage: "exclamationmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 // Said at the point of no return, in words rather than as a
                 // flag: a loosened permission should not be something the user
                 // has to recognise from argv.
-                if let danger = dangerNotice {
+                } else if let danger = dangerNotice {
                     Label(danger, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
                         .foregroundStyle(.orange)
@@ -2040,6 +2048,9 @@ private struct NewWorkspaceSessionSheet: View {
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
                 .disabled(!model.canStartSession)
+                // VoiceOver lands on the button without the footer text beside
+                // it, so the reason travels with the control too.
+                .accessibilityHint(model.startSessionBlockedReason ?? "")
             }
             .padding(16)
         }
