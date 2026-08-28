@@ -213,35 +213,35 @@ struct WorkspaceView<TerminalHost: View>: View {
                 Text(request.disabledReason ?? request.message)
             }
         }
+        // `presenting:` hands the request to the buttons, so confirming acts on it
+        // even though dismissing the dialog clears the model's copy first.
         .confirmationDialog(
             "Initialize Git Repository?",
             isPresented: projectInitializationPresentation,
-            titleVisibility: .visible
-        ) {
+            titleVisibility: .visible,
+            presenting: model.pendingProjectInitialization
+        ) { request in
             Button("Initialize and Add") {
-                Task { await model.initializePendingProject() }
+                Task { await model.initializePendingProject(request) }
             }
             Button("Cancel", role: .cancel) { model.cancelProjectInitialization() }
-        } message: {
-            if let request = model.pendingProjectInitialization {
-                Text("\(request.displayName) is not a Git repository. Byori will run git init with a main branch in \(request.folderURL.path), make one empty commit so that branch exists, then add it as a trusted project. Existing files stay in place, uncommitted, and no remote is added.")
-            }
+        } message: { request in
+            Text("\(request.displayName) is not a Git repository. Byori will run git init with a main branch in \(request.folderURL.path), make one empty commit so that branch exists, then add it as a trusted project. Existing files stay in place, uncommitted, and no remote is added.")
         }
         // Asked once, right after the repository is added, and never for a project
         // that already remembers something.
         .confirmationDialog(
             "히스토리로 기억을 만들까요?",
             isPresented: projectMemoryOfferPresentation,
-            titleVisibility: .visible
-        ) {
+            titleVisibility: .visible,
+            presenting: model.projectMemoryOffer
+        ) { offer in
             Button("기억 만들기") {
-                Task { await model.acceptProjectMemoryOffer() }
+                Task { await model.acceptProjectMemoryOffer(offer) }
             }
             Button("나중에", role: .cancel) { model.declineProjectMemoryOffer() }
-        } message: {
-            if let offer = model.projectMemoryOffer {
-                Text("\(offer.projectName)의 기억이 비어 있습니다. 커밋이 참조한 이슈, 되돌린 변경, PR, 결정 문서를 읽어 시작 그래프를 만듭니다. 추론은 하지 않고 각 기억은 근거가 된 커밋·문서를 함께 기록하며, 저장소는 읽기만 합니다. 큰 저장소는 몇 분 걸리고, 나중에 Context 탭에서 다시 실행할 수 있습니다.")
-            }
+        } message: { offer in
+            Text("\(offer.projectName)의 기억이 비어 있습니다. 커밋이 참조한 이슈, 되돌린 변경, PR, 결정 문서를 읽어 시작 그래프를 만듭니다. 추론은 하지 않고 각 기억은 근거가 된 커밋·문서를 함께 기록하며, 저장소는 읽기만 합니다. 큰 저장소는 몇 분 걸리고, 나중에 Context 탭에서 다시 실행할 수 있습니다.")
         }
     }
 

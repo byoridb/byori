@@ -1255,8 +1255,14 @@ final class WorkspaceViewModel: ObservableObject {
         pendingProjectInitialization = nil
     }
 
-    func initializePendingProject() async {
-        guard !isRegisteringProject, let request = pendingProjectInitialization else { return }
+    /// Acts on the request the dialog presented rather than reading it back from
+    /// state. Dismissing a confirmation dialog clears
+    /// `pendingProjectInitialization` synchronously, and a button's `Task` body
+    /// runs after that — so the version that re-read the state found nothing and
+    /// returned having initialized nothing, registered nothing, and, because it
+    /// never reached the `catch`, said nothing either.
+    func initializePendingProject(_ request: WorkspacePendingProjectInitialization) async {
+        guard !isRegisteringProject else { return }
         pendingProjectInitialization = nil
         isRegisteringProject = true
         defer { isRegisteringProject = false }
@@ -1839,8 +1845,9 @@ final class WorkspaceViewModel: ObservableObject {
         projectMemoryOffer = nil
     }
 
-    func acceptProjectMemoryOffer() async {
-        guard let offer = projectMemoryOffer else { return }
+    /// Acts on the offer the dialog presented, for the reason spelled out on
+    /// `initializePendingProject(_:)`.
+    func acceptProjectMemoryOffer(_ offer: WorkspaceProjectMemoryOffer) async {
         projectMemoryOffer = nil
         select(.project(offer.projectID))
         await buildProjectMemory()

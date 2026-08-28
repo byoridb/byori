@@ -17,9 +17,34 @@ final class WorkspaceProjectCreationTests: XCTestCase {
         XCTAssertTrue(dataSource.registeredURLs.isEmpty)
         XCTAssertTrue(dataSource.initializedURLs.isEmpty)
 
-        await model.initializePendingProject()
+        let request = try XCTUnwrap(model.pendingProjectInitialization)
+        await model.initializePendingProject(request)
 
         XCTAssertNil(model.pendingProjectInitialization)
+        XCTAssertEqual(dataSource.initializedURLs, [folder])
+    }
+
+    /// Confirming a dialog dismisses it, and dismissal clears the pending request
+    /// synchronously while the button's `Task` body runs afterwards. A version that
+    /// read the request back from the model therefore found nothing and returned
+    /// without initializing, registering, or raising an alert: the folder was never
+    /// added and the user was never told why.
+    func testConfirmingStillInitializesWhenDismissalClearedThePendingRequestFirst() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("plain-folder-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let dataSource = ProjectCreationDataSource(status: .requiresInitialization(folder))
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.addProjectFolder(at: folder)
+        let request = try XCTUnwrap(model.pendingProjectInitialization)
+
+        // What the presentation binding does the moment the dialog closes.
+        model.cancelProjectInitialization()
+        XCTAssertNil(model.pendingProjectInitialization)
+
+        await model.initializePendingProject(request)
+
         XCTAssertEqual(dataSource.initializedURLs, [folder])
     }
 

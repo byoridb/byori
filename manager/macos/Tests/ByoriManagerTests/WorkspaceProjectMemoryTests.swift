@@ -86,7 +86,7 @@ final class WorkspaceProjectMemoryTests: XCTestCase {
         XCTAssertTrue(dataSource.builtProjectIDs.isEmpty, "nothing runs until it is accepted")
     }
 
-    func testAcceptingTheOfferBuildsThatProjectsMemory() async {
+    func testAcceptingTheOfferBuildsThatProjectsMemory() async throws {
         let repository = URL(fileURLWithPath: "/tmp/byori", isDirectory: true)
         let dataSource = ProjectMemoryDataSource(snapshot: WorkspacePresentationSnapshot(projects: []))
         dataSource.snapshotAfterRegistration = makeSnapshot()
@@ -94,9 +94,30 @@ final class WorkspaceProjectMemoryTests: XCTestCase {
         await model.load()
         await model.addProjectFolder(at: repository)
 
-        await model.acceptProjectMemoryOffer()
+        let offer = try XCTUnwrap(model.projectMemoryOffer)
+        await model.acceptProjectMemoryOffer(offer)
 
         XCTAssertNil(model.projectMemoryOffer)
+        XCTAssertEqual(dataSource.builtProjectIDs, ["project123"])
+    }
+
+    /// The same dismissal ordering as the Git initialization dialog: accepting must
+    /// act on the offer the dialog presented, not on state the dismissal already
+    /// cleared.
+    func testAcceptingStillBuildsWhenDismissalClearedTheOfferFirst() async throws {
+        let repository = URL(fileURLWithPath: "/tmp/byori", isDirectory: true)
+        let dataSource = ProjectMemoryDataSource(snapshot: WorkspacePresentationSnapshot(projects: []))
+        dataSource.snapshotAfterRegistration = makeSnapshot()
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+        await model.addProjectFolder(at: repository)
+        let offer = try XCTUnwrap(model.projectMemoryOffer)
+
+        model.declineProjectMemoryOffer()
+        XCTAssertNil(model.projectMemoryOffer)
+
+        await model.acceptProjectMemoryOffer(offer)
+
         XCTAssertEqual(dataSource.builtProjectIDs, ["project123"])
     }
 
