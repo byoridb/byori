@@ -61,7 +61,9 @@ share that graph space.
   back in the same representation in which it was received. In particular, do not convert a JSON
   number to an IEEE-754 `Double`.
 - A session is pinned to a space: a new session has no space until `USE <space>` is executed
-  (`No space selected` error).
+  (`No space selected` error). The pin outlives the statement that set it, so a `USE` submitted
+  through an unrestricted query redirects every statement after it on the same session. A client
+  that accepts caller-supplied nGQL must re-pin before the next statement it scopes itself.
 
 A successful query response from engine v0.3.3 has the following shape:
 

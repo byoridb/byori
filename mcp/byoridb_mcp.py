@@ -147,7 +147,7 @@ MIGRATIONS = {
 }
 
 PROTOCOL_VERSION = "2024-11-05"
-_session = {"id": None, "ready": False}
+_session = {"id": None, "ready": False, "space": None}
 
 
 def log(msg):
@@ -462,6 +462,9 @@ def _login():
     if not sid:
         raise RuntimeError(f"login failed (status={status}): {body}")
     _session["id"] = sid
+    # A new session starts pinned to no space; `_raw_query` re-pins before the
+    # first statement that needs it.
+    _session["space"] = None
     log(f"authenticated, session={sid}")
 
 
@@ -478,6 +481,7 @@ def _logout():
         return None
     _session["id"] = None
     _session["ready"] = False
+    _session["space"] = None
     request = urllib.request.Request(
         HTTP + "/api/v1/session",
         method="DELETE",
@@ -521,6 +525,35 @@ def _is_session_lost(code, detail):
     return False
 
 
+USE_STATEMENT_RE = re.compile(
+    r"^\s*USE\s+([A-Za-z_][A-Za-z0-9_]{0,63})\s*;?\s*$", re.IGNORECASE
+)
+CREATE_SPACE_RE = re.compile(r"^\s*CREATE\s+SPACE\b", re.IGNORECASE)
+
+
+def _may_leave_another_space(ngql):
+    """Whether `ngql` could leave the engine session pointed somewhere else.
+
+    Only `memory_query` — the unrestricted tool the `legacy` profile exposes —
+    can submit a `USE`, and one that lands is silent: the space it switches to
+    is where every later statement on the same session reads and writes. A
+    statement that cannot be read confidently counts as a switch, because a
+    needless re-pin costs one round trip and a wrong "still pinned" costs a
+    write to the wrong project's memory.
+    """
+    try:
+        scrubbed = _strip_quoted_literals(ngql)
+    except ValueError:
+        return True
+    return re.search(r"\bUSE\b", scrubbed, re.IGNORECASE) is not None
+
+
+def _pin_space():
+    """Point the engine session at SPACE and record that it is there."""
+    _post("/api/v1/query", {"session_id": _session["id"], "query": f"USE {SPACE}"})
+    _session["space"] = SPACE
+
+
 def _raw_query(ngql, read_only=False):
     """Run one nGQL statement in the current session; re-login on session loss.
 
@@ -528,26 +561,44 @@ def _raw_query(ngql, read_only=False):
     a second, authoritative check for the tool that accepts model-supplied nGQL.
     Engines before 0.4.0 ignore the unknown field, so the Python gate remains the
     one that must be correct.
+
+    The session is re-pinned to SPACE whenever it is not known to be there, so a
+    `USE` that reached the engine cannot silently redirect the statements after
+    it. Two statements pin themselves and are exempt: a `USE`, and the
+    `CREATE SPACE` that bootstrap runs before the space exists. Bootstrap pins
+    explicitly and so is exempt until it reports itself ready.
     """
     if _session["id"] is None:
         _login()
-        # A fresh session has no space pinned. Bootstrap normally does this, but a
-        # login that happens here would otherwise leave the next statement failing
-        # with "No space selected".
-        if _session["ready"]:
-            _post("/api/v1/query", {"session_id": _session["id"], "query": f"USE {SPACE}"})
+    use_match = USE_STATEMENT_RE.match(ngql)
+    pins_itself = use_match is not None or CREATE_SPACE_RE.match(ngql) is not None
     payload = {"session_id": _session["id"], "query": ngql}
     if read_only:
         payload["read_only"] = True
     try:
+        # Pinned inside the `try`: a session the engine dropped between two
+        # statements surfaces on whichever request goes out first, and once the
+        # space is re-pinned per statement that request is usually the pin. Left
+        # outside, its 401 escaped as a raw urllib error past every caller that
+        # handles the classified one.
+        if _session["ready"] and not pins_itself and _session["space"] != SPACE:
+            _pin_space()
+        if use_match is None and _may_leave_another_space(ngql):
+            # After the pin, so this statement still runs in SPACE, and before it
+            # is sent, so a redirect that runs and then fails cannot leave a
+            # stale "still pinned" behind.
+            _session["space"] = None
         status, body = _post("/api/v1/query", payload)
+        if use_match is not None:
+            _session["space"] = use_match.group(1)
         return body
     except urllib.error.HTTPError as e:
         detail = e.read().decode(errors="replace") if hasattr(e, "read") else str(e)
         if _is_session_lost(e.code, detail):
             _login()
             try:
-                _post("/api/v1/query", {"session_id": _session["id"], "query": f"USE {SPACE}"})
+                if not pins_itself:
+                    _pin_space()
                 payload["session_id"] = _session["id"]
                 _, body = _post("/api/v1/query", payload)
             except urllib.error.HTTPError as retried:
@@ -560,6 +611,8 @@ def _raw_query(ngql, read_only=False):
                 raise RuntimeError(
                     f"query failed after re-login ({retried.code}): {_short(again)}"
                 ) from retried
+            if use_match is not None:
+                _session["space"] = use_match.group(1)
             return body
         raise RuntimeError(f"query failed ({e.code}): {detail}")
 

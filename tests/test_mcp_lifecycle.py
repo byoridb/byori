@@ -447,6 +447,113 @@ class ReadOnlyRequestTests(unittest.TestCase):
         )
 
 
+class SpacePinningTests(unittest.TestCase):
+    """Which space a statement actually runs in.
+
+    The engine pins a space per session, not per statement, so a `USE` outlives
+    the query that sent it. Only `memory_query` — the unrestricted tool the
+    `legacy` profile exposes — can send one, and before this every later read
+    and write on the process followed it into the other project's space,
+    silently, until the session happened to be lost.
+    """
+
+    def setUp(self):
+        MCP._session.update({"id": "1", "ready": True, "space": MCP.SPACE})
+        self.addCleanup(
+            lambda: MCP._session.update({"id": None, "ready": False, "space": None})
+        )
+        self.sent = []
+
+    def _post(self, path, payload, timeout=30):
+        if path == "/api/v1/session":
+            return 200, {"session_id": "2"}
+        self.sent.append(payload["query"])
+        return 200, {"results": []}
+
+    def _run(self, *statements):
+        with mock.patch.object(MCP, "_post", self._post):
+            for statement in statements:
+                MCP._raw_query(statement)
+        return self.sent
+
+    def test_a_session_known_to_be_pinned_costs_no_extra_round_trip(self):
+        """Re-pinning per statement would double every tool call's requests."""
+        self.assertEqual(self._run("MATCH (n) RETURN n"), ["MATCH (n) RETURN n"])
+
+    def test_a_redirect_moves_only_the_statement_that_asked_for_it(self):
+        sent = self._run("USE other_space", "MATCH (n) RETURN n")
+
+        self.assertEqual(
+            sent,
+            ["USE other_space", f"USE {MCP.SPACE}", "MATCH (n) RETURN n"],
+            "the statement after a redirect must be pinned back first",
+        )
+
+    def test_a_use_of_this_space_is_recorded_rather_than_re_pinned(self):
+        sent = self._run(f"USE {MCP.SPACE}", "MATCH (n) RETURN n")
+
+        self.assertEqual(sent, [f"USE {MCP.SPACE}", "MATCH (n) RETURN n"])
+
+    def test_a_redirect_inside_a_longer_query_counts_too(self):
+        """`USE x; MATCH …` is not a bare `USE` and moves the session all the same."""
+        sent = self._run("USE other_space; MATCH (n) RETURN n", "MATCH (n) RETURN n")
+
+        self.assertEqual(sent[-2:], [f"USE {MCP.SPACE}", "MATCH (n) RETURN n"])
+
+    def test_a_statement_that_cannot_be_read_is_assumed_to_have_moved(self):
+        """An unterminated literal hides the rest of the statement. Re-pinning
+        needlessly costs one request; trusting it costs a write to the wrong
+        project's memory."""
+        sent = self._run('MATCH (n) WHERE n.note.body == "open', "MATCH (n) RETURN n")
+
+        self.assertEqual(sent[-2:], [f"USE {MCP.SPACE}", "MATCH (n) RETURN n"])
+
+    def test_the_word_use_inside_a_literal_is_not_a_redirect(self):
+        """Quoted text is data: a note whose body says "USE" must not re-pin."""
+        sent = self._run(
+            'MATCH (n) WHERE n.note.body == "USE other_space" RETURN n',
+            "MATCH (n) RETURN n",
+        )
+
+        self.assertEqual(len(sent), 2, sent)
+
+    def test_create_space_runs_before_the_space_it_creates_exists(self):
+        """Bootstrap's first statement. Pinning ahead of it would fail on a
+        fresh install with "space not found"."""
+        MCP._session["space"] = None
+        sent = self._run(f"CREATE SPACE IF NOT EXISTS {MCP.SPACE}(vid_type=INT64)")
+
+        self.assertEqual(len(sent), 1, sent)
+
+    def test_a_new_session_is_pinned_before_its_first_statement(self):
+        """`_login` forgets the old session's space, so nothing inherits a pin
+        the engine no longer holds."""
+        MCP._session["id"] = None
+        sent = self._run("MATCH (n) RETURN n")
+
+        self.assertEqual(sent, [f"USE {MCP.SPACE}", "MATCH (n) RETURN n"])
+
+    def test_a_lost_session_is_re_pinned_on_the_retry(self):
+        calls = []
+
+        def post(path, payload, timeout=30):
+            if path == "/api/v1/session":
+                return 200, {"session_id": "2"}
+            calls.append(payload["query"])
+            if len(calls) == 1:
+                raise _http_error(401, '{"code":"SESSION_EXPIRED"}')
+            return 200, {"results": []}
+
+        with mock.patch.object(MCP, "_post", post):
+            MCP._raw_query("MATCH (n) RETURN n")
+
+        self.assertEqual(
+            calls,
+            ["MATCH (n) RETURN n", f"USE {MCP.SPACE}", "MATCH (n) RETURN n"],
+        )
+        self.assertEqual(MCP._session["space"], MCP.SPACE)
+
+
 class ProcessExitTests(unittest.TestCase):
     def test_closing_stdin_ends_the_process(self):
         """The normal signal that the host is gone."""
