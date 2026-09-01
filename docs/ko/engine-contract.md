@@ -53,7 +53,9 @@ Project의 모든 Source Tree/Worktree, Task, Session, agent 선택은 그 graph
   클라이언트는 둘 다 정밀도 손실 없이 받아 응답과 같은 표현으로 다시 보내야 한다.
   특히 JSON number를 IEEE-754 `Double`로 변환하지 말 것.
 - 세션은 space에 pin된다: 새 세션은 `USE <space>` 전까지 space 없음
-  (`No space selected` 오류).
+  (`No space selected` 오류). pin은 그것을 설정한 statement보다 오래 살아남는다. 따라서
+  무제한 query로 들어온 `USE`는 같은 세션의 이후 모든 statement를 그쪽으로 돌린다.
+  호출자가 준 nGQL을 받는 클라이언트는 자신이 scope하는 다음 statement 전에 다시 pin해야 한다.
 
 engine v0.3.3의 query 성공 응답은 다음 형태다.
 
