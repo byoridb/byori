@@ -92,6 +92,20 @@ class BulkReadInstallerTests(unittest.TestCase):
         self.assertIn("WITH_BULK_READ_HOOK=0;", source)
         self.assertIn('if [ "$WITH_BULK_READ_HOOK" = 1 ]; then', source)
 
+    def test_the_summary_reports_everything_the_skills_step_installed(self):
+        """The final summary is what a user reads to learn what landed; a skill
+        it omits is a skill nobody knows to look for. Both summary lines carry
+        the bulk-read skill, and the Claude side names the agent file too."""
+        source = INSTALLER.read_text(encoding="utf-8")
+        skills_lines = [
+            line for line in source.splitlines()
+            if "skills   :" in line or "codex    :" in line
+        ]
+        self.assertEqual(len(skills_lines), 2, skills_lines)
+        for line in skills_lines:
+            self.assertIn("%s,%s,%s", line)
+        self.assertIn("'  agents   : %s/%s", source)
+
     @unittest.skipUnless(shutil.which("jq"), "the uninstall cleanup needs jq, like the install did")
     def test_uninstall_removes_the_guard_hooks_and_keeps_the_users_own(self):
         claude = self.home / ".claude"
