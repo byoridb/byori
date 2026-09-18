@@ -6,14 +6,21 @@
 #
 #   curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh | bash
 #
-# Options: --no-hooks --tag vX.Y.Z --engine-tag vX.Y.Z|latest --uninstall
-#          --binary PATH --assets DIR --no-service --no-claude --no-codex
+# Options: --no-hooks --with-bulk-read-hook --tag vX.Y.Z --engine-tag vX.Y.Z|latest
+#          --uninstall --binary PATH --assets DIR --no-service --no-claude --no-codex
 #   --no-hooks   skip the Claude checkpoint hooks (installed by default: they are
 #                what makes the memory graph present in a session instead of
 #                something the agent has to remember to look for). Its own axis:
 #                --no-claude skips MCP registration and skills, not these, because
 #                the app-driven install passes --no-claude and its users are the
 #                ones who need the reminder. Pass both to leave ~/.claude alone.
+#   --with-bulk-read-hook
+#                install the guard that denies whole-file reads of large files
+#                and routes them to the cheap byori-bulk-reader agent. Off by
+#                default: the checkpoint hooks add reminders, this one denies
+#                tool calls — a behavior change the user chooses, not one an
+#                installer assumes. The agent and skill install with the other
+#                skills either way; ranged reads (offset/limit) always pass.
 #   --tag        pins the byori asset version (default: latest byori release)
 #   --engine-tag ByoriDB engine release to install: a tag, or `latest` to resolve
 #                the newest engine release (default: the validated pinned tag)
@@ -41,9 +48,12 @@ CLAUDE_SKILLS_ROOT="${HOME}/.claude/skills"
 CODEX_SKILLS_ROOT="${HOME}/.agents/skills"
 MEMORY_SKILL_NAME="byoridb-memory"
 DESIGN_SKILL_NAME="byori-design"
+BULK_SKILL_NAME="byori-bulk-read"
+BULK_AGENT_FILE="byori-bulk-reader.md"
+CLAUDE_AGENTS_ROOT="${HOME}/.claude/agents"
 
 TAG=""; ENGINE_TAG="${BYORI_ENGINE_TAG:-$ENGINE_TAG_DEFAULT}"
-WITH_HOOKS=1; UNINSTALL=0; BINARY=""; ASSETS=""; NO_SERVICE=0; NO_CLAUDE=0; NO_CODEX=0
+WITH_HOOKS=1; WITH_BULK_READ_HOOK=0; UNINSTALL=0; BINARY=""; ASSETS=""; NO_SERVICE=0; NO_CLAUDE=0; NO_CODEX=0
 ALLOW_ENGINE_DOWNGRADE=0; SKIP_ENGINE=0
 # Whether the engine binary on disk changed in this run. A service reload is only
 # needed when it did — the running server is executing the old one.
@@ -59,6 +69,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --with-hooks) WITH_HOOKS=1 ;;   # accepted for compatibility; now the default
     --no-hooks)   WITH_HOOKS=0 ;;
+    --with-bulk-read-hook) WITH_BULK_READ_HOOK=1 ;;
     --uninstall)  UNINSTALL=1 ;;
     --no-service) NO_SERVICE=1 ;;
     --no-claude)  NO_CLAUDE=1 ;;
@@ -93,8 +104,26 @@ uninstall() {
   rm -rf \
     "$CLAUDE_SKILLS_ROOT/$MEMORY_SKILL_NAME" \
     "$CLAUDE_SKILLS_ROOT/$DESIGN_SKILL_NAME" \
+    "$CLAUDE_SKILLS_ROOT/$BULK_SKILL_NAME" \
     "$CODEX_SKILLS_ROOT/$MEMORY_SKILL_NAME" \
     "$CODEX_SKILLS_ROOT/$DESIGN_SKILL_NAME"
+  rm -f "$CLAUDE_AGENTS_ROOT/$BULK_AGENT_FILE"
+  # The guard hook runs a script this uninstall deletes; left behind, every
+  # Read and Bash call would spawn a failing command. The checkpoint hooks are
+  # self-contained one-liners and are deliberately kept.
+  settings="${HOME}/.claude/settings.json"
+  if [ -f "$settings" ] && command -v jq >/dev/null 2>&1; then
+    jq '
+      if (.hooks? != null) and (.hooks.PreToolUse? != null) then
+        .hooks.PreToolUse |= map(
+          select(
+            (((.hooks // []) | map(.command // "") | any(contains("bulk-read-guard.sh"))) | not)
+          )
+        )
+      else . end
+    ' "$settings" > "$settings.tmp" 2>/dev/null && mv "$settings.tmp" "$settings" \
+      || rm -f "$settings.tmp"
+  fi
   if [ -d "$BYORIDB_HOME/data" ]; then
     printf 'delete data at %s? [y/N] ' "$BYORIDB_HOME/data"; read -r ans </dev/tty || ans=n
     case "$ans" in y|Y) rm -rf "$BYORIDB_HOME";; *) warn "kept data; removed only bin/scripts"; rm -rf "$BYORIDB_HOME/bin" "$BYORIDB_HOME/byoridb_mcp.py";; esac
@@ -189,6 +218,14 @@ get "templates/run-byori.sh" "$WORK/run-byori.sh"
 get "adapters/claude/skills/byoridb-memory/SKILL.md" "$WORK/byoridb-memory.SKILL.md"
 get "adapters/claude/skills/byori-design/SKILL.md" "$WORK/byori-design.SKILL.md"
 get "adapters/claude/skills/byori-design/agents/openai.yaml" "$WORK/byori-design.openai.yaml"
+get "adapters/claude/agents/byori-bulk-reader.md" "$WORK/byori-bulk-reader.agent.md"
+get "adapters/claude/skills/byori-bulk-read/SKILL.md" "$WORK/byori-bulk-read.SKILL.md"
+if [ "$WITH_BULK_READ_HOOK" = 1 ]; then
+  get "adapters/claude/bulk-read-guard.sh" "$WORK/bulk-read-guard.sh"
+  get "adapters/claude/hooks.bulk-read.snippet.json" "$WORK/hooks.bulk-read.json"
+  "$PYTHON" -m json.tool "$WORK/hooks.bulk-read.json" >/dev/null
+  sh -n "$WORK/bulk-read-guard.sh"
+fi
 if [ "$SERVICE" = launchd ]; then
   get "templates/com.byoridb.local.plist" "$WORK/service.template"
 else
@@ -591,6 +628,11 @@ if [ "$NO_CLAUDE" != 1 ]; then
     "$CLAUDE_SKILLS_ROOT/$DESIGN_SKILL_NAME/SKILL.md"
   cp "$WORK/byori-design.openai.yaml" \
     "$CLAUDE_SKILLS_ROOT/$DESIGN_SKILL_NAME/agents/openai.yaml"
+  mkdir -p "$CLAUDE_SKILLS_ROOT/$BULK_SKILL_NAME" "$CLAUDE_AGENTS_ROOT"
+  cp "$WORK/byori-bulk-read.SKILL.md" \
+    "$CLAUDE_SKILLS_ROOT/$BULK_SKILL_NAME/SKILL.md"
+  cp "$WORK/byori-bulk-reader.agent.md" \
+    "$CLAUDE_AGENTS_ROOT/$BULK_AGENT_FILE"
 fi
 
 # 8) Codex wiring (MCP + skills; non-fatal — the base install works without it)
@@ -641,6 +683,37 @@ if [ "$WITH_HOOKS" = 1 ]; then
     log "appended checkpoint hooks into $settings (backup: $backup)"
   else
     warn "jq not found — skipped hooks; install jq and re-run with --with-hooks"
+  fi
+fi
+
+# 9b) bulk-read guard (opt-in)
+#
+# Its own flag, off by default: the checkpoint hooks add reminders, this one
+# denies tool calls. Routing every large whole-file read through the cheap
+# delegate is a behavior change the user chooses, not one an installer assumes.
+if [ "$WITH_BULK_READ_HOOK" = 1 ]; then
+  if [ "$NO_CLAUDE" = 1 ]; then
+    # Without the skills step there is no byori-bulk-reader agent to route to;
+    # a guard pointing at a missing delegate would deny with a dead end.
+    warn "--with-bulk-read-hook needs the Claude wiring; skipped under --no-claude"
+  elif command -v jq >/dev/null 2>&1; then
+    cp "$WORK/bulk-read-guard.sh" "$BYORIDB_HOME/bin/bulk-read-guard.sh"
+    chmod +x "$BYORIDB_HOME/bin/bulk-read-guard.sh"
+    render "$WORK/hooks.bulk-read.json" "$WORK/hooks.bulk-read.rendered.json"
+    settings="${HOME}/.claude/settings.json"; mkdir -p "${HOME}/.claude"
+    [ -f "$settings" ] || echo '{}' > "$settings"
+    backup="${settings}.bak.$(date +%Y%m%d%H%M%S)"
+    cp "$settings" "$backup"
+    jq -s '
+      def merge_event($a; $b):
+        ($a // []) + [ ($b // [])[] | select(. as $n | any(($a // [])[]; . == $n) | not) ];
+      .[0] as $a | .[1] as $b | ($a * $b)
+      | .hooks.PreToolUse = merge_event($a.hooks.PreToolUse; $b.hooks.PreToolUse)
+    ' "$settings" "$WORK/hooks.bulk-read.rendered.json" > "$WORK/merged-bulk.json" \
+      && mv "$WORK/merged-bulk.json" "$settings"
+    log "installed the bulk-read guard hook (backup: $backup)"
+  else
+    warn "jq not found — skipped the bulk-read guard; install jq and re-run with --with-bulk-read-hook"
   fi
 fi
 

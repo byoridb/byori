@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@BYORIDB_HOME@/bin/bulk-read-guard.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
