@@ -746,11 +746,12 @@ case ":${PATH}:" in
     ;;
 esac
 if [ "$NO_CLAUDE" != 1 ]; then
-  printf '  skills   : %s/{%s,%s}/   (claude mcp list -> byoridb)\n' \
-    "$CLAUDE_SKILLS_ROOT" "$MEMORY_SKILL_NAME" "$DESIGN_SKILL_NAME"
+  printf '  skills   : %s/{%s,%s,%s}/   (claude mcp list -> byoridb)\n' \
+    "$CLAUDE_SKILLS_ROOT" "$MEMORY_SKILL_NAME" "$DESIGN_SKILL_NAME" "$BULK_SKILL_NAME"
+  printf '  agents   : %s/%s\n' "$CLAUDE_AGENTS_ROOT" "$BULK_AGENT_FILE"
 fi
 if [ "$NO_CODEX" != 1 ] && command -v codex >/dev/null 2>&1; then
-  printf '  codex    : %s/{%s,%s}/   (codex mcp list -> byoridb)\n' \
-    "$CODEX_SKILLS_ROOT" "$MEMORY_SKILL_NAME" "$DESIGN_SKILL_NAME"
+  printf '  codex    : %s/{%s,%s,%s}/   (codex mcp list -> byoridb)\n' \
+    "$CODEX_SKILLS_ROOT" "$MEMORY_SKILL_NAME" "$DESIGN_SKILL_NAME" "$BULK_SKILL_NAME"
 fi
 printf 'Restart your agent CLI so it picks up the MCP server and skills.\n'
