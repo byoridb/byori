@@ -20,6 +20,10 @@ Byori macOS 앱은 이를 자동 설정하거나 설치하지 않는다.
 | `claude/skills/byoridb-memory/SKILL.md` | `~/.claude/skills/byoridb-memory/SKILL.md` 및 `~/.agents/skills/byoridb-memory/SKILL.md` | Claude/Codex 공용 기억 skill. note + typed wiki, structured tool, 인과 포착·체크포인트 규율 |
 | `claude/skills/byori-design/` | `~/.claude/skills/byori-design/` 및 `~/.agents/skills/byori-design/` | 저장소 디자인 산출물과 지속 가능한 Byori context를 연결하는 Claude/Codex 공용 제품 디자인 workflow |
 | `claude/hooks.snippet.json` | `~/.claude/settings.json`의 `hooks` 키 | 체크포인트 자동화 훅 2개 (SessionStart recall / git commit capture 리마인더) |
+| `claude/agents/byori-bulk-reader.md` | `~/.claude/agents/byori-bulk-reader.md` | 저렴한 모델의 읽기 전담 에이전트: 큰 파일을 digest로 만들어 그래프에 `file-digest` note로 캐시한다. 다른 스킬들과 함께 설치 |
+| `claude/skills/byori-bulk-read/SKILL.md` | `~/.claude/skills/byori-bulk-read/SKILL.md` | 메인 에이전트에게 언제 읽기를 `byori-bulk-reader`에 위임하고 언제 ranged read를 직접 해야 하는지 알려주는 스킬 |
+| `claude/bulk-read-guard.sh` + `claude/hooks.bulk-read.snippet.json` | `~/.byoridb/bin/bulk-read-guard.sh`, `~/.claude/settings.json`에서 참조 | opt-in 강제 층(`--with-bulk-read-hook`): 32 KB 초과 전체 읽기를 거부하고 delegate로 안내. ranged read는 항상 통과 |
+| `codex/skills/byori-bulk-read/SKILL.md` | `~/.agents/skills/byori-bulk-read/SKILL.md` | bulk-read 스킬의 Codex 판: 같은 그래프 캐시·digest 규약을 쓰되, Codex가 캐시를 직접 조율하고 headless `codex exec` reader를 스폰한다 (Codex에는 Agent tool delegate가 없다) |
 | `naraeclaw/skills/byoridb-memory/SKILL.md` | host가 선택한 수동 위치 | reduced raw-query surface를 쓰는 MCP 호환 NaraeClaw host용 참조 정책. 자동 설치 안 함 |
 
 전제: 로컬 상시 ByoriDB + `byoridb` MCP 서버(호환 note tool + 검증된 typed-wiki

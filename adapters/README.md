@@ -31,6 +31,7 @@ within that Project.
 | `claude/agents/byori-bulk-reader.md` | `~/.claude/agents/byori-bulk-reader.md` | Cheap-model reading delegate: digests large files into graph-cached `file-digest` notes so the expensive model's context never holds them. Installed with the other skills |
 | `claude/skills/byori-bulk-read/SKILL.md` | `~/.claude/skills/byori-bulk-read/SKILL.md` | Tells the main agent when to delegate reading to `byori-bulk-reader` and when a real ranged read is required instead |
 | `claude/bulk-read-guard.sh` + `claude/hooks.bulk-read.snippet.json` | `~/.byoridb/bin/bulk-read-guard.sh`, referenced from `~/.claude/settings.json` | Opt-in enforcement (`--with-bulk-read-hook`): denies whole-file reads over 32 KB and routes them to the delegate; ranged reads always pass |
+| `codex/skills/byori-bulk-read/SKILL.md` | `~/.agents/skills/byori-bulk-read/SKILL.md` | Codex variant of the bulk-read skill: same graph cache and digest convention, but Codex orchestrates the cache itself and spawns a headless `codex exec` reader (Codex has no Agent-tool delegate) |
 | `claude/hooks.snippet.json` | The `hooks` key in `~/.claude/settings.json` | Two checkpoint automation hooks (SessionStart recall and git commit capture reminders) |
 | `naraeclaw/skills/byoridb-memory/SKILL.md` | Host-selected manual location | Reference policy for an MCP-capable NaraeClaw host using the reduced raw-query surface; not auto-installed |
 
@@ -88,7 +89,15 @@ cp adapters/claude/skills/byoridb-memory/SKILL.md \
 mkdir -p "$HOME/.agents/skills/byori-design"
 cp -R adapters/claude/skills/byori-design/. \
   "$HOME/.agents/skills/byori-design/"
+mkdir -p "$HOME/.agents/skills/byori-bulk-read"
+cp adapters/codex/skills/byori-bulk-read/SKILL.md \
+  "$HOME/.agents/skills/byori-bulk-read/SKILL.md"
 ```
+
+The bulk-read skill is per host: the Claude copy delegates through the Agent
+tool, which Codex does not have, so Codex gets the spawn variant from
+`adapters/codex/`. Both write the same `file-digest` notes, so either host
+hits digests the other one cached.
 
 The current hook snippet is specific to Claude Code.
 

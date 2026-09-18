@@ -16,6 +16,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 AGENT = ROOT / "adapters" / "claude" / "agents" / "byori-bulk-reader.md"
 SKILL = ROOT / "adapters" / "claude" / "skills" / "byori-bulk-read" / "SKILL.md"
+CODEX_SKILL = ROOT / "adapters" / "codex" / "skills" / "byori-bulk-read" / "SKILL.md"
 
 
 def _frontmatter(text):
@@ -94,34 +95,90 @@ class SkillTests(unittest.TestCase):
         self.assertIn("Small files", self.text)
 
 
-class ConventionAgreementTests(unittest.TestCase):
-    """What both files must say identically, or digests written by one side
-    become unreachable or untrusted by the other."""
+class CodexSkillTests(unittest.TestCase):
+    """The Codex variant orchestrates the cache itself and spawns a headless
+    reader; what it pins is the spawn command that was verified for real
+    (codex-cli 0.154, 2026-09-18)."""
 
     @classmethod
     def setUpClass(cls):
-        cls.agent = AGENT.read_text(encoding="utf-8")
-        cls.skill = SKILL.read_text(encoding="utf-8")
+        cls.text = CODEX_SKILL.read_text(encoding="utf-8")
+
+    def test_stdin_is_closed_on_the_spawn(self):
+        """Without this, `codex exec` waits for stdin to close and hangs
+        forever — the first verification run sat mute for ten minutes on
+        exactly this."""
+        self.assertIn("</dev/null", self.text)
+
+    def test_the_spawn_cannot_write(self):
+        self.assertIn("-s read-only", self.text)
+
+    def test_the_spawn_leaves_the_users_config_out(self):
+        """The parent's profile and MCP servers must not spin up inside a
+        throwaway reader; --ephemeral keeps it from leaving session files."""
+        self.assertIn("--ignore-user-config", self.text)
+        self.assertIn("--ephemeral", self.text)
+
+    def test_the_cache_is_checked_before_the_spawn(self):
+        recall = self.text.index("memory_recall")
+        spawn = self.text.index("codex exec")
+        self.assertLess(recall, spawn)
+
+    def test_the_stored_digest_is_verified_against_the_local_hash(self):
+        """The child hashes what it read; the parent hashed what it asked for.
+        A mismatch means the file changed between the two."""
+        self.assertIn("mismatch means the file changed", self.text)
+
+    def test_editing_requires_a_real_read(self):
+        self.assertIn(
+            "Never edit on the strength of a summary", " ".join(self.text.split())
+        )
+
+
+class ConventionAgreementTests(unittest.TestCase):
+    """What every file must say identically, or digests written by one host
+    become unreachable or untrusted by the other. The whole point of the graph
+    cache is that Claude and Codex hit each other's digests."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.texts = {
+            "agent": AGENT.read_text(encoding="utf-8"),
+            "claude-skill": SKILL.read_text(encoding="utf-8"),
+            "codex-skill": CODEX_SKILL.read_text(encoding="utf-8"),
+        }
 
     def test_note_identity(self):
-        for text in (self.agent, self.skill):
-            self.assertIn("file-digest", text)
-            self.assertIn("digest:<repository-relative-path>", text)
+        for name, text in self.texts.items():
+            with self.subTest(name=name):
+                self.assertIn("file-digest", text)
+                self.assertIn("digest:<repository-relative-path>", text)
 
     def test_cache_validity_field(self):
-        for text in (self.agent, self.skill):
-            self.assertIn("content-sha256:", text)
+        for name, text in self.texts.items():
+            with self.subTest(name=name):
+                self.assertIn("content-sha256:", text)
 
     def test_size_threshold(self):
-        for text in (self.agent, self.skill):
-            self.assertIn("32 KB", text)
-            self.assertIn("~800 lines", text)
+        for name, text in self.texts.items():
+            with self.subTest(name=name):
+                self.assertIn("32 KB", text)
+                self.assertIn("~800 lines", text)
 
     def test_trust_label(self):
         """The label is the caller's signal that a digest is navigation, not
-        source; both sides must quote it verbatim."""
-        for text in (self.agent, self.skill):
-            self.assertIn("worker-generated — verify before editing", text)
+        source; every side must quote it verbatim."""
+        for name, text in self.texts.items():
+            with self.subTest(name=name):
+                self.assertIn("worker-generated — verify before editing", text)
+
+    def test_overlong_name_fallback(self):
+        """Both writers must fall back to the same hashed name past 240
+        characters, or a deep path gets two digests that never meet."""
+        for name in ("agent", "codex-skill"):
+            with self.subTest(name=name):
+                self.assertIn("digest:sha256:", self.texts[name])
+                self.assertIn("240", self.texts[name])
 
 
 if __name__ == "__main__":
