@@ -58,8 +58,9 @@ project's ByoriDB knowledge graph through the Context inspector.
 ## Options
 
 ```sh
-install.sh [--no-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z|latest] [--uninstall]
-           [--binary PATH] [--assets DIR] [--no-service] [--no-claude] [--no-codex]
+install.sh [--no-hooks] [--with-bulk-read-hook] [--tag vX.Y.Z]
+           [--engine-tag vX.Y.Z|latest] [--uninstall] [--binary PATH] [--assets DIR]
+           [--no-service] [--no-claude] [--no-codex]
 ```
 
 - `--no-hooks` — skips the checkpoint hooks in `~/.claude/settings.json`. **They are
@@ -72,6 +73,17 @@ install.sh [--no-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z|latest] [--uninstall
   Its own axis: `--no-claude` skips MCP registration and skills, not the hooks,
   because the app-driven install passes `--no-claude` and its users are the ones who
   need the reminder. Pass both to leave `~/.claude` untouched.
+- `--with-bulk-read-hook` — installs the bulk-read guard: a `PreToolUse` hook that
+  denies whole-file reads of files over 32 KB (`BYORI_BULK_READ_MIN_BYTES` to change)
+  and plain `cat`s of them, pointing at the two sanctioned paths instead — delegate to
+  the cheap `byori-bulk-reader` agent for a cached digest, or read the exact section
+  with a ranged `Read` (`offset`/`limit`), which always passes. **Off by default**:
+  the checkpoint hooks add reminders, this one denies tool calls — a behavior change
+  the user chooses, not one an installer assumes. The agent definition and the
+  `byori-bulk-read` skill install with the other skills either way. The guard fails
+  open — anything it cannot decide passes. Requires `jq`; skipped with a warning under
+  `--no-claude`, because there would be no delegate to route to. `--uninstall` removes
+  the guard's hook entries along with the script they run.
 - `--tag` — pins the version of Byori assets (MCP, skill, and templates). The default
   is the latest Byori release.
 - `--engine-tag` — which ByoriDB engine release to install. The default is the pinned

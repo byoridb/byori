@@ -106,7 +106,8 @@ uninstall() {
     "$CLAUDE_SKILLS_ROOT/$DESIGN_SKILL_NAME" \
     "$CLAUDE_SKILLS_ROOT/$BULK_SKILL_NAME" \
     "$CODEX_SKILLS_ROOT/$MEMORY_SKILL_NAME" \
-    "$CODEX_SKILLS_ROOT/$DESIGN_SKILL_NAME"
+    "$CODEX_SKILLS_ROOT/$DESIGN_SKILL_NAME" \
+    "$CODEX_SKILLS_ROOT/$BULK_SKILL_NAME"
   rm -f "$CLAUDE_AGENTS_ROOT/$BULK_AGENT_FILE"
   # The guard hook runs a script this uninstall deletes; left behind, every
   # Read and Bash call would spawn a failing command. The checkpoint hooks are
@@ -220,6 +221,7 @@ get "adapters/claude/skills/byori-design/SKILL.md" "$WORK/byori-design.SKILL.md"
 get "adapters/claude/skills/byori-design/agents/openai.yaml" "$WORK/byori-design.openai.yaml"
 get "adapters/claude/agents/byori-bulk-reader.md" "$WORK/byori-bulk-reader.agent.md"
 get "adapters/claude/skills/byori-bulk-read/SKILL.md" "$WORK/byori-bulk-read.SKILL.md"
+get "adapters/codex/skills/byori-bulk-read/SKILL.md" "$WORK/byori-bulk-read.codex.SKILL.md"
 if [ "$WITH_BULK_READ_HOOK" = 1 ]; then
   get "adapters/claude/bulk-read-guard.sh" "$WORK/bulk-read-guard.sh"
   get "adapters/claude/hooks.bulk-read.snippet.json" "$WORK/hooks.bulk-read.json"
@@ -654,6 +656,11 @@ elif command -v codex >/dev/null 2>&1; then
     "$CODEX_SKILLS_ROOT/$DESIGN_SKILL_NAME/SKILL.md"
   cp "$WORK/byori-design.openai.yaml" \
     "$CODEX_SKILLS_ROOT/$DESIGN_SKILL_NAME/agents/openai.yaml"
+  # The bulk-read skill is per host: the Claude copy delegates through the
+  # Agent tool, which Codex does not have — Codex gets the spawn variant.
+  mkdir -p "$CODEX_SKILLS_ROOT/$BULK_SKILL_NAME"
+  cp "$WORK/byori-bulk-read.codex.SKILL.md" \
+    "$CODEX_SKILLS_ROOT/$BULK_SKILL_NAME/SKILL.md"
   log "installing skills -> $CODEX_SKILLS_ROOT"
 else
   warn "codex CLI not found — skipped Codex wiring (connect later: codex mcp add byoridb -- $BYORIDB_HOME/bin/run-mcp.sh)"

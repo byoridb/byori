@@ -55,8 +55,9 @@ ByoriDB 지식 그래프를 공유한다.
 ## 옵션
 
 ```sh
-install.sh [--no-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z|latest] [--uninstall]
-           [--binary PATH] [--assets DIR] [--no-service] [--no-claude] [--no-codex]
+install.sh [--no-hooks] [--with-bulk-read-hook] [--tag vX.Y.Z]
+           [--engine-tag vX.Y.Z|latest] [--uninstall] [--binary PATH] [--assets DIR]
+           [--no-service] [--no-claude] [--no-codex]
 ```
 
 - `--no-hooks` — 체크포인트 훅을 `~/.claude/settings.json`에 넣지 않는다. **기본은 설치**다.
@@ -68,6 +69,15 @@ install.sh [--no-hooks] [--tag vX.Y.Z] [--engine-tag vX.Y.Z|latest] [--uninstall
   독립 축이다 — `--no-claude`는 MCP 등록과 스킬만 건너뛰고 훅은 건너뛰지 않는다. 앱이 실행하는
   설치가 `--no-claude`를 넘기고, 그 사용자들이 바로 이 reminder가 필요한 사람들이기 때문이다.
   `~/.claude`를 전혀 건드리지 않으려면 두 옵션을 함께 넘긴다.
+- `--with-bulk-read-hook` — bulk-read 가드를 설치한다: 32 KB(`BYORI_BULK_READ_MIN_BYTES`로
+  조정)를 넘는 파일의 전체 `Read`와 단독 `cat`을 거부하는 `PreToolUse` hook. 거부하면서
+  허용된 두 갈래를 안내한다 — 저렴한 `byori-bulk-reader` 에이전트에 위임해 캐시된 digest를
+  받거나, 필요한 구간만 ranged `Read`(`offset`/`limit`)로 읽거나. ranged Read는 항상
+  통과한다. **기본은 미설치**다: 체크포인트 훅은 리마인더를 더할 뿐이지만 이것은 도구 호출을
+  거부한다 — 사용자가 고르는 행동 변화이지 설치기가 가정할 것이 아니다. 에이전트 정의와
+  `byori-bulk-read` 스킬은 다른 스킬들과 함께 항상 설치된다. 가드는 판정할 수 없는 것을
+  전부 통과시킨다(fail open). `jq` 필요. `--no-claude`와 함께 쓰면 위임할 에이전트가
+  없으므로 경고 후 건너뛴다. `--uninstall`은 가드 스크립트와 함께 그 hook 항목도 걷어낸다.
 - `--tag` — byori 자산(MCP/스킬/템플릿) 버전 고정(기본: 최신 byori 릴리스).
 - `--engine-tag` — 설치할 ByoriDB 엔진 릴리스(기본: 이 byori 버전과 함께 검증된 고정 태그).
   `latest`를 주면 최신 엔진 릴리스를 조회해 설치한다. 조회가 실패하면(네트워크 없음, GitHub API
