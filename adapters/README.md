@@ -28,8 +28,9 @@ within that Project.
 |---|---|---|
 | `claude/skills/byoridb-memory/SKILL.md` | `~/.claude/skills/byoridb-memory/SKILL.md` and `~/.agents/skills/byoridb-memory/SKILL.md` | Shared Claude/Codex memory skill: notes + typed wiki, structured tools, causal capture, and checkpoint discipline |
 | `claude/skills/byori-design/` | `~/.claude/skills/byori-design/` and `~/.agents/skills/byori-design/` | Shared Claude/Codex product-design workflow: repository artifacts + durable Byori context |
-| `claude/agents/byori-bulk-reader.md` | `~/.claude/agents/byori-bulk-reader.md` | Cheap-model reading delegate: digests large files into graph-cached `file-digest` notes so the expensive model's context never holds them. Installer wiring is not released yet — copy manually (below) |
+| `claude/agents/byori-bulk-reader.md` | `~/.claude/agents/byori-bulk-reader.md` | Cheap-model reading delegate: digests large files into graph-cached `file-digest` notes so the expensive model's context never holds them. Installed with the other skills |
 | `claude/skills/byori-bulk-read/SKILL.md` | `~/.claude/skills/byori-bulk-read/SKILL.md` | Tells the main agent when to delegate reading to `byori-bulk-reader` and when a real ranged read is required instead |
+| `claude/bulk-read-guard.sh` + `claude/hooks.bulk-read.snippet.json` | `~/.byoridb/bin/bulk-read-guard.sh`, referenced from `~/.claude/settings.json` | Opt-in enforcement (`--with-bulk-read-hook`): denies whole-file reads over 32 KB and routes them to the delegate; ranged reads always pass |
 | `claude/hooks.snippet.json` | The `hooks` key in `~/.claude/settings.json` | Two checkpoint automation hooks (SessionStart recall and git commit capture reminders) |
 | `naraeclaw/skills/byoridb-memory/SKILL.md` | Host-selected manual location | Reference policy for an MCP-capable NaraeClaw host using the reduced raw-query surface; not auto-installed |
 
@@ -55,8 +56,14 @@ mkdir -p ~/.claude/skills/byori-design
 cp -R adapters/claude/skills/byori-design/. ~/.claude/skills/byori-design/
 ```
 
-The bulk-reading delegate is manual for now (its installer wiring and the
-enforcing hook land separately):
+The bulk-reading delegate installs with the other skills. Its enforcing hook is
+a separate opt-in, because it denies tool calls rather than adding reminders:
+
+```bash
+./install.sh --assets . --with-bulk-read-hook
+```
+
+Advisory-only (no hook) is the default; a skill-only development copy is:
 
 ```bash
 mkdir -p ~/.claude/agents ~/.claude/skills/byori-bulk-read
