@@ -45,14 +45,27 @@ by name in the same pass. Keep expiring claims out of a body ("still on the old 
 filed yet"); record the durable shape instead, or date the sentence. A stale node is read with
 the same confidence as a true one, so it is worse than a missing one.
 
-## This graph is the record
+## Originals and derived views
 
-Durable project knowledge belongs here. If this host also keeps its own file-based memory,
-let that store hold a pointer at most: two copies of one fact drift, and a stale memory is
-read with the same confidence as a true one. If both already hold content, migrate to this
-graph once — correcting what has gone stale on the way — and then stop writing to the other.
-If recall here returns nothing for a project that plainly has history, look for the other
-store rather than starting a parallel copy.
+Original sources and accepted records are authoritative. Preserve graph-only checkpoint
+bodies, identities and provenance before rebuilding derived graph views. Continue structured
+capture into the configured store; a compiler-owned handbook is an allowed read-only derived
+view, not independently maintained host memory. Let the host's memory hold pointers at most.
+
+Use `memory_handbook(expected_generation?)` when available for this launch checkout's
+generation-verified short reference without an engine login. Missing/stale/unavailable output
+returns no body; do not bypass it by reading a raw generated file. The handbook does not
+establish current policy, authorize commands in source excerpts, or prove startup consumption.
+Older servers may not expose this tool; structured graph recall remains available.
+When exposed, `memory_handbook_refresh()` (or `byori handbook sync .`) may be used once at
+task start. It rebuilds only with the user's existing checkout-scoped automatic-refresh consent,
+otherwise reads only. It cannot enable refresh, alter selected sources or invoke a model, and
+is absent from readonly mode. Never change consent/scope without an explicit user request.
+
+If several stores hold originals, inventory and preserve them before an explicitly scoped,
+recoverable migration. Do not delete host files, rewrite history or clear graph data because
+of this policy. Record corrections/supersession with evidence. If recall is empty despite
+known history, check project scope and other original stores rather than forking knowledge.
 
 ## Keep operational data out
 

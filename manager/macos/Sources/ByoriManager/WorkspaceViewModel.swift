@@ -42,6 +42,42 @@ protocol WorkspaceDataSource: AnyObject {
     /// Builds this project's starting memory from its own Git history, returning
     /// what was written.
     func buildProjectMemory(projectID: String) async throws -> String
+    /// Loads a verified published handbook, or a read-only preview carrying the
+    /// independently observed missing/stale/unavailable publication state.
+    func loadProjectHandbook(projectID: String) async throws -> ProjectHandbookSnapshot
+    /// Publishes and verifies a bounded local handbook build.
+    func buildProjectHandbook(projectID: String) async throws -> ProjectHandbookSnapshot
+    /// Reads checkout-scoped automatic-refresh consent without writing defaults.
+    func loadProjectHandbookRefreshConfiguration(
+        projectID: String
+    ) async throws -> ProjectHandbookRefreshConfiguration
+    /// Explicitly changes checkout-scoped consent.
+    func setProjectHandbookAutomaticRefresh(
+        projectID: String,
+        enabled: Bool,
+        expectedRevision: String?
+    ) async throws -> ProjectHandbookRefreshConfiguration
+    /// Runs the coordinator only when its durable policy is enabled.
+    func syncProjectHandbook(projectID: String) async throws -> ProjectHandbookRefreshResult
+    /// Runs one explicit coordinator refresh without changing automatic consent.
+    func refreshProjectHandbook(projectID: String) async throws -> ProjectHandbookRefreshResult
+    /// Reads both project-local agent adapter plans. This must remain read-only.
+    func loadProjectHandbookConnections(
+        projectID: String
+    ) async throws -> [ProjectHandbookConnection]
+    /// Re-runs one read-only CLI preview immediately before the user may apply it.
+    func previewProjectHandbookConnection(
+        projectID: String,
+        host: ProjectHandbookHost
+    ) async throws -> ProjectHandbookConnection
+    func applyProjectHandbookConnection(
+        projectID: String,
+        host: ProjectHandbookHost
+    ) async throws -> ProjectHandbookConnection
+    func disconnectProjectHandbookConnection(
+        projectID: String,
+        host: ProjectHandbookHost
+    ) async throws -> ProjectHandbookConnection
 }
 
 extension WorkspaceDataSource {
@@ -133,6 +169,61 @@ extension WorkspaceDataSource {
 
     func buildProjectMemory(projectID: String) async throws -> String {
         throw WorkspaceAdapterError.unsupported("Building project memory is not connected yet.")
+    }
+
+    func loadProjectHandbook(projectID: String) async throws -> ProjectHandbookSnapshot {
+        throw WorkspaceAdapterError.unsupported("Project handbooks are not connected yet.")
+    }
+
+    func buildProjectHandbook(projectID: String) async throws -> ProjectHandbookSnapshot {
+        throw WorkspaceAdapterError.unsupported("Project handbook builds are not connected yet.")
+    }
+
+    func loadProjectHandbookRefreshConfiguration(
+        projectID: String
+    ) async throws -> ProjectHandbookRefreshConfiguration {
+        throw WorkspaceAdapterError.unsupported("Handbook refresh settings are not connected yet.")
+    }
+
+    func setProjectHandbookAutomaticRefresh(
+        projectID: String,
+        enabled: Bool,
+        expectedRevision: String?
+    ) async throws -> ProjectHandbookRefreshConfiguration {
+        throw WorkspaceAdapterError.unsupported("Handbook refresh settings are not connected yet.")
+    }
+
+    func syncProjectHandbook(projectID: String) async throws -> ProjectHandbookRefreshResult {
+        throw WorkspaceAdapterError.unsupported("Automatic handbook refresh is not connected yet.")
+    }
+
+    func refreshProjectHandbook(projectID: String) async throws -> ProjectHandbookRefreshResult {
+        throw WorkspaceAdapterError.unsupported("Explicit handbook refresh is not connected yet.")
+    }
+
+    func loadProjectHandbookConnections(
+        projectID: String
+    ) async throws -> [ProjectHandbookConnection] { [] }
+
+    func previewProjectHandbookConnection(
+        projectID: String,
+        host: ProjectHandbookHost
+    ) async throws -> ProjectHandbookConnection {
+        throw WorkspaceAdapterError.unsupported("Agent connection previews are not connected yet.")
+    }
+
+    func applyProjectHandbookConnection(
+        projectID: String,
+        host: ProjectHandbookHost
+    ) async throws -> ProjectHandbookConnection {
+        throw WorkspaceAdapterError.unsupported("Agent connections are not connected yet.")
+    }
+
+    func disconnectProjectHandbookConnection(
+        projectID: String,
+        host: ProjectHandbookHost
+    ) async throws -> ProjectHandbookConnection {
+        throw WorkspaceAdapterError.unsupported("Agent disconnection is not connected yet.")
     }
 
 
@@ -798,6 +889,11 @@ struct WorkspaceLineage {
     let session: WorkspaceSessionItem?
 }
 
+struct WorkspaceHandbookConnectionPreview: Equatable {
+    let projectID: String
+    let connection: ProjectHandbookConnection
+}
+
 // MARK: - View model
 
 @MainActor
@@ -811,6 +907,21 @@ final class WorkspaceViewModel: ObservableObject {
     @Published private(set) var inspectorSnapshot: WorkspaceInspectorSnapshot?
     @Published private(set) var contextPhase: WorkspaceInspectorPhase = .idle
     @Published private(set) var contextSnapshot: WorkspaceContextSnapshot?
+    @Published private(set) var handbookPhase: WorkspaceInspectorPhase = .idle
+    @Published private(set) var projectHandbook: ProjectHandbookSnapshot?
+    @Published private(set) var handbookBuildProjectID: String?
+    @Published private(set) var handbookOperationError: String?
+    @Published private(set) var handbookRefreshConfigurationPhase: WorkspaceInspectorPhase = .idle
+    @Published private(set) var handbookRefreshConfiguration: ProjectHandbookRefreshConfiguration?
+    @Published private(set) var handbookRefreshConfigurationProjectID: String?
+    @Published private(set) var handbookRefreshMutationProjectID: String?
+    @Published private(set) var handbookSyncProjectID: String?
+    @Published private(set) var handbookConnectionsPhase: WorkspaceInspectorPhase = .idle
+    @Published private(set) var handbookConnections: [ProjectHandbookHost: ProjectHandbookConnection] = [:]
+    @Published private(set) var handbookConnectionOperationHost: ProjectHandbookHost?
+    @Published private(set) var handbookConnectionError: String?
+    @Published private(set) var pendingHandbookConnectionPreview: WorkspaceHandbookConnectionPreview?
+    @Published private(set) var pendingHandbookDisconnectHost: ProjectHandbookHost?
     /// Set while `byori init` is reading a project's history, so the affordance
     /// that started it can show progress instead of looking ignored.
     @Published private(set) var isBuildingProjectMemory = false
@@ -853,11 +964,27 @@ final class WorkspaceViewModel: ObservableObject {
     @Published var alert: WorkspaceAlert?
 
     private let dataSource: any WorkspaceDataSource
+    private let handbookRefreshSleep: @Sendable () async throws -> Void
     private var inspectorRequestToken = UUID()
     private var contextRequestToken = UUID()
+    private var handbookRequestToken = UUID()
+    private var handbookRefreshConfigurationRequestToken = UUID()
+    private var handbookRefreshOperationToken = UUID()
+    private var handbookConnectionRequestToken = UUID()
+    private var handbookRefreshLoopToken = UUID()
+    private var handbookRefreshLoopProjectID: String?
+    private var handbookRefreshLoop: Task<Void, Never>?
+    private var isWorkspaceVisible = false
+    private var isSceneActive = false
 
-    init(dataSource: any WorkspaceDataSource) {
+    init(
+        dataSource: any WorkspaceDataSource,
+        handbookRefreshSleep: @escaping @Sendable () async throws -> Void = {
+            try await Task.sleep(nanoseconds: 12_000_000_000)
+        }
+    ) {
         self.dataSource = dataSource
+        self.handbookRefreshSleep = handbookRefreshSleep
     }
 
     var selectedLineage: WorkspaceLineage? {
@@ -869,6 +996,35 @@ final class WorkspaceViewModel: ObservableObject {
     var selectedSourceTree: WorkspaceSourceTreeItem? { selectedLineage?.sourceTree }
     var selectedTask: WorkspaceTaskItem? { selectedLineage?.task }
     var selectedSession: WorkspaceSessionItem? { selectedLineage?.session }
+    var isProjectSelected: Bool {
+        guard let project = selectedProject else { return false }
+        return selection == .project(project.id)
+    }
+    var isBuildingSelectedProjectHandbook: Bool {
+        selectedProject?.id == handbookBuildProjectID
+    }
+    var isRefreshingSelectedProjectHandbook: Bool {
+        selectedProject?.id == handbookSyncProjectID
+    }
+    var canBuildSelectedProjectHandbook: Bool {
+        isProjectSelected
+            && handbookBuildProjectID == nil
+            && handbookSyncProjectID == nil
+            && handbookRefreshMutationProjectID == nil
+    }
+
+    var canChangeProjectHandbookAutomaticRefresh: Bool {
+        isProjectSelected
+            && handbookRefreshConfigurationProjectID == selectedProject?.id
+            && handbookRefreshConfigurationPhase == .ready
+            && handbookRefreshMutationProjectID == nil
+            && handbookBuildProjectID == nil
+            && handbookSyncProjectID == nil
+    }
+
+    var canChangeProjectHandbookConnection: Bool {
+        isProjectSelected && handbookConnectionOperationHost == nil
+    }
 
     var newProjectNameValidationMessage: String? {
         let name = normalizedNewProjectName
@@ -1068,9 +1224,17 @@ final class WorkspaceViewModel: ObservableObject {
             } else {
                 selection = defaultSelection()
             }
+            if selection != previousSelection {
+                stopProjectHandbookRefreshLoop(withholdingBody: true)
+                resetProjectHandbookState()
+            }
             phase = .ready
             isRefreshing = false
+            await loadProjectHandbookRefreshConfiguration()
+            await loadProjectHandbook()
+            await loadProjectHandbookConnections()
             await loadInspector()
+            reconcileProjectHandbookRefreshLoop()
             // A relaunch lands here: defaultSelection() prefers an active session,
             // which after a relaunch is a session tmux is still running.
             await autoReattachSelectedSessionIfNeeded()
@@ -1087,10 +1251,288 @@ final class WorkspaceViewModel: ObservableObject {
 
     func select(_ newSelection: WorkspaceSelection?) {
         guard selection != newSelection else { return }
+        stopProjectHandbookRefreshLoop(withholdingBody: true)
+        resetProjectHandbookState()
+        handbookConnectionRequestToken = UUID()
+        handbookConnections = [:]
+        handbookConnectionsPhase = .idle
+        handbookConnectionOperationHost = nil
+        handbookConnectionError = nil
+        pendingHandbookConnectionPreview = nil
+        pendingHandbookDisconnectHost = nil
         selection = newSelection
         Task {
+            await loadProjectHandbookRefreshConfiguration()
+            await loadProjectHandbook()
+            await loadProjectHandbookConnections()
             await loadInspector()
+            reconcileProjectHandbookRefreshLoop()
             await autoReattachSelectedSessionIfNeeded()
+        }
+    }
+
+    func refreshProjectHandbook() async {
+        stopProjectHandbookRefreshLoop(withholdingBody: false)
+        await loadProjectHandbook()
+        await loadProjectHandbookConnections()
+        reconcileProjectHandbookRefreshLoop()
+    }
+
+    func refreshProjectHandbookConnections() async {
+        await loadProjectHandbookConnections()
+    }
+
+    func buildSelectedProjectHandbook() async {
+        guard handbookBuildProjectID == nil,
+              isProjectSelected,
+              let project = selectedProject else { return }
+        stopProjectHandbookRefreshLoop(withholdingBody: false)
+        let projectID = project.id
+        let token = UUID()
+        handbookRequestToken = token
+        handbookBuildProjectID = projectID
+        // Until failures are classified, the previously rendered body cannot be
+        // treated as safe while its sources and publication are being rebuilt.
+        projectHandbook = nil
+        handbookPhase = .loading
+        handbookOperationError = nil
+        defer {
+            if handbookBuildProjectID == projectID {
+                handbookBuildProjectID = nil
+            }
+            reconcileProjectHandbookRefreshLoop()
+        }
+
+        do {
+            let snapshot = try await dataSource.buildProjectHandbook(projectID: projectID)
+            guard handbookRequestToken == token,
+                  selection == .project(projectID) else { return }
+            projectHandbook = snapshot
+            handbookPhase = .ready
+            await loadProjectHandbookConnections()
+        } catch {
+            guard handbookRequestToken == token,
+                  selection == .project(projectID) else { return }
+            projectHandbook = nil
+            handbookOperationError = error.localizedDescription
+            handbookPhase = .failed(error.localizedDescription)
+        }
+    }
+
+    /// The primary handbook action uses the coordinator's explicit one-shot
+    /// refresh. It does not change automatic-refresh consent.
+    func refreshSelectedProjectHandbookNow() async {
+        guard canBuildSelectedProjectHandbook,
+              let project = selectedProject else { return }
+        stopProjectHandbookRefreshLoop(withholdingBody: false)
+        let projectID = project.id
+        let token = UUID()
+        handbookRefreshOperationToken = token
+        handbookBuildProjectID = projectID
+        projectHandbook = nil
+        handbookPhase = .loading
+        handbookOperationError = nil
+        defer {
+            if handbookRefreshOperationToken == token {
+                handbookBuildProjectID = nil
+            }
+            reconcileProjectHandbookRefreshLoop()
+        }
+
+        do {
+            let result = try await dataSource.refreshProjectHandbook(projectID: projectID)
+            guard handbookRefreshOperationToken == token,
+                  selection == .project(projectID) else { return }
+            try applyCurrentRefreshResult(result)
+            await loadProjectHandbookConnections()
+        } catch is CancellationError {
+            // Selection and lifecycle cancellation deliberately leave no body or
+            // callback behind for the abandoned project.
+        } catch {
+            guard handbookRefreshOperationToken == token,
+                  selection == .project(projectID) else { return }
+            projectHandbook = nil
+            handbookOperationError = error.localizedDescription
+            handbookPhase = .failed(error.localizedDescription)
+        }
+    }
+
+    func setProjectHandbookAutomaticRefresh(_ enabled: Bool) async {
+        guard canChangeProjectHandbookAutomaticRefresh,
+              let project = selectedProject,
+              let configuration = handbookRefreshConfiguration,
+              configuration.enabled != enabled else { return }
+        stopProjectHandbookRefreshLoop(withholdingBody: enabled)
+        let projectID = project.id
+        let token = UUID()
+        handbookRefreshOperationToken = token
+        handbookRefreshMutationProjectID = projectID
+        handbookOperationError = nil
+        defer {
+            if handbookRefreshOperationToken == token {
+                handbookRefreshMutationProjectID = nil
+                reconcileProjectHandbookRefreshLoop()
+            }
+        }
+
+        do {
+            let updated = try await dataSource.setProjectHandbookAutomaticRefresh(
+                projectID: projectID,
+                enabled: enabled,
+                expectedRevision: configuration.revision
+            )
+            guard handbookRefreshOperationToken == token,
+                  selection == .project(projectID) else { return }
+            handbookRefreshConfiguration = updated
+            handbookRefreshConfigurationProjectID = projectID
+            handbookRefreshConfigurationPhase = .ready
+            if !enabled {
+                await loadProjectHandbook()
+            }
+        } catch is CancellationError {
+            // A project or lifecycle change invalidated this operation.
+        } catch {
+            guard handbookRefreshOperationToken == token,
+                  selection == .project(projectID) else { return }
+            handbookOperationError = error.localizedDescription
+            if projectHandbook == nil {
+                handbookPhase = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    func setWorkspaceVisible(_ isVisible: Bool) {
+        guard isWorkspaceVisible != isVisible else { return }
+        isWorkspaceVisible = isVisible
+        if isVisible {
+            reconcileProjectHandbookRefreshLoop()
+        } else {
+            stopProjectHandbookRefreshLoop(withholdingBody: true)
+        }
+    }
+
+    func setSceneActive(_ isActive: Bool) {
+        guard isSceneActive != isActive else { return }
+        isSceneActive = isActive
+        if isActive {
+            reconcileProjectHandbookRefreshLoop()
+        } else {
+            stopProjectHandbookRefreshLoop(withholdingBody: true)
+        }
+    }
+
+    func reviewProjectHandbookConnection(_ host: ProjectHandbookHost) async {
+        guard canChangeProjectHandbookConnection,
+              let project = selectedProject else { return }
+        let projectID = project.id
+        let token = UUID()
+        handbookConnectionRequestToken = token
+        handbookConnectionOperationHost = host
+        handbookConnectionError = nil
+        pendingHandbookDisconnectHost = nil
+        defer {
+            if handbookConnectionRequestToken == token {
+                handbookConnectionOperationHost = nil
+            }
+        }
+
+        do {
+            let preview = try await dataSource.previewProjectHandbookConnection(
+                projectID: projectID,
+                host: host
+            )
+            guard handbookConnectionRequestToken == token,
+                  selection == .project(projectID) else { return }
+            handbookConnections[host] = preview
+            pendingHandbookConnectionPreview = WorkspaceHandbookConnectionPreview(
+                projectID: projectID,
+                connection: preview
+            )
+        } catch {
+            guard handbookConnectionRequestToken == token,
+                  selection == .project(projectID) else { return }
+            handbookConnectionError = error.localizedDescription
+        }
+    }
+
+    func cancelProjectHandbookConnectionPreview() {
+        guard handbookConnectionOperationHost == nil else { return }
+        pendingHandbookConnectionPreview = nil
+    }
+
+    func applyReviewedProjectHandbookConnection() async {
+        guard canChangeProjectHandbookConnection,
+              let pending = pendingHandbookConnectionPreview,
+              selection == .project(pending.projectID),
+              pending.connection.wouldChange == true else { return }
+        let host = pending.connection.host
+        let token = UUID()
+        handbookConnectionRequestToken = token
+        handbookConnectionOperationHost = host
+        handbookConnectionError = nil
+        defer {
+            if handbookConnectionRequestToken == token {
+                handbookConnectionOperationHost = nil
+            }
+        }
+
+        do {
+            let result = try await dataSource.applyProjectHandbookConnection(
+                projectID: pending.projectID,
+                host: host
+            )
+            guard handbookConnectionRequestToken == token,
+                  selection == .project(pending.projectID) else { return }
+            handbookConnections[host] = result
+            pendingHandbookConnectionPreview = nil
+        } catch {
+            guard handbookConnectionRequestToken == token,
+                  selection == .project(pending.projectID) else { return }
+            handbookConnectionError = error.localizedDescription
+        }
+    }
+
+    func requestProjectHandbookDisconnect(_ host: ProjectHandbookHost) {
+        guard canChangeProjectHandbookConnection,
+              handbookConnections[host]?.isConfigured == true else { return }
+        pendingHandbookConnectionPreview = nil
+        pendingHandbookDisconnectHost = host
+        handbookConnectionError = nil
+    }
+
+    func cancelProjectHandbookDisconnect() {
+        guard handbookConnectionOperationHost == nil else { return }
+        pendingHandbookDisconnectHost = nil
+    }
+
+    func confirmProjectHandbookDisconnect() async {
+        guard canChangeProjectHandbookConnection,
+              let host = pendingHandbookDisconnectHost,
+              let project = selectedProject else { return }
+        let projectID = project.id
+        let token = UUID()
+        handbookConnectionRequestToken = token
+        handbookConnectionOperationHost = host
+        handbookConnectionError = nil
+        defer {
+            if handbookConnectionRequestToken == token {
+                handbookConnectionOperationHost = nil
+            }
+        }
+
+        do {
+            let result = try await dataSource.disconnectProjectHandbookConnection(
+                projectID: projectID,
+                host: host
+            )
+            guard handbookConnectionRequestToken == token,
+                  selection == .project(projectID) else { return }
+            handbookConnections[host] = result
+            pendingHandbookDisconnectHost = nil
+        } catch {
+            guard handbookConnectionRequestToken == token,
+                  selection == .project(projectID) else { return }
+            handbookConnectionError = error.localizedDescription
         }
     }
 
@@ -2198,6 +2640,201 @@ final class WorkspaceViewModel: ObservableObject {
             ?? lineage.project.sourceTrees.first
     }
 
+    private func resetProjectHandbookState() {
+        handbookRequestToken = UUID()
+        handbookRefreshConfigurationRequestToken = UUID()
+        handbookRefreshOperationToken = UUID()
+        projectHandbook = nil
+        handbookPhase = .idle
+        handbookOperationError = nil
+        handbookBuildProjectID = nil
+        handbookRefreshConfiguration = nil
+        handbookRefreshConfigurationProjectID = nil
+        handbookRefreshConfigurationPhase = .idle
+        handbookRefreshMutationProjectID = nil
+        handbookSyncProjectID = nil
+    }
+
+    private func loadProjectHandbookRefreshConfiguration() async {
+        guard phase == .ready,
+              isProjectSelected,
+              let project = selectedProject,
+              project.registration != .missing else {
+            handbookRefreshConfigurationRequestToken = UUID()
+            handbookRefreshConfiguration = nil
+            handbookRefreshConfigurationProjectID = nil
+            handbookRefreshConfigurationPhase = .idle
+            return
+        }
+        let projectID = project.id
+        let token = UUID()
+        handbookRefreshConfigurationRequestToken = token
+        handbookRefreshConfiguration = nil
+        handbookRefreshConfigurationProjectID = projectID
+        handbookRefreshConfigurationPhase = .loading
+        do {
+            let configuration = try await dataSource
+                .loadProjectHandbookRefreshConfiguration(projectID: projectID)
+            guard handbookRefreshConfigurationRequestToken == token,
+                  selection == .project(projectID) else { return }
+            handbookRefreshConfiguration = configuration
+            handbookRefreshConfigurationPhase = .ready
+        } catch is CancellationError {
+            // A project change invalidated the read.
+        } catch {
+            guard handbookRefreshConfigurationRequestToken == token,
+                  selection == .project(projectID) else { return }
+            handbookRefreshConfiguration = nil
+            handbookRefreshConfigurationPhase = .failed(error.localizedDescription)
+        }
+    }
+
+    private func reconcileProjectHandbookRefreshLoop() {
+        guard shouldAutomaticallyRefreshProjectHandbook,
+              let projectID = selectedProject?.id else {
+            stopProjectHandbookRefreshLoop(withholdingBody: false)
+            return
+        }
+        guard handbookRefreshLoopProjectID != projectID || handbookRefreshLoop == nil else {
+            return
+        }
+
+        stopProjectHandbookRefreshLoop(withholdingBody: false)
+        let token = UUID()
+        handbookRefreshLoopToken = token
+        handbookRefreshLoopProjectID = projectID
+        handbookRefreshLoop = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                guard self.handbookRefreshLoopToken == token,
+                      self.handbookRefreshLoopProjectID == projectID,
+                      self.shouldAutomaticallyRefreshProjectHandbook else { break }
+                await self.performAutomaticProjectHandbookSync(
+                    projectID: projectID,
+                    loopToken: token
+                )
+                guard !Task.isCancelled,
+                      self.shouldAutomaticallyRefreshProjectHandbook else { break }
+                do {
+                    try await self.handbookRefreshSleep()
+                } catch {
+                    break
+                }
+            }
+            if self.handbookRefreshLoopToken == token {
+                self.handbookRefreshLoop = nil
+                self.handbookRefreshLoopProjectID = nil
+                if self.handbookSyncProjectID == projectID {
+                    self.handbookSyncProjectID = nil
+                }
+            }
+        }
+    }
+
+    private var shouldAutomaticallyRefreshProjectHandbook: Bool {
+        guard phase == .ready,
+              isWorkspaceVisible,
+              isSceneActive,
+              isProjectSelected,
+              let projectID = selectedProject?.id,
+              handbookRefreshConfigurationProjectID == projectID,
+              handbookRefreshConfiguration?.enabled == true,
+              handbookRefreshMutationProjectID == nil,
+              handbookBuildProjectID == nil else {
+            return false
+        }
+        return true
+    }
+
+    private func stopProjectHandbookRefreshLoop(withholdingBody: Bool) {
+        handbookRefreshLoop?.cancel()
+        handbookRefreshLoop = nil
+        handbookRefreshLoopProjectID = nil
+        handbookRefreshLoopToken = UUID()
+        handbookSyncProjectID = nil
+        if withholdingBody {
+            handbookRequestToken = UUID()
+            projectHandbook = nil
+            handbookPhase = .idle
+            handbookOperationError = nil
+        }
+    }
+
+    private func performAutomaticProjectHandbookSync(
+        projectID: String,
+        loopToken: UUID
+    ) async {
+        guard handbookRefreshLoopToken == loopToken,
+              selection == .project(projectID),
+              shouldAutomaticallyRefreshProjectHandbook,
+              handbookSyncProjectID == nil else { return }
+        handbookSyncProjectID = projectID
+        // A policy or source retraction may be what this sync discovers. The
+        // previously verified body cannot remain visible during revalidation.
+        projectHandbook = nil
+        handbookPhase = .loading
+        handbookOperationError = nil
+        defer {
+            if handbookRefreshLoopToken == loopToken,
+               handbookSyncProjectID == projectID {
+                handbookSyncProjectID = nil
+            }
+        }
+
+        do {
+            let result = try await dataSource.syncProjectHandbook(projectID: projectID)
+            guard !Task.isCancelled,
+                  handbookRefreshLoopToken == loopToken,
+                  selection == .project(projectID),
+                  isWorkspaceVisible,
+                  isSceneActive else { return }
+            switch result.disposition {
+            case .rebuilt, .unchanged:
+                try applyCurrentRefreshResult(result)
+            case .disabled:
+                projectHandbook = nil
+                handbookPhase = .idle
+                await loadProjectHandbookRefreshConfiguration()
+                guard handbookRefreshLoopToken == loopToken,
+                      selection == .project(projectID) else { return }
+                await loadProjectHandbook()
+            case .busy:
+                withholdHandbookAfterRefresh(
+                    "Another handbook refresh is already finishing. Byori will try again while this project remains visible."
+                )
+            case .cancelled, .failed:
+                withholdHandbookAfterRefresh(result.reason)
+            }
+        } catch is CancellationError {
+            // Cancellation is lifecycle, not a failure to publish into the UI.
+        } catch {
+            guard handbookRefreshLoopToken == loopToken,
+                  selection == .project(projectID),
+                  isWorkspaceVisible,
+                  isSceneActive else { return }
+            withholdHandbookAfterRefresh(error.localizedDescription)
+        }
+    }
+
+    private func applyCurrentRefreshResult(
+        _ result: ProjectHandbookRefreshResult
+    ) throws {
+        guard (result.disposition == .rebuilt || result.disposition == .unchanged),
+              let snapshot = result.snapshot,
+              snapshot.freshness == .current else {
+            throw WorkspaceAdapterError.invalidState(result.reason)
+        }
+        projectHandbook = snapshot
+        handbookPhase = .ready
+        handbookOperationError = nil
+    }
+
+    private func withholdHandbookAfterRefresh(_ message: String) {
+        projectHandbook = nil
+        handbookOperationError = message
+        handbookPhase = .failed(message)
+    }
+
     private func loadContext() async {
         guard phase == .ready,
               let lineage = selectedLineage,
@@ -2220,6 +2857,77 @@ final class WorkspaceViewModel: ObservableObject {
             guard contextRequestToken == token else { return }
             contextSnapshot = nil
             contextPhase = .failed(error.localizedDescription)
+        }
+    }
+
+    private func loadProjectHandbook() async {
+        guard phase == .ready,
+              isProjectSelected,
+              let project = selectedProject,
+              project.registration != .missing else {
+            handbookRequestToken = UUID()
+            projectHandbook = nil
+            handbookPhase = .idle
+            handbookOperationError = nil
+            return
+        }
+        let projectID = project.id
+        let token = UUID()
+        handbookRequestToken = token
+        // A source retraction or exclusion change is indistinguishable from an
+        // ordinary read failure here. Withhold the old body before revalidation
+        // starts rather than presenting it under its previous freshness label.
+        projectHandbook = nil
+        handbookPhase = .loading
+        handbookOperationError = nil
+        do {
+            let snapshot = try await dataSource.loadProjectHandbook(projectID: projectID)
+            guard handbookRequestToken == token,
+                  selection == .project(projectID) else { return }
+            projectHandbook = snapshot
+            handbookPhase = .ready
+        } catch {
+            guard handbookRequestToken == token,
+                  selection == .project(projectID) else { return }
+            projectHandbook = nil
+            handbookOperationError = error.localizedDescription
+            handbookPhase = .failed(error.localizedDescription)
+        }
+    }
+
+    private func loadProjectHandbookConnections() async {
+        guard phase == .ready,
+              isProjectSelected,
+              let project = selectedProject,
+              project.registration != .missing else {
+            handbookConnectionRequestToken = UUID()
+            handbookConnections = [:]
+            handbookConnectionsPhase = .idle
+            handbookConnectionOperationHost = nil
+            handbookConnectionError = nil
+            pendingHandbookConnectionPreview = nil
+            pendingHandbookDisconnectHost = nil
+            return
+        }
+        let projectID = project.id
+        let token = UUID()
+        handbookConnectionRequestToken = token
+        handbookConnectionsPhase = .loading
+        handbookConnectionError = nil
+        do {
+            let connections = try await dataSource.loadProjectHandbookConnections(projectID: projectID)
+            guard handbookConnectionRequestToken == token,
+                  selection == .project(projectID) else { return }
+            handbookConnections = Dictionary(
+                connections.map { ($0.host, $0) },
+                uniquingKeysWith: { _, newest in newest }
+            )
+            handbookConnectionsPhase = .ready
+        } catch {
+            guard handbookConnectionRequestToken == token,
+                  selection == .project(projectID) else { return }
+            handbookConnectionError = error.localizedDescription
+            handbookConnectionsPhase = handbookConnections.isEmpty ? .failed(error.localizedDescription) : .ready
         }
     }
 
@@ -2422,16 +3130,10 @@ final class WorkspaceViewModel: ObservableObject {
             }
         }
 
-        if let project = projects.first {
-            if let sourceTree = project.sourceTrees.first {
-                if let task = sourceTree.tasks.first {
-                    if let session = task.sessions.first { return .session(session.id) }
-                    return .task(task.id)
-                }
-                return .sourceTree(sourceTree.id)
-            }
-            return .project(project.id)
-        }
+        // With no active terminal to recover, the project handbook is the main
+        // surface. Source trees, tasks and inactive sessions remain explicit in
+        // the outline and can still be selected directly.
+        if let project = projects.first { return .project(project.id) }
         return nil
     }
 

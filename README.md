@@ -6,82 +6,59 @@
   <img src="assets/byori-app-icon.png" width="160" alt="Byori app icon">
 </p>
 
-> **The memory of your software project.**
->
-> Git remembers what changed. Byori remembers why.
+> **Stop explaining your project over and over.**
 
-Every coding agent forgets. Your project shouldn't.
+## Accepted direction — implementation in progress
 
-```text
-$ byori init                       # reads the repository's own history
-analyzed
-  11,814 commits · 1,858 tracked files · 1,042 pull requests
-discovered
-  module 24 · bug 72 · task 64 · decision 19 · relations 453
-```
+On 2026-09-11, we committed to making Byori a small tool that automatically builds and updates
+a source-backed project handbook for coding AI. **Byori** is the product; **ByoriDB** becomes its
+internal knowledge build engine. The intended flow is:
 
-```text
-$ ask any agent: "why was sendfile removed from replication?"
+**Connect project → Preview handbook → Connect Claude Code/Codex → Keep it current.**
 
-without Byori   "I can only see the current implementation. There is no
-                 sendfile code here, so I cannot say whether it ever existed."
+Original evidence and accepted checkpoints are retained. The graph and generated handbook are
+derived views, not competing manually maintained memories. The app becomes a lightweight manager;
+a new terminal or workspace is not required to use the handbook.
 
-with Byori      bug:redis-revert-61074b43   (evidence-backed)
-                Reverted on 2020-06-06: "Implements sendfile for redis."
-                  (commit 9cf500a3f67e)
-                A revert is the history stating the change was wrong; why it
-                was wrong is not in the commit, so it is not recorded here.
-```
+**Handbook compiler and connection prototypes are in development, not released or fully verified.**
+See [Product](PRODUCT.md), the [development plan](docs/knowledge-compiler-plan.md), and
+[Roadmap](docs/ROADMAP.md) for scope, order, and release gates. Existing data will be preserved
+during consolidation.
 
-**On redis's full history: 8/8 questions answered with the graph, 0/8 without it**, where a pass means
-the answer cited a commit or pull request a reader can open. Ingest took 11 seconds.
-Reproduce it: [`benchmarks/why.py`](benchmarks/why.py).
+## What is implemented today
 
-Byori preserves that chain rather than a pile of summaries:
-
-```text
-incident ──caused_by──> bug ──fixed_by──> decision ──affects──> module
-                                      └──supersedes──> previous decision
-```
-
-Vector search recalls a similar paragraph; this recalls the reason — and says what it is standing on.
-Every memory is labelled `evidence-backed` or `unsourced`, and a decision that something newer
-replaced comes back marked `stale`, because a memory nobody can check is worth less than one that
-cites a commit, and last year's decision presented as current is worse than no answer.
-
-## What it is made of
-
-| | |
+| Component | Current role |
 |---|---|
-| **`byori init`** | Builds the starting graph from Git alone — issue trailers, reverts, pull requests, ADRs, the directory tree. Deterministic: no model, no guessed causes, and the commit or document behind every memory recorded with it. |
-| **`memory_why`** | An MCP tool any agent can call. The *server* assembles the answer — cause, what resolved it, what it superseded, what superseded it, evidence — so a model cannot summarise the evidence away. |
-| **ByoriDB** | The local graph engine underneath: typed causal edges, provenance, bitemporal history, `AS OF`. |
-| **The workspace** | A native macOS app that runs Claude Code, Codex and a plain terminal over per-project memory. It exists so the graph keeps being written; it is not the point. |
-| **`byori doctor`** | Checks the engine, its service, the credential, this project's memory and the agent wiring — and prints the command that fixes whatever failed. |
+| `byori init` | Deterministic extraction of Git/document signals into a starting graph. It does not yet compile the planned handbook. |
+| `byori handbook` (development checkout) | Source-cited preview/build, balanced selection of declared modules/qualified decisions/pitfalls, guarded reads and opt-in refresh. See the [prototype](docs/handbook-contract.md), [projection](docs/handbook-projection-contract.md) and [refresh](docs/handbook-refresh-contract.md) contracts; actual host consumption and full product gates remain pending. |
+| Memory MCP, including `memory_why` | Structured checkpoints, typed relationships, and retrieval with source references. A reference string is not proof that a claim is supported. |
+| [ByoriDB](https://github.com/byoridb/byoridb) | Local graph storage behind the current MCP and app. |
+| Native macOS workspace | Existing projects, interactive agent/plain-terminal sessions, and knowledge inspection; retained during migration. |
+| Installer and `byori doctor` | Local runtime setup and diagnostics. Development `doctor --handbook-only` checks the selected handbook without engine/login or host-profile probes. |
 
-## What Byori is
+Existing `byori init` can seed project memory now; `init --handbook` opts into the new local
+compiler in a development checkout. Verified new-session delivery and automatic incremental
+refresh still require further work. The remaining
+workspace and installation sections document the existing implementation, not requirements for
+the new default experience.
 
-Byori is a project-first native multi-agent coding workspace. Organize local Git work as
-**Project → Source Tree/Worktree → Task → Session**, then choose Claude Code or Codex for each
-interactive terminal session. The user decides where each agent works and opens another session
-when another agent is useful; Byori does not automatically fan out a prompt, select a winner,
-merge branches, or delete agent work.
+Explicit conditions and conflict/replacement declarations stay attached to their original records;
+they are not promoted to verified policy. Repeated compiler passes can reuse unchanged projections
+inside one process. Separate CLI invocations still start cold; this is not yet durable incremental
+compilation. Original graph-record migration and real Claude/Codex startup verification remain open.
 
-[ByoriDB](https://github.com/byoridb/byoridb) is the durable knowledge engine beneath the
-workspace. It keeps project decisions and rationale, module relationships, recurring bugs,
-incidents, resolutions, and task checkpoints available across agents and sessions. **Byori** is
-the product, **ByoriDB** is its graph engine, and **`byori`** is the command-line interface.
+### Evidence so far
 
-Knowledge is captured by the agent at checkpoints, not extracted automatically from every turn,
-so the graph grows as you work rather than on first install. Automatic repository ingestion is
-still under development; see [current limitations](#current-limitations).
+The historical Redis test reported **8/8 expected evidence-token matches with an ingested graph
+and 0/8 with an empty graph**. [The runner](benchmarks/why.py) checks tokens in server responses;
+it has no agent/model in the loop. This is a retrieval smoke benchmark, not a comparison with an
+agent reading Git, proof of answer correctness, or evidence of user time savings. The
+[development plan](docs/knowledge-compiler-plan.md) defines the more realistic comparison.
 
 > [!WARNING]
-> Byori is currently an early experiment. The native macOS workspace MVP, real interactive PTY,
-> local single-node ByoriDB setup, MCP surface, schema v2 (notes plus the typed wiki), and a
-> separate foreground multi-CLI prototype are implemented. Retained terminal sessions require
-> tmux 3.2 or later; without it they end with the app. Automatic repository ingestion is still under development.
-> Do not use Byori as the only copy of important data.
+> Byori is experimental. Keep independent backups of important data. Existing retained terminal
+> sessions require tmux 3.2 or later; this is not a requirement for the planned handbook workflow.
+> New-product milestones are not complete merely because their underlying components already exist.
 
 ## Workspace model
 
@@ -416,7 +393,9 @@ documentation for the engine's feature set and constraints.
 
 ## Current limitations
 
-- There is no ingestion pipeline yet that automatically turns repositories, documents, symbols, and git diffs into a graph.
+- `byori init` extracts bounded Git/document signals today. The development handbook prototype
+  is attributed excerpts, not verified current policy; startup delivery, original graph-record
+  preservation/integration and automatic incremental refresh still have unpassed gates.
 - Capture is performed by the agent at checkpoints rather than extracted automatically on every turn.
 - The default `memory_recall` searches substrings in note names and bodies; it does not use the engine's vector search.
 - There is no checkpoint hook for Codex or NaraeClaw; the bundled reminder hook is Claude Code-only.
@@ -428,12 +407,11 @@ documentation for the engine's feature set and constraints.
 
 ## Roadmap
 
-The native project workspace is the primary product surface. The separate cross-platform `byori`
-CLI prototype covers provider discovery, trusted project registration, explicit foreground runs,
-and run inspection; its management commands will converge with the Byori macOS app's shared core.
-Automatic ingestion and ranked graph recall remain future work. Engine compatibility is gated by
-the [contract](docs/engine-contract.md) and a CI smoke test; see
-[docs/ROADMAP.md](docs/ROADMAP.md).
+The accepted direction is a project-handbook compiler with a small manager. First prove a
+deterministic handbook and actual new-session delivery, then add incremental refresh and reliable
+packaging. Model-assisted editing is optional; new workspace/orchestration features are deferred.
+See the [development plan](docs/knowledge-compiler-plan.md) and [roadmap](docs/ROADMAP.md).
+Existing engine compatibility remains gated by the [contract](docs/engine-contract.md) and CI.
 
 ## Documentation
 
@@ -447,6 +425,7 @@ quoted Korean phrases in the Claude/Codex skill are intentional multilingual tri
 - [Agent adapter assets (skill/hooks)](adapters/README.md)
 - [Memory ontology design and PoC](docs/memory-ontology.md)
 - [ByoriDB engine compatibility contract](docs/engine-contract.md)
+- [Project handbook development plan](docs/knowledge-compiler-plan.md)
 - [Roadmap](docs/ROADMAP.md)
 - [ByoriDB engine](https://github.com/byoridb/byoridb)
 

@@ -125,7 +125,10 @@ final class IntegrationInventoryTests: XCTestCase {
             to: source.appendingPathComponent("agents/openai.yaml")
         )
 
-        let service = ManagerService(paths: ManagerPaths(home: home, runtimeRoot: runtime))
+        let service = ManagerService(
+            paths: ManagerPaths(home: home, runtimeRoot: runtime),
+            runner: InventorySandboxRunner(), healthProbe: { false }
+        )
         _ = try await service.syncSkill(.codex, skill: .byoriDesign)
 
         let installed = home.appendingPathComponent(
@@ -195,6 +198,12 @@ final class IntegrationInventoryTests: XCTestCase {
             }
         }
         XCTAssertEqual(try String(contentsOf: paths.claudeConfig), "original-config")
+    }
+}
+
+private struct InventorySandboxRunner: CommandRunning {
+    func run(_ command: CommandSpec) async -> CommandResult {
+        CommandResult(exitCode: command.executable == "/bin/launchctl" ? 113 : 127, output: "fixture unavailable")
     }
 }
 

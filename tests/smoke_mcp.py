@@ -452,6 +452,7 @@ def main():
         # Answering "why" reads and traverses; a worker needs it for the recall it
         # is supposed to do before working.
         "memory_why",
+        "memory_handbook",
     }
     discovered = {t["name"] for t in call("tools/list")["tools"]}
     assert discovered == readonly_tools, f"FAIL: readonly tools={discovered}"

@@ -135,6 +135,7 @@ class InstallEngineTagTests(unittest.TestCase):
         """Pretend an engine is already installed, the way a real machine would."""
         home = self.root / "byoridb-home"
         (home / "bin").mkdir(parents=True, exist_ok=True)
+        home.chmod(0o700)
         server = home / "bin" / "byoridb-server"
         server.write_text("#!/bin/sh\n", encoding="utf-8")
         server.chmod(server.stat().st_mode | stat.S_IXUSR)
@@ -165,7 +166,7 @@ class InstallEngineTagTests(unittest.TestCase):
         link = self.home / ".local" / "bin" / "byori"
         self.assertTrue(link.is_symlink(), "the installer must link the CLI")
         self.assertEqual(
-            os.readlink(link), str(self.root / "byoridb-home" / "bin" / "byori")
+            os.readlink(link), str((self.root / "byoridb-home" / "bin" / "byori").resolve())
         )
 
     def test_a_downgrade_is_available_when_it_is_asked_for(self):
@@ -200,6 +201,7 @@ class InstallEngineTagTests(unittest.TestCase):
         staged, digest = self.stage_local_engine()
         home = self.root / "byoridb-home"
         (home / "bin").mkdir(parents=True, exist_ok=True)
+        home.chmod(0o700)
         installed = home / "bin" / "byoridb-server"
         installed.write_bytes(staged.read_bytes())
         (home / "engine.json").write_text(
@@ -220,6 +222,7 @@ class InstallEngineTagTests(unittest.TestCase):
         staged, digest = self.stage_local_engine(content=b"#!/bin/sh\n# new build\n")
         home = self.root / "byoridb-home"
         (home / "bin").mkdir(parents=True, exist_ok=True)
+        home.chmod(0o700)
         installed = home / "bin" / "byoridb-server"
         installed.write_bytes(b"#!/bin/sh\n# old build\n")
         before = installed.stat().st_ino

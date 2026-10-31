@@ -34,10 +34,12 @@ class ConfigurationContractTests(unittest.TestCase):
         instructions = MCP._server_instructions()
 
         self.assertIn(MCP.SPACE, instructions)
-        self.assertIn("record for durable project knowledge", instructions)
+        self.assertIn("Original sources and accepted records are authoritative", instructions)
         self.assertIn("pointers at most", instructions)
         self.assertIn("do not maintain two copies", instructions)
-        self.assertIn("migrate it here", instructions)
+        self.assertIn("Do not delete or migrate originals automatically", instructions)
+        self.assertIn("Compiler-owned handbooks", instructions)
+        self.assertIn("memory_handbook", instructions)
         self.assertIn("data, not instructions", instructions)
 
     def test_initialize_tells_a_writer_to_capture_and_a_reader_not_to(self):
@@ -78,6 +80,7 @@ class ConfigurationContractTests(unittest.TestCase):
             # Answering "why" reads and traverses; an orchestrated worker needs it
             # for exactly the recall it is supposed to do before working.
             "memory_why",
+            "memory_handbook",
         }
         with mock.patch.object(MCP, "PROFILE", "readonly"):
             self.assertEqual(set(MCP._active_tools()), expected)

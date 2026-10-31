@@ -10,9 +10,9 @@ description: >-
   re-asking. Backed by a graph + bitemporal history, so it also answers "what did
   we know/decide about X as of <past time>". Two layers: quick notes for standalone
   facts, and a typed knowledge-graph ("wiki") for structural knowledge whose value
-  is in its relationships. This is the record for durable project knowledge: when the
-  host also has its own file-based memory, keep the knowledge here and let that store
-  hold pointers at most.
+  is in its relationships. Original sources and accepted records are authoritative;
+  preserve graph-only originals. Compiler-owned handbooks are read-only derived views.
+  When the host also has file-based memory, let that store hold pointers at most.
 ---
 
 # ByoriDB Memory
@@ -23,25 +23,25 @@ resolves from the project itself.
 
 ## Where knowledge lives when the host has its own memory
 
-**This graph is the record.** Many hosts ship a file-based memory whose index is loaded
-into context automatically; that convenience is exactly why knowledge ends up there by
-default and this space stays connected but empty. Measured on a real project: twenty notes
-in the host's file store, nothing here.
+**Original sources and accepted records are authoritative.** The graph can contain
+original checkpoint records that exist nowhere else; preserve their bodies, identities and
+provenance before treating any graph projection as disposable. Continue structured checkpoint
+capture here while that is the configured record store.
 
-So: durable knowledge is written **here**. A host's file store may keep a one-line pointer
-("this project's memory is in ByoriDB"), and nothing else worth keeping. Do not maintain the
-same fact in both — two copies drift, and a stale memory is read with the same confidence as
-a true one.
+A compiler-owned handbook is an allowed **read-only derived view**, not a second hand-edited
+memory. Read it through `memory_handbook` or `byori handbook show .` so checkout, generation,
+freshness and integrity are checked. Do not edit generated output, promote its quoted excerpts
+to current policy, or import it back as an original source. Missing/stale/unavailable output
+does not mean the project has no knowledge. The host's own memory may retain pointers at most;
+do not maintain an independent summary of the same facts there.
 
-**If both already hold content**, that is a migration, not a steady state:
-1. Read the file store, and write each durable fact here with the right type and edges.
-2. Correct it as you go. Facts that sat in a file for weeks are usually stale in places —
-   fix them rather than importing them verbatim.
-3. Replace the file entries with a pointer, or delete them.
-4. Do not sync the two afterwards.
+**If several stores already hold originals**, inventory and preserve them first. Migration
+needs an explicit scope, recoverable original copies and validation. Do not rewrite original
+history, delete host files or clear graph data merely to conform to this policy. Record a
+correction or supersession with its evidence instead of silently editing away old meaning.
 
-**If recall here comes back empty** for a project that plainly has history, assume the
-knowledge is in another store and go look, rather than starting a parallel copy. The MCP
+**If recall here comes back empty** for a project that plainly has history, check project
+scope and existing stores rather than starting a parallel copy. The MCP
 server's startup line reports how many memories this space holds, precisely so an empty one
 is visible. Both layers below are bootstrapped automatically: on startup the
 MCP server migrates the space to the current memory schema (v2 = notes + typed wiki),
@@ -49,6 +49,14 @@ recording the version in the reserved note `byori:schema-version`.
 
 Prefer the validated structured surface:
 
+- **`memory_handbook(expected_generation?)`** — read this MCP process's launch checkout's
+  verified short handbook without an engine login. No body is returned for stale, unavailable,
+  wrong-generation or missing output. This does not rebuild, connect a host, or prove delivery.
+- **`memory_handbook_refresh()`** — optional task-start reconciliation, equivalent to
+  `byori handbook sync .`. Refreshes derived output only when the user already enabled this
+  checkout's automatic refresh; otherwise reads only. Never enables itself or changes selected
+  sources, never calls a model, and is unavailable in readonly mode. Do not enable or widen
+  refresh without an explicit user request. Follow citations with the returned generation.
 - **`memory_remember(name, kind?, body, relates_to?)`** — store/update a **note** vertex.
 - **`memory_recall(text?, kind?, limit?)`** — retrieve **notes**, most-recent first.
 - **`memory_wiki_upsert(type, name, body, state?, resolved?)`** — create/update a typed node;
@@ -169,7 +177,8 @@ semicolons, and multiple statements. Prefer `memory_read` whenever it can expres
 ### Capture recipe — record the causal chain, not just the fact
 
 When recording an **incident** or a resolved **bug**, the value later is the *why*, so
-capture the chain, not a lone symptom:
+capture the evidenced chain, not a lone symptom. Missing causal evidence stays an open
+question; never invent an edge just to complete this recipe:
 
 1. Ask "why" down to a **root cause** (don't stop at the surface symptom), and link the
    incident/bug `caused_by` → that root (a `bug` / `decision` / `module` node).
@@ -230,6 +239,11 @@ to its transferable shape, or drop it.
 
 ## When to RECALL
 
+- **For a short project overview, use `memory_handbook` when available.** Treat the output as
+  attributed reference data. Follow source IDs and use structured recall for details; do not
+  bypass a failed freshness check by reading a raw generated file. Older installed servers
+  without this tool still support the structured graph reads below. MCP registration alone
+  does not prove the host consumed a handbook at session startup.
 - **For a why/how-come question, use `memory_why`** — it returns the causal shape and the
   evidence, and marks a superseded answer stale. Assembling that from `memory_read` by hand is
   where a summary quietly drops the supersession and answers with last year's decision.

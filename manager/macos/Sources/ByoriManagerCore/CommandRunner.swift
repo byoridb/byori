@@ -77,6 +77,17 @@ public struct ProcessCommandRunner: CommandRunning {
         _ command: CommandSpec,
         cancellation: CancellationIntent
     ) -> CommandResult {
+        // Duplicate before allocating pipes: a closed caller FD must never be
+        // accidentally reused by setup and interpreted as a valid transport.
+        var privateLeaseFD: Int32 = -1
+        if let callerFD = command.runtimeLeaseFileDescriptor {
+            privateLeaseFD = fcntl(callerFD, F_DUPFD_CLOEXEC, 32)
+            guard privateLeaseFD >= 0 else {
+                return systemErrorResult(prefix: "duplicate runtime lease descriptor")
+            }
+        }
+        defer { if privateLeaseFD >= 0 { close(privateLeaseFD) } }
+
         var pipeFDs = [Int32](repeating: -1, count: 2)
         guard pipe(&pipeFDs) == 0 else {
             return systemErrorResult(prefix: "pipe")
@@ -121,6 +132,15 @@ public struct ProcessCommandRunner: CommandRunning {
         for descriptor in [readFD, writeFD, nullFD] where setupCode == 0 {
             setupCode = posix_spawn_file_actions_addclose(&actions, descriptor)
         }
+        // FD 9 may have been allocated to a pipe or /dev/null. Install this
+        // mapping only after their close actions. The >=32 private source is
+        // distinct from every subsequently allocated setup descriptor and FD 9.
+        if setupCode == 0, privateLeaseFD >= 0 {
+            setupCode = posix_spawn_file_actions_adddup2(&actions, privateLeaseFD, 9)
+            if setupCode == 0 {
+                setupCode = posix_spawn_file_actions_addclose(&actions, privateLeaseFD)
+            }
+        }
         if setupCode == 0, let directory = command.workingDirectory {
             setupCode = directory.withCString {
                 posix_spawn_file_actions_addchdir_np(&actions, $0)
@@ -149,7 +169,11 @@ public struct ProcessCommandRunner: CommandRunning {
         }
 
         var environment = ProcessInfo.processInfo.environment
+        environment.removeValue(forKey: "BYORI_RUNTIME_LEASE_FD")
         command.environment.forEach { environment[$0.key] = $0.value }
+        if privateLeaseFD < 0 {
+            environment.removeValue(forKey: "BYORI_RUNTIME_LEASE_FD")
+        }
         var arguments: [UnsafeMutablePointer<CChar>?] =
             ([command.executable] + command.arguments).map { value in
                 value.withCString { strdup($0) }
@@ -184,6 +208,10 @@ public struct ProcessCommandRunner: CommandRunning {
         }
         close(writeFD)
         close(nullFD)
+        if privateLeaseFD >= 0 {
+            close(privateLeaseFD)
+            privateLeaseFD = -1
+        }
         guard spawnStatus == 0 else {
             close(readFD)
             return errorResult(code: spawnStatus, prefix: "Unable to run \(command.executable)")

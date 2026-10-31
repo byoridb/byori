@@ -89,8 +89,8 @@ class InstallHooksTests(unittest.TestCase):
         ).stdout
         self.assertIn("--no-hooks", help_text)
         self.assertIn("installed by default", help_text)
-        # The app-driven install passes --no-claude, and its users are exactly the
-        # ones who need the reminder, so the two flags must stay independent.
+        # Standalone flags remain independent; the app now passes both so runtime
+        # installation cannot silently connect a user's host profile.
         self.assertIn("--no-claude skips MCP registration and skills, not these", help_text)
 
     def test_hooks_default_to_on_in_the_installer_source(self):

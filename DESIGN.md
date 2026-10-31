@@ -1,6 +1,6 @@
 ---
 name: Byori
-description: A project-first native macOS coding workspace for user-selected agents and durable ByoriDB context.
+description: A native project-handbook manager, with legacy coding-workspace surfaces retained during migration.
 colors:
   terminal-canvas: "#0E1011"
   terminal-pty-canvas: "#0E1113"
@@ -38,25 +38,45 @@ components:
 
 ## Overview
 
-**Creative North Star: "The Project Workbench"**
+**Creative North Star: "The Project Handbook"**
 
-Byori should feel like a calm native workbench wrapped around real developer processes. The project is the stable frame; source trees or worktrees, tasks, and sessions reveal increasing detail without displacing that frame. The user chooses Claude Code or Codex for each session. One real terminal owns attention while Files, Git, and ByoriDB knowledge remain immediately reachable.
+The product direction accepted on 2026-09-11 is a small native manager that builds and maintains
+an AI-readable project handbook. This is the target design, not shipped UI. Follow
+[PRODUCT.md](PRODUCT.md) and the [development plan](docs/knowledge-compiler-plan.md).
 
-The world is precise, durable, and operational. Native macOS controls carry familiarity, crisp dividers carry structure, and restrained semantic color carries state. Byori does not decorate work with dashboards, fake activity, or simulated terminal content.
+The project remains the stable frame. The main surface is readable knowledge with source links,
+not a terminal or graph canvas. Native controls, clear dividers, and restrained semantic color
+convey what is ready, what changed, and what needs attention. Do not decorate the manager with
+node-count dashboards, fake progress, or claims that configuration proves delivery.
 
-The public product and app name is **Byori**. **ByoriDB** names only the integrated knowledge engine and its Context. **`byori`** names the supporting CLI. Settings is an administration surface within Byori, not a second product or the center of the experience.
+**Byori** is the product, **ByoriDB** its internal knowledge build engine, and **`byori`** the CLI.
+Database administration remains supporting Settings, not the first-use experience.
 
-**Key Characteristics:**
+## Target manager surface
 
-- Project-first hierarchy with one dominant working surface.
-- Native dynamic chrome surrounding a fixed near-black terminal canvas.
-- Compact spacing, semantic state, and honest loading, empty, error, and unavailable states.
-- Project-scoped knowledge presented as supporting context, never as a competing administration dashboard.
+- Primary flow: **Connect project → Preview handbook → Connect agent**. Use the current project
+  registration and empty-Context affordances as migration entry points.
+- Project navigation, a dominant handbook reading surface, and a lightweight evidence detail view.
+  Source scope, unresolved claims, and last successful snapshot are visible without graph expertise.
+- Distinguish build freshness, engine availability, and host configuration/verified delivery.
+  Show plain-language failure and retry; color alone never carries the state.
+- Display incomplete evidence honestly. An empty project gets source-selection guidance, not a
+  fabricated example presented as project knowledge. Large history scans do not block all preview.
+- Preview agent configuration changes before consent; preserve user-owned instruction content.
+  A generated handbook is a read-only view; corrections go to an original or accepted record.
+- Retain native keyboard navigation, VoiceOver semantics, text selection, dynamic light/dark
+  surfaces, and reduced-motion behavior. Use the existing tokens; no new design system is needed.
+
+## Legacy surface boundary
+
+The workspace hierarchy, PTY, Files/Git inspectors, terminal palette, and session-specific rules
+below describe the retained legacy implementation. They must remain safe during migration but
+are **not requirements for the new default manager**. Terminal rules apply only where a terminal
+still exists. Do not build new orchestration features to satisfy this document. Remove or hide
+legacy surfaces only after the plan's preservation/recovery gates; do not discard associated data.
 
 `assets/byori-app-icon.png` is the canonical Byori app icon asset. Its connected nodes represent
-distinct coding agents linked through shared project knowledge: the workspace is Byori, and the
-knowledge substrate connecting sessions is ByoriDB. Packaging and product documentation should
-derive their icon from this asset rather than redraw or reinterpret it.
+shared project knowledge. Preserve the asset through this transition; a redesign is not required.
 
 ## Colors
 

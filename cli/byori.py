@@ -17,6 +17,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -1277,6 +1278,16 @@ def command_init(args: argparse.Namespace) -> int:
     could traverse. This reads it — deterministically, see cli/archaeology.py —
     and writes what the history states outright.
     """
+    if getattr(args, "handbook", False):
+        args.handbook_command = "preview" if args.dry_run else "build"
+        args.max_commits = args.limit
+        args.max_files = args.max_modules
+        args.max_chars = None
+        return command_handbook(args)
+
+    args.limit = 2_000 if args.limit is None else args.limit
+    args.max_modules = 60 if args.max_modules is None else args.max_modules
+
     from archaeology import ArchaeologyError, excavate  # noqa: PLC0415 - installed beside this file
 
     root = repository_root(pathlib.Path(args.path))
@@ -1354,12 +1365,201 @@ def command_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def parse_handbook_memory_record(value: str) -> Dict[str, str]:
+    """Parse one bounded exact identity; never normalize legacy note names."""
+    node_type, separator, name = value.partition("=")
+    types = {"note", "module", "decision", "bug", "incident", "concept", "entity", "task"}
+    if (not separator or node_type not in types or not name or len(name) > 256
+            or not name.isprintable()):
+        raise argparse.ArgumentTypeError("--record requires a supported TYPE and an exact nonempty NAME (up to 256 characters)")
+    if node_type != "note" and not re.fullmatch(
+            re.escape(node_type) + r":[A-Za-z0-9][A-Za-z0-9._-]*", name):
+        raise argparse.ArgumentTypeError("typed --record names require their matching TYPE: prefix and canonical name")
+    return {"type": node_type, "name": name}
+
+
+def command_handbook_memory(args: argparse.Namespace) -> int:
+    """Explicit reviewed capture only; the adapter owns installed configuration."""
+    if args.apply and args.expected_digest is None:
+        raise ByoriError("memory --apply requires --expected-digest from a reviewed preview")
+    if not args.apply and args.expected_digest is not None:
+        raise ByoriError("--expected-digest requires memory --apply")
+    if args.expected_digest is not None and not re.fullmatch(r"[0-9a-f]{64}", args.expected_digest):
+        raise ByoriError("--expected-digest must be a 64-character lowercase SHA-256 digest")
+    selection = args.record
+    if selection is not None:
+        if len(selection) > 200:
+            raise ByoriError("memory selection is limited to 200 records")
+        if len({(item["type"], item["name"]) for item in selection}) != len(selection):
+            raise ByoriError("memory selection must not contain duplicate identities")
+
+    import handbook_memory  # noqa: PLC0415 - installed alongside the CLI
+
+    try:
+        payload = handbook_memory.capture_memory(
+            pathlib.Path(args.path), selection=selection, apply=args.apply,
+            expected_digest=args.expected_digest,
+        )
+    except (handbook_memory.MemoryCaptureError, OSError, ValueError) as exc:
+        raise ByoriError("memory capture failed safely; check local installed configuration and retry a fresh preview before applying") from exc
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("Memory capture %s: %d records" % (payload["state"], payload["record_count"]))
+        print("Project/checkout scope: %s" % json.dumps(payload["project_root"]))
+        print("Best-effort observation; not a transactional backup. Captured memories remain unverified.")
+        print("New: %d; changed: %d; unchanged: %d; retained: %d; withheld: %d" % tuple(
+            payload[key] for key in ("new_records", "changed_records", "unchanged_records",
+                                     "retained_records", "withheld_records")))
+        print("Records for review:")
+        print(json.dumps(payload["records"], indent=2))
+        if not args.apply:
+            review = ["byori", "handbook", "memory", payload["project_root"]]
+            for item in selection or []:
+                review.extend(["--record", item["type"] + "=" + item["name"]])
+            review.extend(["--apply", "--expected-digest", payload["review_digest"]])
+            print("After reviewing these records and their scope, apply with:\n%s" % shlex.join(review))
+        else:
+            print("Journal revision: %s; changed: %s" % (payload["revision"], payload["changed"]))
+    return 0
+
+
+def command_handbook(args: argparse.Namespace) -> int:
+    """One local compiler entry point; no implicit model, DB or host mutation."""
+    if args.handbook_command == "memory":
+        return command_handbook_memory(args)
+    import handbook  # noqa: PLC0415 - installed alongside the CLI
+
+    action = args.handbook_command
+    # The handbook adapter sanitizes ambient Git routing and owns canonical scope.
+    # Resolving through the legacy helper first could redirect to GIT_WORK_TREE.
+    root = pathlib.Path(args.path)
+    try:
+        if action in {"build", "preview"}:
+            import handbook_refresh
+            projection_stats = {}
+            result = handbook_refresh.compile_project_handbook(
+                root, publish=(action == "build"), max_chars=args.max_chars, max_commits=args.max_commits,
+                max_files=args.max_files,
+                clean_projection=getattr(args, "clean", False), projection_stats=projection_stats,
+            )
+            root = pathlib.Path(result["project_root"])
+            payload = {key: value for key, value in result.items() if key != "evidence"}
+            payload["claim_count"] = len(result["evidence"]["claims"])
+            payload["warnings"] = result["evidence"]["warnings"]
+            payload["excluded_sources"] = len(result["evidence"]["exclusions"])
+            payload["sensitive_sources_withheld"] = result["evidence"]["sensitive_sources_withheld"]
+            payload["omitted_sections"] = result["evidence"]["omitted_sections"]
+            payload["projection_stats"] = projection_stats
+            code = 0
+        elif action in {"show", "status"}:
+            payload = (handbook.read_handbook(root) if action == "show"
+                       else handbook.handbook_status(root))
+            code = 0 if payload["state"] == "current" else 1
+        elif action == "evidence":
+            payload = handbook.read_evidence(root, args.generation, source_id=args.source)
+            code = 0 if payload["state"] == "current" else 1
+        elif action in {"refresh-config", "sync", "refresh"}:
+            import handbook_refresh
+            if action == "refresh-config":
+                if args.enable or args.disable:
+                    options = {}
+                    if args.expected_revision is not None:
+                        options["expected_revision"] = args.expected_revision
+                    elif args.expect_unconfigured:
+                        options["expected_revision"] = None
+                    if args.debounce_ms is not None:
+                        options["debounce_ms"] = args.debounce_ms
+                    source_changes = {key: getattr(args, key) for key in
+                                      ("max_commits", "max_files", "max_file_bytes", "max_total_bytes")
+                                      if getattr(args, key) is not None}
+                    if args.exclude is not None or args.clear_exclusions or source_changes:
+                        current_config = handbook_refresh.read_config(root)
+                        if args.exclude is not None or args.clear_exclusions:
+                            source_changes["exclude_paths"] = args.exclude if args.exclude is not None else []
+                        options["source_limits"] = {**current_config["source_limits"], **source_changes}
+                        options.setdefault("expected_revision", current_config["revision"])
+                    if args.max_chars is not None:
+                        options["max_chars"] = args.max_chars
+                    payload = handbook_refresh.configure_refresh(root, enabled=args.enable, **options)
+                else:
+                    if (args.expected_revision is not None or args.expect_unconfigured or args.debounce_ms is not None
+                            or args.exclude is not None or args.clear_exclusions
+                            or any(getattr(args, key) is not None for key in
+                                   ("max_commits", "max_files", "max_file_bytes", "max_total_bytes", "max_chars"))):
+                        raise ByoriError("setting refresh options requires --enable or --disable")
+                    payload = handbook_refresh.read_config(root)
+                code = 0
+            else:
+                payload = handbook_refresh.refresh_handbook(root, automatic=(action == "sync"))
+                code = 0 if payload["state"] == "current" else 1
+        else:
+            import handbook_delivery  # noqa: PLC0415
+
+            root = pathlib.Path(handbook.collect_sources(root, max_commits=0, max_files=0)["project_root"])
+            try:
+                if action == "connect":
+                    payload = (handbook_delivery.connect(root, args.host) if args.apply
+                               else handbook_delivery.preview_connection(root, args.host))
+                elif action == "disconnect":
+                    payload = handbook_delivery.disconnect(root, args.host)
+                else:
+                    raise ByoriError("unknown handbook action")
+            except handbook_delivery.DeliveryError as exc:
+                raise ByoriError(str(exc)) from exc
+            code = 0
+    except (handbook.HandbookError, handbook.SourceError, ValueError) as exc:
+        raise ByoriError(str(exc)) from exc
+
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    elif action in {"build", "preview", "show", "sync", "refresh"} and payload.get("handbook"):
+        print(payload["handbook"], end="")
+        if payload.get("published"):
+            print("\nPublished: %s" % (root / ".byori" / "handbook.md"))
+    elif action == "status" or (action in {"show", "sync", "refresh"} and not payload.get("handbook")):
+        print("%s: %s" % (payload["state"], payload["reason"]))
+    else:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return code
+
+
 def command_doctor(args: argparse.Namespace) -> int:
     """Check the things that broke in the field, and say what to run.
 
     Every incident this project had was diagnosable in three commands and cost
     somebody a detour to find them. They ship as one now.
     """
+    if getattr(args, "handbook_only", False):
+        if args.space is not None:
+            raise ByoriError("--handbook-only cannot be combined with --space")
+        # Dispatch before *any* runtime env, registry or normal host probes.
+        # Even sibling imports must be read-only in this mode.
+        previous_bytecode = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            import doctor
+
+            facts = doctor.gather_handbook(pathlib.Path(args.path))
+            checks = doctor.judge_handbook(facts)
+            summary = doctor.worst(checks)
+            if args.json:
+                print(json.dumps({
+                    "status": summary, "mode": "handbook-only",
+                    "project": facts["project_root"], "checkout_id": facts["checkout_id"],
+                    "checks": [dataclasses.asdict(check) for check in checks],
+                }, ensure_ascii=True, indent=2))
+            else:
+                print("byori doctor — handbook-only — %s" % (facts["project_root"] or "unverified checkout"))
+                for check in checks:
+                    print("  [%s] %s: %s" % (check.status, check.name, check.detail))
+                    if check.fix and check.status != doctor.OK:
+                        print("        review: %s" % check.fix)
+                print("Handbook diagnostics: %s. Startup consumption remains unverified." % summary)
+            return 1 if summary == doctor.FAIL else 0
+        finally:
+            sys.dont_write_bytecode = previous_bytecode
+
     import doctor  # noqa: PLC0415 - installed beside this file
 
     byoridb_home = default_byoridb_home()
@@ -1732,6 +1932,8 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_command.add_argument("path", nargs="?", default=".")
     doctor_command.add_argument("--space", help="check this memory space instead of the project's")
     doctor_command.add_argument("--json", action="store_true")
+    doctor_command.add_argument("--handbook-only", action="store_true",
+                                help="read-only bounded handbook diagnostics; no engine or host-profile probes")
     doctor_command.set_defaults(handler=command_doctor)
 
     init = commands.add_parser(
@@ -1741,16 +1943,62 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("path", nargs="?", default=".")
     init.add_argument("--space", help="write into this memory space instead of the project's")
     init.add_argument(
-        "--limit", type=int, default=2_000,
+        "--limit", type=int,
         help="how many commits to read, newest first (default: 2000)",
     )
     init.add_argument(
-        "--max-modules", type=int, default=60,
+        "--max-modules", type=int,
         help="how many directories to record as modules, busiest first (default: 60)",
     )
     init.add_argument("--dry-run", action="store_true", help="show what would be written")
     init.add_argument("--json", action="store_true", help="also print the plan as JSON")
+    init.add_argument(
+        "--handbook", action="store_true",
+        help="compile a local source-backed handbook instead of writing the legacy graph",
+    )
     init.set_defaults(handler=command_init)
+
+    handbook_command = commands.add_parser(
+        "handbook", help="preview, build and safely deliver a project handbook",
+    )
+    handbook_actions = handbook_command.add_subparsers(dest="handbook_command", required=True)
+    for action in ("preview", "build", "show", "status", "evidence", "connect", "disconnect", "refresh-config", "sync", "refresh", "memory"):
+        command = handbook_actions.add_parser(action)
+        if action in {"connect", "disconnect"}:
+            command.add_argument("host", choices=SUPPORTED_PROVIDERS)
+        command.add_argument("path", nargs="?", default=".")
+        command.add_argument("--json", action="store_true")
+        if action == "memory":
+            command.add_argument("--record", action="append", type=parse_handbook_memory_record,
+                                 metavar="TYPE=NAME", help="select an exact memory identity; repeat up to 200 times")
+            command.add_argument("--apply", action="store_true", help="import only the reviewed observation into the record journal")
+            command.add_argument("--expected-digest", metavar="SHA", help="review digest from a fresh memory preview; requires --apply")
+        if action == "refresh-config":
+            changes = command.add_mutually_exclusive_group()
+            changes.add_argument("--enable", action="store_true")
+            changes.add_argument("--disable", action="store_true")
+            reviewed = command.add_mutually_exclusive_group()
+            reviewed.add_argument("--expected-revision")
+            reviewed.add_argument("--expect-unconfigured", action="store_true",
+                                  help="apply only if no saved refresh configuration exists")
+            command.add_argument("--debounce-ms", type=int)
+            exclusions = command.add_mutually_exclusive_group()
+            exclusions.add_argument("--exclude", action="append", help="replace exclusions with these exact relative files or directory/ prefixes")
+            exclusions.add_argument("--clear-exclusions", action="store_true", help="explicitly remove configured exclusions")
+            for bound in ("max-commits", "max-files", "max-file-bytes", "max-total-bytes", "max-chars"):
+                command.add_argument("--" + bound, type=int)
+        if action == "evidence":
+            command.add_argument("--generation", required=True)
+            command.add_argument("--source", help="read one generated source ID; otherwise list source locators")
+        if action in {"preview", "build"}:
+            command.add_argument("--clean", action="store_true",
+                                 help="recompute all projections, bypassing and not writing either cache")
+            command.add_argument("--max-commits", type=int, help="default: selected policy, otherwise 100")
+            command.add_argument("--max-files", type=int, help="default: selected policy, otherwise 60")
+            command.add_argument("--max-chars", type=int, help="default: selected policy, otherwise 12000")
+        if action == "connect":
+            command.add_argument("--apply", action="store_true", help="apply the previewed project-scoped connection")
+        command.set_defaults(handler=command_handbook)
 
     open_command = commands.add_parser(
         "open",

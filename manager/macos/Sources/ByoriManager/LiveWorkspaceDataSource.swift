@@ -873,6 +873,144 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         }
     }
 
+    func loadProjectHandbook(projectID: String) async throws -> ProjectHandbookSnapshot {
+        let root = try projectRootForHandbookRefresh(projectID)
+        return try await operationGate.perform { [self] in
+            try Task.checkCancellation()
+            return try await managerService.projectHandbook(
+                projectRoot: root
+            )
+        }
+    }
+
+    func buildProjectHandbook(projectID: String) async throws -> ProjectHandbookSnapshot {
+        let root = try projectRootForHandbookRefresh(projectID)
+        return try await operationGate.perform { [self] in
+            try Task.checkCancellation()
+            return try await managerService.buildProjectHandbook(
+                projectRoot: root
+            )
+        }
+    }
+
+    func loadProjectHandbookRefreshConfiguration(
+        projectID: String
+    ) async throws -> ProjectHandbookRefreshConfiguration {
+        let root = try projectRootForHandbookRefresh(projectID)
+        return try await operationGate.perform { [self] in
+            try Task.checkCancellation()
+            return try await managerService.projectHandbookRefreshConfiguration(
+                projectRoot: root
+            )
+        }
+    }
+
+    func setProjectHandbookAutomaticRefresh(
+        projectID: String,
+        enabled: Bool,
+        expectedRevision: String?
+    ) async throws -> ProjectHandbookRefreshConfiguration {
+        let root = try projectRootForHandbookRefresh(projectID)
+        return try await operationGate.perform { [self] in
+            try Task.checkCancellation()
+            return try await managerService.setProjectHandbookAutomaticRefresh(
+                projectRoot: root,
+                enabled: enabled,
+                expectedRevision: expectedRevision
+            )
+        }
+    }
+
+    func syncProjectHandbook(projectID: String) async throws -> ProjectHandbookRefreshResult {
+        let root = try projectRootForHandbookRefresh(projectID)
+        return try await operationGate.perform { [self] in
+            try Task.checkCancellation()
+            return try await managerService.syncProjectHandbook(projectRoot: root)
+        }
+    }
+
+    func refreshProjectHandbook(projectID: String) async throws -> ProjectHandbookRefreshResult {
+        let root = try projectRootForHandbookRefresh(projectID)
+        return try await operationGate.perform { [self] in
+            try Task.checkCancellation()
+            return try await managerService.refreshProjectHandbook(projectRoot: root)
+        }
+    }
+
+    func loadProjectHandbookConnections(
+        projectID: String
+    ) async throws -> [ProjectHandbookConnection] {
+        guard let project = coreProjects[projectID] else {
+            throw WorkspaceAdapterError.invalidState(
+                "Refresh the workspace before checking this project's agent connections."
+            )
+        }
+        let root = URL(fileURLWithPath: project.rootPath, isDirectory: true)
+        var results: [ProjectHandbookConnection] = []
+        for host in ProjectHandbookHost.allCases {
+            results.append(try await managerService.previewProjectHandbookConnection(
+                projectRoot: root,
+                host: host
+            ))
+        }
+        return results
+    }
+
+    func previewProjectHandbookConnection(
+        projectID: String,
+        host: ProjectHandbookHost
+    ) async throws -> ProjectHandbookConnection {
+        let root = try projectRootForHandbookConnection(projectID)
+        return try await managerService.previewProjectHandbookConnection(
+            projectRoot: root,
+            host: host
+        )
+    }
+
+    func applyProjectHandbookConnection(
+        projectID: String,
+        host: ProjectHandbookHost
+    ) async throws -> ProjectHandbookConnection {
+        let root = try projectRootForHandbookConnection(projectID)
+        return try await operationGate.perform { [self] in
+            try await managerService.applyProjectHandbookConnection(
+                projectRoot: root,
+                host: host
+            )
+        }
+    }
+
+    func disconnectProjectHandbookConnection(
+        projectID: String,
+        host: ProjectHandbookHost
+    ) async throws -> ProjectHandbookConnection {
+        let root = try projectRootForHandbookConnection(projectID)
+        return try await operationGate.perform { [self] in
+            try await managerService.disconnectProjectHandbookConnection(
+                projectRoot: root,
+                host: host
+            )
+        }
+    }
+
+    private func projectRootForHandbookConnection(_ projectID: String) throws -> URL {
+        guard let project = coreProjects[projectID] else {
+            throw WorkspaceAdapterError.invalidState(
+                "Refresh the workspace before changing this project's agent connection."
+            )
+        }
+        return URL(fileURLWithPath: project.rootPath, isDirectory: true)
+    }
+
+    private func projectRootForHandbookRefresh(_ projectID: String) throws -> URL {
+        guard let project = coreProjects[projectID] else {
+            throw WorkspaceAdapterError.invalidState(
+                "Refresh the workspace before refreshing this project's handbook."
+            )
+        }
+        return URL(fileURLWithPath: project.rootPath, isDirectory: true)
+    }
+
     func reattachSession(id: String) async throws -> WorkspaceSessionLaunchResult {
         try await operationGate.perform { [self] in
             try await reattachSessionLocked(id: id)

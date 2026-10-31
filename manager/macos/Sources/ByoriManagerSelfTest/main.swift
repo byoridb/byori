@@ -480,7 +480,8 @@ enum ByoriManagerSelfTest {
         let cancelInstallRuntime = root.appendingPathComponent("cancel-install-runtime", isDirectory: true)
         let cancelInstallPaths = ManagerPaths(
             home: cancelInstallHome,
-            runtimeRoot: cancelInstallRuntime
+            runtimeRoot: cancelInstallRuntime,
+            serviceLabel: "test.byori.selftest.\(UUID().uuidString)"
         )
         let fakePython = cancelInstallHome.appendingPathComponent(".local/bin/python3")
         try fileManager.createDirectory(
@@ -495,6 +496,7 @@ enum ByoriManagerSelfTest {
             withIntermediateDirectories: true
         )
         try Data("before".utf8).write(to: runtimeState)
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: cancelInstallPaths.byoriHome.path)
         let installStarted = cancelInstallPaths.byoriHome.appendingPathComponent("install-started")
         try fileManager.createDirectory(
             at: cancelInstallPaths.installer.deletingLastPathComponent(),
@@ -510,7 +512,12 @@ enum ByoriManagerSelfTest {
             [.posixPermissions: 0o755],
             ofItemAtPath: cancelInstallPaths.installer.path
         )
-        let cancelInstallService = ManagerService(paths: cancelInstallPaths)
+        // A temporary HOME does not isolate launchd: its GUI domain is keyed by
+        // the actual uid. Never let this cancellation test boot out a real job.
+        let cancelInstallService = ManagerService(
+            paths: cancelInstallPaths,
+            runner: CancelInstallSandboxRunner(installer: cancelInstallPaths.installer)
+        )
         let installTask = Task {
             try await cancelInstallService.installOrUpdateByori()
         }
@@ -862,6 +869,24 @@ private actor FailedRemoveRunner: CommandRunning {
             return CommandResult(exitCode: 1, output: "simulated probe failure")
         }
         return CommandResult(exitCode: 0, output: "ok")
+    }
+}
+
+private struct CancelInstallSandboxRunner: CommandRunning {
+    let installer: URL
+
+    func run(_ command: CommandSpec) async -> CommandResult {
+        if command.executable == "/bin/bash", command.arguments.first == installer.path {
+            return await ProcessCommandRunner().run(command)
+        }
+        if command.executable == "/bin/launchctl" {
+            return CommandResult(exitCode: 113, output: "fixture service is absent")
+        }
+        if command.executable == "/usr/sbin/lsof" {
+            return CommandResult(exitCode: 1, output: "")
+        }
+        // Unknown future commands must not escape into the developer's machine.
+        return CommandResult(exitCode: 99, output: "command outside self-test sandbox")
     }
 }
 

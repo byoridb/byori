@@ -12,8 +12,8 @@
 #                what makes the memory graph present in a session instead of
 #                something the agent has to remember to look for). Its own axis:
 #                --no-claude skips MCP registration and skills, not these, because
-#                the app-driven install passes --no-claude and its users are the
-#                ones who need the reminder. Pass both to leave ~/.claude alone.
+#                standalone callers can select these independently. The app passes
+#                both flags: runtime installation does not connect a host profile.
 #   --tag        pins the byori asset version (default: latest byori release)
 #   --engine-tag ByoriDB engine release to install: a tag, or `latest` to resolve
 #                the newest engine release (default: the validated pinned tag)
@@ -23,6 +23,10 @@
 #                directory a newer engine has already written.
 # Env:     BYORIDB_HOME (~/.byoridb) BYORIDB_HTTP_PORT (19669) BYORIDB_GRAPH_PORT (9669)
 #          BYORIDB_LABEL (com.byoridb.local)
+# Keep the complete installer in one exported function: a Python supervisor can
+# hold the OS lease for both file execution and `curl | bash`, without fetching
+# this script again or stealing descriptor 0 from a download pipeline.
+byori_installer_main() {
 set -euo pipefail
 
 ASSET_REPO="byoridb/byori"        # install.sh / MCP / skill / templates
@@ -68,7 +72,7 @@ while [ $# -gt 0 ]; do
     --engine-tag) ENGINE_TAG="${2:-}"; shift ;;
     --binary)     BINARY="${2:-}"; shift ;;
     --assets)     ASSETS="${2:-}"; shift ;;
-    -h|--help)    grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)    exit 0 ;; # handled before acquiring the runtime lease below
     *) die "unknown option: $1" ;;
   esac
   shift
@@ -97,10 +101,13 @@ uninstall() {
     "$CODEX_SKILLS_ROOT/$DESIGN_SKILL_NAME"
   if [ -d "$BYORIDB_HOME/data" ]; then
     printf 'delete data at %s? [y/N] ' "$BYORIDB_HOME/data"; read -r ans </dev/tty || ans=n
-    case "$ans" in y|Y) rm -rf "$BYORIDB_HOME";; *) warn "kept data; removed only bin/scripts"; rm -rf "$BYORIDB_HOME/bin" "$BYORIDB_HOME/byoridb_mcp.py";; esac
-  else
-    rm -rf "$BYORIDB_HOME"
+    case "$ans" in y|Y) rm -rf "$BYORIDB_HOME/data";; *) warn "kept data";; esac
   fi
+  # Never remove the runtime root or its lease inode: another installer could
+  # otherwise create a second lock while this uninstall still owns the first.
+  # Backups, logs and unknown files are deliberately preserved.
+  rm -rf "$BYORIDB_HOME/bin"
+  rm -f "$BYORIDB_HOME/byoridb_mcp.py" "$BYORIDB_HOME/env" "$BYORIDB_HOME/engine.json"
   log "uninstalled."
   exit 0
 }
@@ -183,6 +190,9 @@ get "cli/byori.py" "$WORK/byori.py"
 # byori.py imports this from beside itself; `byori init` is broken without it.
 get "cli/archaeology.py" "$WORK/archaeology.py"
 get "cli/doctor.py" "$WORK/doctor.py"
+for handbook_module in handbook handbook_sources handbook_delivery handbook_records handbook_refresh handbook_projection handbook_knowledge handbook_projection_cache handbook_memory; do
+  get "cli/$handbook_module.py" "$WORK/$handbook_module.py"
+done
 get "templates/run-server.sh" "$WORK/run-server.sh"
 get "templates/run-mcp.sh" "$WORK/run-mcp.sh"
 get "templates/run-byori.sh" "$WORK/run-byori.sh"
@@ -201,7 +211,9 @@ fi
 render "$WORK/run-server.sh" "$WORK/run-server.rendered.sh"
 render "$WORK/run-mcp.sh" "$WORK/run-mcp.rendered.sh"
 render "$WORK/run-byori.sh" "$WORK/run-byori.rendered.sh"
-"$PYTHON" -m py_compile "$WORK/byoridb_mcp.py" "$WORK/byori.py" "$WORK/archaeology.py" "$WORK/doctor.py"
+"$PYTHON" -m py_compile "$WORK/byoridb_mcp.py" "$WORK/byori.py" "$WORK/archaeology.py" "$WORK/doctor.py" \
+  "$WORK/handbook.py" "$WORK/handbook_sources.py" "$WORK/handbook_delivery.py" "$WORK/handbook_records.py" "$WORK/handbook_refresh.py" \
+  "$WORK/handbook_projection.py" "$WORK/handbook_knowledge.py" "$WORK/handbook_projection_cache.py" "$WORK/handbook_memory.py"
 bash -n "$WORK/run-server.rendered.sh" "$WORK/run-mcp.rendered.sh" \
   "$WORK/run-byori.rendered.sh"
 
@@ -274,7 +286,7 @@ stop_service_for_replacement() {
     curl -fsS "http://${HTTP_ADDR}/health" >/dev/null 2>&1 || return 0
     sleep 1
   done
-  warn "the previous server is still answering on ${HTTP_ADDR}; continuing anyway"
+  die "the previous server is still answering on ${HTTP_ADDR}; refusing to replace its engine"
 }
 
 file_sha() {
@@ -364,21 +376,31 @@ if [ -n "$BINARY" ]; then engine_source="local-binary"; engine_ref=""; else engi
 # Written by python rather than a heredoc: the values include a path and a URL,
 # and a hand-rolled JSON string is one stray quote away from an unreadable file.
 "$PYTHON" -c '
-import json, sys
+import json, os, sys, tempfile
 path, tag, target, source, digest, installed_at, binary = sys.argv[1:8]
-json.dump(
-    {
+record = {
         "tag": tag,
         "target": target,
         "source": source,
         "binary_path": binary,
         "sha256": digest,
         "installed_at": installed_at,
-    },
-    open(path, "w"),
-    indent=2,
-    sort_keys=True,
-)
+    }
+descriptor, staged = tempfile.mkstemp(prefix=".engine-", suffix=".json", dir=os.path.dirname(path))
+try:
+    with os.fdopen(descriptor, "w") as stream:
+        json.dump(record, stream, indent=2, sort_keys=True)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(staged, path)
+    directory = os.open(os.path.dirname(path), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+finally:
+    if os.path.exists(staged):
+        os.unlink(staged)
 ' "$BYORIDB_HOME/engine.json" "$engine_ref" "$TARGET" "$engine_source" "$engine_sha" \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$BYORIDB_HOME/bin/byoridb-server"
 log "recorded engine build: ${engine_ref:-local} (${engine_sha:0:12})"
@@ -390,6 +412,10 @@ cp "$WORK/byoridb_mcp.py" "$BYORIDB_HOME/byoridb_mcp.py"
 cp "$WORK/byori.py" "$BYORIDB_HOME/bin/byori.py"
 cp "$WORK/archaeology.py" "$BYORIDB_HOME/bin/archaeology.py"
 cp "$WORK/doctor.py" "$BYORIDB_HOME/bin/doctor.py"
+for handbook_module in handbook handbook_sources handbook_delivery handbook_records handbook_refresh handbook_projection handbook_knowledge handbook_projection_cache handbook_memory; do
+  cp "$WORK/$handbook_module.py" "$BYORIDB_HOME/bin/$handbook_module.py"
+  chmod 644 "$BYORIDB_HOME/bin/$handbook_module.py"
+done
 cp "$WORK/run-server.rendered.sh" "$BYORIDB_HOME/bin/run-server.sh"
 cp "$WORK/run-mcp.rendered.sh" "$BYORIDB_HOME/bin/run-mcp.sh"
 cp "$WORK/run-byori.rendered.sh" "$BYORIDB_HOME/bin/byori"
@@ -475,7 +501,10 @@ start_service() {
 }
 if [ "$NO_SERVICE" = 1 ]; then
   warn "skipping service registration (--no-service); starting server in background for this session"
-  ( "$BYORIDB_HOME/bin/run-server.sh" >"$BYORIDB_HOME/logs/server.log" 2>"$BYORIDB_HOME/logs/server.err" & )
+  # A long-lived engine is not an installer: it must not retain the writer lease
+  # after verification ends. The installer/supervisor still own their descriptors.
+  ( unset BYORI_RUNTIME_LEASE_FD
+    "$BYORIDB_HOME/bin/run-server.sh" 9>&- >"$BYORIDB_HOME/logs/server.log" 2>"$BYORIDB_HOME/logs/server.err" & )
 else
   log "registering always-on service ($SERVICE: $LABEL)"
   start_service
@@ -674,3 +703,122 @@ if [ "$NO_CODEX" != 1 ] && command -v codex >/dev/null 2>&1; then
     "$CODEX_SKILLS_ROOT" "$MEMORY_SKILL_NAME" "$DESIGN_SKILL_NAME"
 fi
 printf 'Restart your agent CLI so it picks up the MCP server and skills.\n'
+}
+
+for byori_option in "$@"; do
+  case "$byori_option" in -h|--help)
+    printf '%s\n' 'Byori runtime installer (macOS/Linux)' \
+      'Options: --tag TAG --engine-tag TAG|latest --binary PATH --assets DIR' \
+      '         --no-service --no-claude --no-codex --no-hooks --uninstall' \
+      '         --allow-engine-downgrade' \
+      'Checkpoint hooks are installed by default; --no-hooks skips them.' \
+      '--no-claude skips MCP registration and skills, not these hooks (an independent axis).' \
+      'Env: BYORIDB_HOME, BYORIDB_HTTP_PORT, BYORIDB_GRAPH_PORT, BYORIDB_LABEL' \
+      'Runtime installation requires python3 and an exclusive private runtime lease.'
+    exit 0 ;;
+  esac
+done
+command -v python3 >/dev/null 2>&1 || {
+  printf '%s\n' 'error: required command not found: python3' >&2; exit 1;
+}
+export -f byori_installer_main
+python3 - "$@" <<'BYORI_RUNTIME_SUPERVISOR'
+import errno
+import fcntl
+import os
+import pwd
+import stat
+import subprocess
+import sys
+import unicodedata
+
+
+def fail(message):
+    print('error: runtime lease: ' + message, file=sys.stderr)
+    raise SystemExit(1)
+
+
+def private(info, kind):
+    predicate = stat.S_ISDIR if kind == 'root' else stat.S_ISREG
+    return (predicate(info.st_mode) and info.st_uid == os.geteuid()
+            and stat.S_IMODE(info.st_mode) == (0o700 if kind == 'root' else 0o600)
+            and (kind == 'root' or info.st_nlink == 1))
+
+
+def identity(info):
+    return (info.st_dev, info.st_ino)
+
+
+def acquire():
+    requested = os.environ.get('BYORIDB_HOME') or os.path.join(os.environ['HOME'], '.byoridb')
+    if any(unicodedata.category(c) in ('Cc', 'Cf', 'Cs', 'Zl', 'Zp') for c in requested):
+        fail('unsafe runtime root')
+    requested = os.path.abspath(requested)
+    if os.path.lexists(requested) and stat.S_ISLNK(os.lstat(requested).st_mode):
+        fail('runtime root must not be a symlink')
+    root = os.path.realpath(requested)
+    broad = {'/', os.path.realpath(os.environ['HOME']),
+             os.path.realpath(pwd.getpwuid(os.geteuid()).pw_dir)}
+    if root in broad:
+        fail('unsafe runtime root')
+    inherited = os.environ.get('BYORI_RUNTIME_LEASE_FD')
+    if inherited is not None and inherited != '9':
+        fail('invalid inherited descriptor')
+    if not os.path.exists(root):
+        if inherited is not None:
+            fail('inherited lease has no runtime root')
+        os.makedirs(root, mode=0o700, exist_ok=True)
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    lease_fd = None
+    try:
+        root_info = os.fstat(root_fd)
+        if not private(root_info, 'root') or identity(root_info) != identity(os.lstat(root)):
+            fail('runtime root must be a private owned directory')
+        lock_name = '.runtime-mutation.lock'
+        if inherited is not None:
+            lease_fd = 9
+        else:
+            lease_fd = os.open(lock_name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW
+                               | os.O_NONBLOCK | os.O_CLOEXEC, 0o600, dir_fd=root_fd)
+        info = os.fstat(lease_fd)
+        path_info = os.stat(lock_name, dir_fd=root_fd, follow_symlinks=False)
+        if (not private(info, 'lock') or not private(path_info, 'lock')
+                or identity(info) != identity(path_info)):
+            fail('unsafe or mismatched lock file')
+        if fcntl.fcntl(lease_fd, fcntl.F_GETFL) & os.O_ACCMODE != os.O_RDWR:
+            fail('lock descriptor must be writable')
+        try:
+            fcntl.flock(lease_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            if error.errno in (errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK):
+                fail('busy; another runtime operation is in progress, retry after it finishes')
+            raise
+        if (identity(info) != identity(os.stat(lock_name, dir_fd=root_fd, follow_symlinks=False))
+                or identity(root_info) != identity(os.lstat(root))):
+            fail('runtime lease changed while acquiring ownership')
+    finally:
+        os.close(root_fd)
+    if lease_fd != 9:
+        os.dup2(lease_fd, 9, inheritable=False)
+        os.close(lease_fd)
+    return root
+
+
+try:
+    canonical_root = acquire()
+    environment = dict(os.environ)
+    environment.pop('BASH_ENV', None)
+    environment.pop('ENV', None)
+    environment['BYORIDB_HOME'] = canonical_root
+    environment['BYORI_RUNTIME_LEASE_FD'] = '9'
+    child = subprocess.Popen(['/bin/bash', '-c', 'byori_installer_main "$@"',
+                              'byori-installer', *sys.argv[1:]],
+                             env=environment, pass_fds=(9,))
+    status = child.wait()
+    # Close only. LOCK_UN would also unlock the application's inherited open
+    # description while it still needs ownership for verification/rollback.
+    os.close(9)
+    raise SystemExit(status if status >= 0 else 128 - status)
+except (OSError, KeyError, ValueError):
+    fail('cannot acquire or run the private runtime operation')
+BYORI_RUNTIME_SUPERVISOR

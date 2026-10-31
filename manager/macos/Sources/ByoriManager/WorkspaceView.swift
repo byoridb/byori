@@ -98,6 +98,7 @@ private enum WorkspaceRemovalRequest: Identifiable {
 /// Source-tree-first workspace presentation. The terminal content is supplied
 /// by the app's real PTY/session broker; this view never renders simulated output.
 struct WorkspaceView<TerminalHost: View>: View {
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var model: WorkspaceViewModel
     @State private var removalRequest: WorkspaceRemovalRequest?
     private let openSettings: () -> Void
@@ -161,6 +162,16 @@ struct WorkspaceView<TerminalHost: View>: View {
             }
         }
         .task { await model.load() }
+        .onAppear {
+            model.setWorkspaceVisible(true)
+            model.setSceneActive(scenePhase == .active)
+        }
+        .onDisappear {
+            model.setWorkspaceVisible(false)
+        }
+        .onChange(of: scenePhase) { newPhase in
+            model.setSceneActive(newPhase == .active)
+        }
         .sheet(isPresented: newSessionPresentation) {
             NewWorkspaceSessionSheet(model: model)
         }
@@ -320,6 +331,18 @@ struct WorkspaceView<TerminalHost: View>: View {
                 secondaryTitle: "Settings",
                 secondaryAction: openSettings
             )
+        } else if let project = model.selectedProject, model.isProjectSelected {
+            WorkspaceHandbookView(
+                project: project,
+                model: model,
+                phase: model.handbookPhase,
+                snapshot: model.projectHandbook,
+                isBuilding: model.isBuildingSelectedProjectHandbook,
+                canBuild: model.canBuildSelectedProjectHandbook,
+                operationError: model.handbookOperationError,
+                refresh: { Task { await model.refreshProjectHandbook() } },
+                build: { Task { await model.refreshSelectedProjectHandbookNow() } }
+            )
         } else if let sourceTree = model.selectedSourceTree {
             WorkspaceUnavailableView(
                 icon: "terminal",
@@ -453,6 +476,513 @@ struct WorkspaceView<TerminalHost: View>: View {
             guard response == .OK, let url = panel.url else { return }
             Task { @MainActor in await model.addProjectFolder(at: url) }
         }
+    }
+}
+
+// MARK: - Project handbook
+
+private struct WorkspaceHandbookView: View {
+    let project: WorkspaceProjectItem
+    @ObservedObject var model: WorkspaceViewModel
+    let phase: WorkspaceInspectorPhase
+    let snapshot: ProjectHandbookSnapshot?
+    let isBuilding: Bool
+    let canBuild: Bool
+    let operationError: String?
+    let refresh: () -> Void
+    let build: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(project.name)
+                        .font(.title3.weight(.semibold))
+                    Text(project.repositoryURL.path)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(project.repositoryURL.path)
+                        .textSelection(.enabled)
+                }
+                Spacer()
+                if phase == .loading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Checking handbook freshness")
+                }
+                Button(action: refresh) {
+                    Label("Check Freshness", systemImage: "arrow.clockwise")
+                }
+                .disabled(phase == .loading || isBuilding)
+
+                Button(action: build) {
+                    Label(buildTitle, systemImage: "hammer")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!canBuild)
+            }
+            .padding(16)
+
+            Divider()
+
+            automaticRefreshPanel
+
+            Divider()
+
+            connectionPanel
+
+            Divider()
+
+            content
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var automaticRefreshPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Automatic refresh")
+                        .font(.headline)
+                    Text("Off by default. Runs while this project is visible in Byori or when a connected session requests sync—not as a background daemon after Byori quits.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                if model.handbookRefreshConfigurationPhase == .loading
+                    || model.handbookRefreshMutationProjectID == project.id
+                    || model.isRefreshingSelectedProjectHandbook {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Updating automatic handbook refresh")
+                }
+                Toggle("Automatic refresh", isOn: automaticRefreshBinding)
+                    .labelsHidden()
+                    .disabled(!model.canChangeProjectHandbookAutomaticRefresh)
+                    .accessibilityLabel("Automatically refresh this project's handbook")
+                    .accessibilityHint("Runs only while this project is visible or when a connected session requests sync")
+            }
+
+            if let configuration = model.handbookRefreshConfiguration,
+               model.handbookRefreshConfigurationProjectID == project.id {
+                LabeledContent("Scope") {
+                    Text("This checkout · \(shortGeneration(configuration.checkoutID))")
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                }
+                LabeledContent("Bounds") {
+                    Text("\(configuration.sourceLimits.maxCommits) commits · \(configuration.sourceLimits.maxFiles) files · \(byteLimit(configuration.sourceLimits.maxFileBytes)) each · \(byteLimit(configuration.sourceLimits.maxTotalBytes)) total · \(configuration.maxCharacters.formatted()) characters")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.trailing)
+                }
+                LabeledContent("Excluded paths") {
+                    Text("\(configuration.sourceLimits.excludePaths.count)")
+                        .font(.caption.monospacedDigit())
+                }
+            } else if case let .failed(message) = model.handbookRefreshConfigurationPhase {
+                Label("Refresh setting unavailable: \(message)", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .textSelection(.enabled)
+            } else {
+                Text("Checking this checkout's saved consent and source bounds…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    private var automaticRefreshBinding: Binding<Bool> {
+        Binding(
+            get: {
+                model.handbookRefreshConfigurationProjectID == project.id
+                    && model.handbookRefreshConfiguration?.enabled == true
+            },
+            set: { enabled in
+                Task { await model.setProjectHandbookAutomaticRefresh(enabled) }
+            }
+        )
+    }
+
+    private var connectionPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Agent connections")
+                        .font(.headline)
+                    Text("Project-scoped instructions only. Configuration does not verify startup consumption.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if model.handbookConnectionsPhase == .loading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Checking agent connections")
+                }
+                Button {
+                    Task { await model.refreshProjectHandbookConnections() }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                        .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.borderless)
+                .help("Refresh agent connection status")
+                .disabled(
+                    model.handbookConnectionsPhase == .loading
+                        || model.handbookConnectionOperationHost != nil
+                )
+            }
+
+            if let error = model.handbookConnectionError {
+                Label("Agent connection action failed: \(error)", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .accessibilityLabel("Agent connection action failed. \(error)")
+            }
+
+            ForEach(ProjectHandbookHost.allCases, id: \.self) { host in
+                Divider()
+                connectionRow(host)
+                if model.pendingHandbookConnectionPreview?.connection.host == host {
+                    connectionPreview(host)
+                }
+                if model.pendingHandbookDisconnectHost == host {
+                    disconnectConfirmation(host)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    @ViewBuilder
+    private func connectionRow(_ host: ProjectHandbookHost) -> some View {
+        let connection = model.handbookConnections[host]
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: host == .claude ? "sparkles" : "terminal")
+                .frame(width: 18)
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(host.displayName)
+                    .font(.callout.weight(.medium))
+                if let connection {
+                    Text("\(connection.status.displayName) · startup consumption unverified")
+                        .font(.caption)
+                        .foregroundStyle(connection.isConfigured ? .primary : .secondary)
+                    Text(connection.instructionFile)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(connection.instructionFile)
+                        .textSelection(.enabled)
+                } else {
+                    Text(connectionPlaceholder)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if model.handbookConnectionOperationHost == host {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Updating \(host.displayName) connection")
+            } else if connection?.isConfigured == true {
+                Button("Disconnect…") {
+                    model.requestProjectHandbookDisconnect(host)
+                }
+                .disabled(!model.canChangeProjectHandbookConnection)
+            } else {
+                Button("Preview Connection") {
+                    Task { await model.reviewProjectHandbookConnection(host) }
+                }
+                .disabled(!model.canChangeProjectHandbookConnection)
+            }
+        }
+        .accessibilityElement(children: .contain)
+
+        if let connection, !connection.warnings.isEmpty,
+           model.pendingHandbookConnectionPreview?.connection.host != host {
+            ForEach(Array(connection.warnings.enumerated()), id: \.offset) { _, warning in
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .padding(.leading, 30)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func connectionPreview(_ host: ProjectHandbookHost) -> some View {
+        if let pending = model.pendingHandbookConnectionPreview,
+           pending.connection.host == host {
+            let preview = pending.connection
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Preview only — no project file has changed", systemImage: "eye")
+                    .font(.caption.weight(.medium))
+                Text("Applying adds one owned block to \(preview.instructionFile). It keeps existing content and stores a private byte-exact backup.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let managedBlock = preview.managedBlock {
+                    Text(managedBlock)
+                        .font(.caption2.monospaced())
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                ForEach(Array(preview.warnings.enumerated()), id: \.offset) { _, warning in
+                    Label(warning, systemImage: "exclamationmark.triangle")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+                Text("After apply: configured · startup consumption unverified")
+                    .font(.caption.weight(.medium))
+                HStack {
+                    Spacer()
+                    Button("Cancel") {
+                        model.cancelProjectHandbookConnectionPreview()
+                    }
+                    Button("Apply Connection") {
+                        Task { await model.applyReviewedProjectHandbookConnection() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        preview.wouldChange != true
+                            || model.handbookConnectionOperationHost != nil
+                    )
+                }
+            }
+            .padding(.leading, 30)
+        }
+    }
+
+    private func disconnectConfirmation(_ host: ProjectHandbookHost) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Remove only Byori's managed block from \(host.displayName)? User-owned instructions remain in place, and the private backup is retained.")
+                .font(.caption)
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    model.cancelProjectHandbookDisconnect()
+                }
+                Button("Disconnect", role: .destructive) {
+                    Task { await model.confirmProjectHandbookDisconnect() }
+                }
+                .disabled(model.handbookConnectionOperationHost != nil)
+            }
+        }
+        .padding(.leading, 30)
+    }
+
+    private var connectionPlaceholder: String {
+        switch model.handbookConnectionsPhase {
+        case .idle: return "Not checked"
+        case .loading: return "Checking configuration…"
+        case .ready: return "Status unavailable"
+        case .failed: return "Could not check configuration"
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if isBuilding {
+            WorkspaceUnavailableView(
+                icon: "arrow.triangle.2.circlepath",
+                title: "Refreshing handbook",
+                detail: "Reading the configured bounded project sources. This local deterministic refresh uses no model or database.",
+                showsProgress: true
+            )
+        } else {
+            switch phase {
+            case .loading where snapshot != nil:
+                if let snapshot {
+                    handbook(snapshot)
+                }
+            case .idle, .loading:
+                WorkspaceUnavailableView(
+                    icon: "book.pages",
+                    title: "Preparing handbook",
+                    detail: "Checking the published generation and compiling a bounded local preview when needed.",
+                    showsProgress: true
+                )
+            case let .failed(message):
+                WorkspaceUnavailableView(
+                    icon: "exclamationmark.triangle",
+                    title: "Handbook unavailable",
+                    detail: message,
+                    primaryTitle: "Try Again",
+                    primaryAction: refresh,
+                    secondaryTitle: "Build Handbook",
+                    secondaryAction: canBuild ? build : nil
+                )
+            case .ready:
+                if let snapshot {
+                    handbook(snapshot)
+                } else {
+                    WorkspaceUnavailableView(
+                        icon: "book.closed",
+                        title: "No handbook returned",
+                        detail: "Byori did not return handbook content for this project.",
+                        primaryTitle: "Try Again",
+                        primaryAction: refresh
+                    )
+                }
+            }
+        }
+    }
+
+    private func handbook(_ snapshot: ProjectHandbookSnapshot) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                if let operationError {
+                    Label("Handbook action failed: \(operationError)", systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                        .accessibilityLabel("Handbook action failed. \(operationError)")
+                    Divider()
+                }
+
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: statusIcon(snapshot))
+                        .foregroundStyle(statusColor(snapshot))
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(statusTitle(snapshot))
+                            .font(.headline)
+                        Text(snapshot.reason)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(statusTitle(snapshot)). \(snapshot.reason)")
+
+                Text("Built locally from bounded project sources. No model or ByoriDB service is required. Excerpts remain unverified as current policy; use their source references before relying on them.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Evidence & coverage")
+                        .font(.headline)
+                    LabeledContent("Source-backed excerpts", value: "\(snapshot.claimCount)")
+                    if let count = snapshot.excludedSourceCount {
+                        LabeledContent("Excluded sources", value: "\(count)")
+                    }
+                    if let count = snapshot.sensitiveSourceCount {
+                        LabeledContent("Sensitive sources withheld", value: "\(count)")
+                    }
+                    if let count = snapshot.omittedSectionCount {
+                        LabeledContent("Sections omitted for budget", value: "\(count)")
+                    }
+                    LabeledContent(snapshot.isPreview ? "Preview generation" : "Published generation") {
+                        Text(shortGeneration(snapshot.generation))
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                    }
+                    if snapshot.isPreview, let published = snapshot.publishedGeneration {
+                        LabeledContent("Last published generation") {
+                            Text(shortGeneration(published))
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                        }
+                    }
+                    if let path = snapshot.path {
+                        LabeledContent("Published path") {
+                            Text(path)
+                                .font(.caption.monospaced())
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .help(path)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    if snapshot.buildChanged == false {
+                        Text("The verified build was already current; no publication changed.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if !snapshot.warnings.isEmpty {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Collection warnings")
+                            .font(.headline)
+                        ForEach(Array(snapshot.warnings.enumerated()), id: \.offset) { _, warning in
+                            Label(warning, systemImage: "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                }
+
+                Divider()
+
+                Text(snapshot.isPreview ? "Handbook preview" : "Handbook")
+                    .font(.headline)
+                Text(snapshot.handbook)
+                    .font(.body)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .accessibilityLabel(snapshot.isPreview ? "Handbook preview" : "Published handbook")
+            }
+            .padding(16)
+        }
+    }
+
+    private var buildTitle: String {
+        guard let snapshot else { return "Refresh Now" }
+        return snapshot.freshness == .missing ? "Build Now" : "Refresh Now"
+    }
+
+    private func byteLimit(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .binary)
+    }
+
+    private func statusTitle(_ snapshot: ProjectHandbookSnapshot) -> String {
+        switch snapshot.freshness {
+        case .current:
+            return "Current published handbook"
+        case .missing:
+            return "Preview — not published"
+        case .stale:
+            return "Outdated publication — current preview"
+        case .unavailable:
+            return "Published handbook unavailable — safe preview"
+        }
+    }
+
+    private func statusIcon(_ snapshot: ProjectHandbookSnapshot) -> String {
+        switch snapshot.freshness {
+        case .current: return "checkmark.circle.fill"
+        case .missing: return "doc.badge.plus"
+        case .stale: return "clock.badge.exclamationmark"
+        case .unavailable: return "exclamationmark.triangle.fill"
+        }
+    }
+
+    private func statusColor(_ snapshot: ProjectHandbookSnapshot) -> Color {
+        switch snapshot.freshness {
+        case .current: return .green
+        case .missing: return .blue
+        case .stale: return .orange
+        case .unavailable: return .red
+        }
+    }
+
+    private func shortGeneration(_ generation: String) -> String {
+        generation.count > 12 ? String(generation.prefix(12)) : generation
     }
 }
 

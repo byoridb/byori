@@ -24,6 +24,7 @@ jobs:
           python -m py_compile cli/byori.py cli/archaeology.py cli/doctor.py mcp/byoridb_mcp.py scripts/next_release_tag.py \
             scripts/migrate-legacy-memory.py
           python -m unittest tests/test_cli.py tests/test_mcp_contract.py tests/test_mcp_lifecycle.py tests/test_release_workflow.py tests/test_memory_space.py tests/test_install_engine_tag.py tests/test_install_hooks.py tests/test_archaeology.py tests/test_memory_why.py tests/test_doctor.py
+          python -m unittest discover -s tests -p 'test_handbook*.py'
 
   smoke:
     name: Engine contract smoke
@@ -103,6 +104,9 @@ jobs:
           test -x "dist/Byori.app/Contents/MacOS/Byori"
           test -f "dist/Byori.app/Contents/Resources/Byori.icns"
           test -f "dist/Byori.app/Contents/Resources/runtime/cli/byori.py"
+          for module in handbook handbook_sources handbook_delivery handbook_records handbook_refresh handbook_projection handbook_knowledge handbook_projection_cache handbook_memory; do
+            test -f "dist/Byori.app/Contents/Resources/runtime/cli/$module.py"
+          done
           test "$(plutil -extract CFBundleExecutable raw "$INFO_PLIST")" = "Byori"
           test "$(plutil -extract CFBundleDisplayName raw "$INFO_PLIST")" = "Byori"
           test "$(plutil -extract CFBundleName raw "$INFO_PLIST")" = "Byori"

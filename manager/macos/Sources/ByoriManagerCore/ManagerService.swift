@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -5,6 +6,7 @@ public actor ManagerService {
     private struct RuntimeSnapshot: Sendable {
         let root: URL
         let existingNames: Set<String>
+        let inventory: [String: String]
         let serviceWasLoaded: Bool
         let serviceWasHealthy: Bool
     }
@@ -15,6 +17,7 @@ public actor ManagerService {
     private let graphProvider: any KnowledgeGraphProviding
     private let fileManager: FileManager
     private let serviceVerifier: LocalServiceVerifier
+    private let healthProbe: (@Sendable () async -> Bool)?
     /// Reads release metadata for the engine. The app's own updater keeps its
     /// fetcher, because that one also downloads and verifies a disk image; this
     /// one never downloads anything.
@@ -34,7 +37,8 @@ public actor ManagerService {
         files: ManagedFileInstaller = ManagedFileInstaller(),
         graphProvider: any KnowledgeGraphProviding = ByoriGraphClient(),
         fileManager: FileManager = .default,
-        releaseFetcher: any ReleaseFetching = URLSessionReleaseFetcher()
+        releaseFetcher: any ReleaseFetching = URLSessionReleaseFetcher(),
+        healthProbe: (@Sendable () async -> Bool)? = nil
     ) {
         self.paths = paths
         self.runner = runner
@@ -42,6 +46,7 @@ public actor ManagerService {
         self.graphProvider = graphProvider
         self.fileManager = fileManager
         self.releaseFetcher = releaseFetcher
+        self.healthProbe = healthProbe
         serviceVerifier = LocalServiceVerifier(runner: runner)
         // Takes the default FileManager rather than this service's: the status
         // and install paths only run `tmux -V`, and handing a non-Sendable
@@ -223,15 +228,21 @@ public actor ManagerService {
                 "현재 MCP 런타임에는 python3가 필요합니다. Python 3를 설치한 뒤 다시 시도해 주세요."
             )
         }
+        let lease = try RuntimeMutationLease.acquire(home: paths.byoriHome)
+        defer { lease.release() }
         let snapshot = try await createRuntimeSnapshot()
         try Task.checkCancellation()
-        let result = await runner.run(byoriInstallCommand(engineTag: engineTag))
+        let result = await runner.run(byoriInstallCommand(
+            engineTag: engineTag, runtimeLeaseFileDescriptor: lease.fileDescriptor
+        ))
         do {
             try require(result, label: "ByoriDB 설치")
             try await verifyByori()
             try await verifyByoriCLI()
         } catch {
-            try await rollbackRuntimeUncancelled(snapshot, originalError: error)
+            try await rollbackRuntimeUncancelled(
+                snapshot, originalError: error, runtimeLeaseFileDescriptor: lease.fileDescriptor
+            )
             throw error
         }
         return OperationResult(summary: "ByoriDB 설치/업데이트 완료", detail: result.output)
@@ -302,6 +313,684 @@ public actor ManagerService {
         )
     }
 
+    /// Reads the active handbook when it is current. For missing, stale, or
+    /// unavailable publication state, returns a fresh read-only preview while
+    /// preserving that state and its reason. This path requires neither the
+    /// graph database nor a model account.
+    public func projectHandbook(
+        projectRoot: URL,
+        maxCommits: Int? = nil
+    ) async throws -> ProjectHandbookSnapshot {
+        let shown = try await runProjectHandbook(.show, projectRoot: projectRoot)
+        if shown.state == .current {
+            return try snapshot(fromCurrent: shown)
+        }
+
+        let preview = try await runProjectHandbook(
+            .preview,
+            projectRoot: projectRoot,
+            maxCommits: maxCommits
+        )
+        guard let freshness = shown.state, let reason = shown.reason else {
+            throw ProjectHandbookServiceError.invalidResponse(
+                "Byori returned a handbook without a freshness state."
+            )
+        }
+        return try snapshot(
+            fromPreview: preview,
+            freshness: freshness,
+            reason: reason,
+            publishedGeneration: shown.generation,
+            path: shown.path
+        )
+    }
+
+    /// Publishes one bounded deterministic build, then verifies it through the
+    /// read path before reporting it as current. A zero exit from `build` alone
+    /// is not treated as proof that the activated artifact is safe to show.
+    public func buildProjectHandbook(
+        projectRoot: URL,
+        maxCommits: Int? = nil
+    ) async throws -> ProjectHandbookSnapshot {
+        let built = try await runProjectHandbook(
+            .build,
+            projectRoot: projectRoot,
+            maxCommits: maxCommits
+        )
+        guard built.published == true, built.changed != nil else {
+            throw ProjectHandbookServiceError.invalidResponse(
+                "Byori did not confirm handbook publication."
+            )
+        }
+
+        let shown = try await runProjectHandbook(.show, projectRoot: projectRoot)
+        guard shown.state == .current,
+              shown.generation == built.generation,
+              shown.handbook == built.handbook else {
+            throw ProjectHandbookServiceError.verificationFailed(
+                "The handbook was built, but the published generation could not be verified as current."
+            )
+        }
+        let verified = try snapshot(fromCurrent: shown)
+        return ProjectHandbookSnapshot(
+            freshness: verified.freshness,
+            reason: verified.reason,
+            generation: verified.generation,
+            publishedGeneration: verified.publishedGeneration,
+            path: verified.path,
+            handbook: verified.handbook,
+            isPreview: false,
+            claimCount: built.claimCount ?? verified.claimCount,
+            warnings: sanitized(built.warnings ?? []),
+            excludedSourceCount: built.excludedSources ?? 0,
+            sensitiveSourceCount: built.sensitiveSourcesWithheld ?? 0,
+            omittedSectionCount: built.omittedSections ?? 0,
+            buildChanged: built.changed
+        )
+    }
+
+    public func projectHandbookStatus(
+        projectRoot: URL
+    ) async throws -> ProjectHandbookStatus {
+        let payload = try await runProjectHandbook(.status, projectRoot: projectRoot)
+        guard let state = payload.state, let reason = payload.reason else {
+            throw ProjectHandbookServiceError.invalidResponse(
+                "Byori returned a handbook status without a state or reason."
+            )
+        }
+        return ProjectHandbookStatus(
+            freshness: state,
+            reason: sanitized(reason),
+            generation: payload.generation,
+            path: payload.path
+        )
+    }
+
+    /// Reads checkout-scoped consent without creating a configuration file.
+    public func projectHandbookRefreshConfiguration(
+        projectRoot: URL
+    ) async throws -> ProjectHandbookRefreshConfiguration {
+        try await runProjectHandbookRefreshConfiguration(
+            projectRoot: projectRoot,
+            enabled: nil,
+            expectedRevision: nil
+        )
+    }
+
+    /// Changes automatic refresh only after an explicit user action. Supplying
+    /// the last reviewed revision protects an existing setting from stale UI.
+    public func setProjectHandbookAutomaticRefresh(
+        projectRoot: URL,
+        enabled: Bool,
+        expectedRevision: String?
+    ) async throws -> ProjectHandbookRefreshConfiguration {
+        try await runProjectHandbookRefreshConfiguration(
+            projectRoot: projectRoot,
+            enabled: enabled,
+            expectedRevision: expectedRevision
+        )
+    }
+
+    /// Consent-aware automatic reconciliation. The CLI itself rechecks policy;
+    /// the app-side gate is only a responsiveness and coalescing optimization.
+    public func syncProjectHandbook(
+        projectRoot: URL
+    ) async throws -> ProjectHandbookRefreshResult {
+        try await runProjectHandbookRefresh(.sync, projectRoot: projectRoot)
+    }
+
+    /// One explicit user refresh. This never enables future automatic work.
+    public func refreshProjectHandbook(
+        projectRoot: URL
+    ) async throws -> ProjectHandbookRefreshResult {
+        try await runProjectHandbookRefresh(.refresh, projectRoot: projectRoot)
+    }
+
+    /// Reads the project-local host adapter plan. The CLI's connect command is
+    /// intentionally non-mutating unless `--apply` is present.
+    public func previewProjectHandbookConnection(
+        projectRoot: URL,
+        host: ProjectHandbookHost
+    ) async throws -> ProjectHandbookConnection {
+        try await runProjectHandbookConnection(
+            .connect,
+            projectRoot: projectRoot,
+            host: host,
+            apply: false,
+            requiresPreview: true
+        )
+    }
+
+    /// Applies only the project-local connection that the user reviewed.
+    public func applyProjectHandbookConnection(
+        projectRoot: URL,
+        host: ProjectHandbookHost
+    ) async throws -> ProjectHandbookConnection {
+        try await runProjectHandbookConnection(
+            .connect,
+            projectRoot: projectRoot,
+            host: host,
+            apply: true,
+            requiresPreview: false
+        )
+    }
+
+    public func disconnectProjectHandbookConnection(
+        projectRoot: URL,
+        host: ProjectHandbookHost
+    ) async throws -> ProjectHandbookConnection {
+        try await runProjectHandbookConnection(
+            .disconnect,
+            projectRoot: projectRoot,
+            host: host,
+            apply: false,
+            requiresPreview: false
+        )
+    }
+
+    func projectHandbookConnectionCommand(
+        _ action: ProjectHandbookConnectionAction,
+        projectRoot: URL,
+        host: ProjectHandbookHost,
+        apply: Bool = false
+    ) throws -> CommandSpec {
+        guard action == .connect || !apply else {
+            throw ProjectHandbookServiceError.invalidResponse(
+                "Only a handbook connection can be applied."
+            )
+        }
+        var arguments = ["handbook", action.rawValue, host.rawValue, projectRoot.path]
+        if apply { arguments.append("--apply") }
+        arguments.append("--json")
+
+        if fileManager.fileExists(atPath: paths.bundledByoriCLI.path),
+           let python = paths.executable(named: "python3") {
+            return CommandSpec(
+                executable: python.path,
+                arguments: [paths.bundledByoriCLI.path] + arguments,
+                environment: commonEnvironment,
+                timeout: 30
+            )
+        }
+        guard fileManager.isExecutableFile(atPath: paths.byoriCLI.path) else {
+            throw ManagerError.missingResource(paths.bundledByoriCLI.path)
+        }
+        return CommandSpec(
+            executable: paths.byoriCLI.path,
+            arguments: arguments,
+            environment: commonEnvironment,
+            timeout: 30
+        )
+    }
+
+    func projectHandbookCommand(
+        _ action: ProjectHandbookAction,
+        projectRoot: URL,
+        maxCommits: Int? = nil
+    ) throws -> CommandSpec {
+        if let maxCommits, !(0...10_000).contains(maxCommits) {
+            throw ProjectHandbookServiceError.invalidResponse(
+                "The handbook commit limit must be between 0 and 10000."
+            )
+        }
+        var arguments = ["handbook", action.rawValue, projectRoot.path]
+        if action.readsSources, let maxCommits {
+            arguments += ["--max-commits", String(maxCommits)]
+        }
+        arguments.append("--json")
+        let timeout: TimeInterval = action.readsSources ? 120 : 30
+
+        if fileManager.fileExists(atPath: paths.bundledByoriCLI.path),
+           let python = paths.executable(named: "python3") {
+            return CommandSpec(
+                executable: python.path,
+                arguments: [paths.bundledByoriCLI.path] + arguments,
+                environment: commonEnvironment,
+                timeout: timeout
+            )
+        }
+        guard fileManager.isExecutableFile(atPath: paths.byoriCLI.path) else {
+            throw ManagerError.missingResource(paths.bundledByoriCLI.path)
+        }
+        return CommandSpec(
+            executable: paths.byoriCLI.path,
+            arguments: arguments,
+            environment: commonEnvironment,
+            timeout: timeout
+        )
+    }
+
+    func projectHandbookRefreshConfigurationCommand(
+        projectRoot: URL,
+        enabled: Bool? = nil,
+        expectedRevision: String? = nil
+    ) throws -> CommandSpec {
+        if let expectedRevision, !isSHA256(expectedRevision) {
+            throw ProjectHandbookServiceError.invalidResponse(
+                "The reviewed refresh revision is not a SHA-256 hash."
+            )
+        }
+        var arguments = ["handbook", "refresh-config", projectRoot.path]
+        if let enabled {
+            arguments.append(enabled ? "--enable" : "--disable")
+        } else if expectedRevision != nil {
+            throw ProjectHandbookServiceError.invalidResponse(
+                "A refresh revision can only accompany an explicit setting change."
+            )
+        }
+        if let expectedRevision {
+            arguments += ["--expected-revision", expectedRevision]
+        } else if enabled != nil {
+            // Distinguish a reviewed missing default from "no CAS requested."
+            arguments.append("--expect-unconfigured")
+        }
+        arguments.append("--json")
+        return try projectHandbookCLICommand(arguments: arguments, timeout: 30)
+    }
+
+    func projectHandbookRefreshCommand(
+        _ action: ProjectHandbookRefreshAction,
+        projectRoot: URL
+    ) throws -> CommandSpec {
+        try projectHandbookCLICommand(
+            arguments: ["handbook", action.rawValue, projectRoot.path, "--json"],
+            timeout: 120
+        )
+    }
+
+    private func projectHandbookCLICommand(
+        arguments: [String],
+        timeout: TimeInterval
+    ) throws -> CommandSpec {
+        if fileManager.fileExists(atPath: paths.bundledByoriCLI.path),
+           let python = paths.executable(named: "python3") {
+            return CommandSpec(
+                executable: python.path,
+                arguments: [paths.bundledByoriCLI.path] + arguments,
+                environment: commonEnvironment,
+                timeout: timeout
+            )
+        }
+        guard fileManager.isExecutableFile(atPath: paths.byoriCLI.path) else {
+            throw ManagerError.missingResource(paths.bundledByoriCLI.path)
+        }
+        return CommandSpec(
+            executable: paths.byoriCLI.path,
+            arguments: arguments,
+            environment: commonEnvironment,
+            timeout: timeout
+        )
+    }
+
+    private func runProjectHandbook(
+        _ action: ProjectHandbookAction,
+        projectRoot: URL,
+        maxCommits: Int? = nil
+    ) async throws -> ProjectHandbookPayload {
+        try Task.checkCancellation()
+        let result = await runner.run(try projectHandbookCommand(
+            action,
+            projectRoot: projectRoot,
+            maxCommits: maxCommits
+        ))
+        try Task.checkCancellation()
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        guard let data = result.output.data(using: .utf8),
+              let payload = try? decoder.decode(ProjectHandbookPayload.self, from: data) else {
+            let detail = SafeDisplayText.strippingTerminalControls(result.output)
+            throw ProjectHandbookServiceError.commandFailed(
+                detail.isEmpty ? "Byori did not return a readable handbook response." : detail
+            )
+        }
+
+        if result.timedOut {
+            throw ProjectHandbookServiceError.commandFailed("The handbook command timed out.")
+        }
+        if result.exitCode == 1,
+           (action == .show || action == .status),
+           let state = payload.state,
+           state != .current {
+            return payload
+        }
+        guard result.succeeded else {
+            throw ProjectHandbookServiceError.commandFailed(
+                "The handbook command failed with exit code \(result.exitCode)."
+            )
+        }
+        return payload
+    }
+
+    private func runProjectHandbookRefreshConfiguration(
+        projectRoot: URL,
+        enabled: Bool?,
+        expectedRevision: String?
+    ) async throws -> ProjectHandbookRefreshConfiguration {
+        try Task.checkCancellation()
+        let result = await runner.run(try projectHandbookRefreshConfigurationCommand(
+            projectRoot: projectRoot,
+            enabled: enabled,
+            expectedRevision: expectedRevision
+        ))
+        try Task.checkCancellation()
+        if result.timedOut {
+            throw ProjectHandbookServiceError.commandFailed(
+                "The handbook refresh setting command timed out."
+            )
+        }
+        let decoder = JSONDecoder()
+        guard result.succeeded,
+              let data = result.output.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(object.keys) == [
+                "schema_version", "enabled", "revision", "change_id",
+                "project_root", "checkout_id", "debounce_ms", "source_limits", "max_chars",
+              ],
+              let sourceLimits = object["source_limits"] as? [String: Any],
+              Set(sourceLimits.keys) == [
+                "max_commits", "max_files", "max_file_bytes",
+                "max_total_bytes", "exclude_paths",
+              ],
+              let payload = try? decoder.decode(
+                ProjectHandbookRefreshConfigurationPayload.self,
+                from: data
+              ) else {
+            let detail = SafeDisplayText.strippingTerminalControls(result.output)
+            throw ProjectHandbookServiceError.commandFailed(
+                detail.isEmpty
+                    ? "Byori did not return a readable handbook refresh setting."
+                    : detail
+            )
+        }
+        return try refreshConfiguration(from: payload, requestedRoot: projectRoot)
+    }
+
+    private func runProjectHandbookRefresh(
+        _ action: ProjectHandbookRefreshAction,
+        projectRoot: URL
+    ) async throws -> ProjectHandbookRefreshResult {
+        try Task.checkCancellation()
+        let result = await runner.run(try projectHandbookRefreshCommand(
+            action,
+            projectRoot: projectRoot
+        ))
+        try Task.checkCancellation()
+        if result.timedOut {
+            throw ProjectHandbookServiceError.commandFailed(
+                "The handbook \(action.rawValue) command timed out."
+            )
+        }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        guard let data = result.output.data(using: .utf8),
+              let payload = try? decoder.decode(ProjectHandbookPayload.self, from: data),
+              let disposition = payload.refresh,
+              let freshness = payload.state,
+              let reason = payload.reason else {
+            let detail = SafeDisplayText.strippingTerminalControls(result.output)
+            throw ProjectHandbookServiceError.commandFailed(
+                detail.isEmpty
+                    ? "Byori did not return a readable handbook \(action.rawValue) response."
+                    : detail
+            )
+        }
+        guard result.succeeded || result.exitCode == 1 else {
+            throw ProjectHandbookServiceError.commandFailed(
+                "The handbook \(action.rawValue) command failed with exit code \(result.exitCode)."
+            )
+        }
+
+        let currentSnapshot: ProjectHandbookSnapshot?
+        if freshness == .current {
+            currentSnapshot = try snapshot(fromCurrent: payload, buildChanged: payload.changed)
+        } else {
+            guard payload.handbook == nil else {
+                throw ProjectHandbookServiceError.invalidResponse(
+                    "Byori returned an unverified handbook body from \(action.rawValue)."
+                )
+            }
+            currentSnapshot = nil
+        }
+        if disposition == .rebuilt || disposition == .unchanged {
+            guard currentSnapshot != nil else {
+                throw ProjectHandbookServiceError.invalidResponse(
+                    "Byori reported \(disposition.rawValue) without a verified current handbook."
+                )
+            }
+        }
+        if disposition == .busy || disposition == .cancelled || disposition == .failed {
+            guard currentSnapshot == nil else {
+                throw ProjectHandbookServiceError.invalidResponse(
+                    "Byori exposed a handbook body for a \(disposition.rawValue) refresh."
+                )
+            }
+        }
+        return ProjectHandbookRefreshResult(
+            disposition: disposition,
+            freshness: freshness,
+            reason: sanitized(reason),
+            generation: payload.generation,
+            snapshot: currentSnapshot,
+            changed: payload.changed
+        )
+    }
+
+    private func runProjectHandbookConnection(
+        _ action: ProjectHandbookConnectionAction,
+        projectRoot: URL,
+        host: ProjectHandbookHost,
+        apply: Bool,
+        requiresPreview: Bool
+    ) async throws -> ProjectHandbookConnection {
+        try Task.checkCancellation()
+        let result = await runner.run(try projectHandbookConnectionCommand(
+            action,
+            projectRoot: projectRoot,
+            host: host,
+            apply: apply
+        ))
+        try Task.checkCancellation()
+        if result.timedOut {
+            throw ProjectHandbookServiceError.commandFailed(
+                "The \(host.displayName) connection command timed out."
+            )
+        }
+
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        guard result.succeeded,
+              let data = result.output.data(using: .utf8),
+              let payload = try? decoder.decode(ProjectHandbookConnectionPayload.self, from: data)
+        else {
+            let detail = SafeDisplayText.strippingTerminalControls(result.output)
+            throw ProjectHandbookServiceError.commandFailed(
+                detail.isEmpty
+                    ? "The \(host.displayName) connection command failed with exit code \(result.exitCode)."
+                    : detail
+            )
+        }
+        guard payload.schemaVersion == 1,
+              payload.host == host,
+              let status = payload.status,
+              payload.verification == "unverified",
+              payload.startupConsumption == "unverified",
+              let changed = payload.changed,
+              let instructionFile = payload.instructionFile,
+              let handbookFile = payload.handbookFile,
+              let handbookPresent = payload.handbookPresent else {
+            throw ProjectHandbookServiceError.invalidResponse(
+                "Byori returned an incomplete or unsupported \(host.displayName) connection state."
+            )
+        }
+        if requiresPreview,
+           (payload.wouldChange == nil || payload.managedBlock == nil || changed) {
+            throw ProjectHandbookServiceError.invalidResponse(
+                "Byori did not return a safe read-only \(host.displayName) connection preview."
+            )
+        }
+        return ProjectHandbookConnection(
+            host: host,
+            status: status,
+            changed: changed,
+            instructionFile: sanitized(instructionFile),
+            handbookFile: sanitized(handbookFile),
+            handbookPresent: handbookPresent,
+            warnings: sanitized(payload.warnings ?? []),
+            wouldChange: payload.wouldChange,
+            managedBlock: payload.managedBlock.map(sanitized),
+            backupFile: payload.backupFile.map(sanitized),
+            removedInstructionFile: payload.removedInstructionFile
+        )
+    }
+
+    private func snapshot(
+        fromCurrent payload: ProjectHandbookPayload,
+        buildChanged: Bool? = nil
+    ) throws -> ProjectHandbookSnapshot {
+        guard payload.state == .current,
+              let reason = payload.reason,
+              let generation = payload.generation,
+              let handbook = payload.handbook,
+              let claimCount = payload.claimCount else {
+            throw ProjectHandbookServiceError.invalidResponse(
+                "Byori marked a handbook current without returning its verified body."
+            )
+        }
+        return ProjectHandbookSnapshot(
+            freshness: .current,
+            reason: sanitized(reason),
+            generation: generation,
+            publishedGeneration: generation,
+            path: payload.path,
+            handbook: sanitized(handbook),
+            isPreview: false,
+            claimCount: claimCount,
+            warnings: sanitized(payload.warnings ?? []),
+            excludedSourceCount: payload.excludedSources ?? 0,
+            sensitiveSourceCount: payload.sensitiveSourcesWithheld ?? 0,
+            omittedSectionCount: payload.omittedSections ?? 0,
+            buildChanged: buildChanged
+        )
+    }
+
+    private func refreshConfiguration(
+        from payload: ProjectHandbookRefreshConfigurationPayload,
+        requestedRoot: URL
+    ) throws -> ProjectHandbookRefreshConfiguration {
+        guard payload.schemaVersion == 1,
+              let enabled = payload.enabled,
+              let projectRoot = payload.projectRoot,
+              let checkoutID = payload.checkoutID,
+              let debounceMs = payload.debounceMs,
+              let limits = payload.sourceLimits,
+              let maxCommits = limits.maxCommits,
+              let maxFiles = limits.maxFiles,
+              let maxFileBytes = limits.maxFileBytes,
+              let maxTotalBytes = limits.maxTotalBytes,
+              let excludePaths = limits.excludePaths,
+              let maxChars = payload.maxChars,
+              isSHA256(checkoutID),
+              payload.revision == nil || isSHA256(payload.revision!),
+              payload.changeID == nil || isLowercaseHex(payload.changeID!, count: 32),
+              debounceMs >= 0, debounceMs <= 2_000,
+              maxCommits >= 0, maxCommits <= 1_000,
+              maxFiles >= 0, maxFiles <= 200,
+              maxFileBytes >= 0, maxFileBytes <= 524_288,
+              maxTotalBytes >= 0, maxTotalBytes <= 2_097_152,
+              maxChars >= 2_048, maxChars <= 64_000,
+              excludePaths.count <= 64,
+              excludePaths.allSatisfy(isSafeExcludedPath),
+              URL(fileURLWithPath: projectRoot, isDirectory: true).standardizedFileURL.path
+                == requestedRoot.resolvingSymlinksInPath().standardizedFileURL.path else {
+            throw ProjectHandbookServiceError.invalidResponse(
+                "Byori returned an incomplete, unsafe, or differently scoped handbook refresh setting."
+            )
+        }
+        return ProjectHandbookRefreshConfiguration(
+            enabled: enabled,
+            revision: payload.revision,
+            changeID: payload.changeID,
+            projectRoot: sanitized(projectRoot),
+            checkoutID: checkoutID,
+            debounceMilliseconds: debounceMs,
+            sourceLimits: ProjectHandbookSourceLimits(
+                maxCommits: maxCommits,
+                maxFiles: maxFiles,
+                maxFileBytes: maxFileBytes,
+                maxTotalBytes: maxTotalBytes,
+                excludePaths: excludePaths.map(sanitized)
+            ),
+            maxCharacters: maxChars
+        )
+    }
+
+    private func isSHA256(_ value: String) -> Bool {
+        isLowercaseHex(value, count: 64)
+    }
+
+    private func isLowercaseHex(_ value: String, count: Int) -> Bool {
+        value.count == count && value.allSatisfy {
+            ($0 >= "0" && $0 <= "9") || ($0 >= "a" && $0 <= "f")
+        }
+    }
+
+    private func isSafeExcludedPath(_ value: String) -> Bool {
+        guard !value.isEmpty,
+              value.utf8.count <= 1_024,
+              !value.hasPrefix("/"),
+              !value.contains("\\"),
+              !value.contains(where: { "*?[]".contains($0) }),
+              !value.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) else {
+            return false
+        }
+        let plain = value.hasSuffix("/") ? String(value.dropLast()) : value
+        return !plain.isEmpty && plain.split(separator: "/", omittingEmptySubsequences: false)
+            .allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+    }
+
+    private func snapshot(
+        fromPreview payload: ProjectHandbookPayload,
+        freshness: ProjectHandbookFreshness,
+        reason: String,
+        publishedGeneration: String?,
+        path: String?
+    ) throws -> ProjectHandbookSnapshot {
+        guard payload.schemaVersion == 1,
+              payload.published == false,
+              let generation = payload.generation,
+              let handbook = payload.handbook,
+              let claimCount = payload.claimCount,
+              let excludedSources = payload.excludedSources,
+              let sensitiveSources = payload.sensitiveSourcesWithheld,
+              let omittedSections = payload.omittedSections else {
+            throw ProjectHandbookServiceError.invalidResponse(
+                "Byori returned an incomplete handbook preview."
+            )
+        }
+        return ProjectHandbookSnapshot(
+            freshness: freshness,
+            reason: sanitized(reason),
+            generation: generation,
+            publishedGeneration: publishedGeneration,
+            path: path,
+            handbook: sanitized(handbook),
+            isPreview: true,
+            claimCount: claimCount,
+            warnings: sanitized(payload.warnings ?? []),
+            excludedSourceCount: excludedSources,
+            sensitiveSourceCount: sensitiveSources,
+            omittedSectionCount: omittedSections
+        )
+    }
+
+    private func sanitized(_ value: String) -> String {
+        SafeDisplayText.strippingTerminalControls(value)
+    }
+
+    private func sanitized(_ values: [String]) -> [String] {
+        values.map(sanitized)
+    }
+
     /// The bundled installer when the app carries one, otherwise the installer from
     /// the latest release. Both install the engine release the caller resolved, or
     /// ask the installer to resolve the newest one when it could not be checked.
@@ -309,9 +998,13 @@ public actor ManagerService {
     /// A tag outside the installer's own charset is dropped rather than passed on:
     /// it is interpolated into a download URL and recorded in the engine manifest,
     /// and `latest` is a correct install where a rejected tag is no install at all.
-    func byoriInstallCommand(engineTag: String? = nil) -> CommandSpec {
+    func byoriInstallCommand(
+        engineTag: String? = nil, runtimeLeaseFileDescriptor: Int32? = nil
+    ) -> CommandSpec {
         let tag = engineTag.flatMap { EngineRelease.isSafeTag($0) ? $0 : nil } ?? "latest"
-        let engineArguments = ["--engine-tag", tag, "--no-claude", "--no-codex"]
+        let engineArguments = ["--engine-tag", tag, "--no-claude", "--no-codex", "--no-hooks"]
+        var environment = commonEnvironment
+        if runtimeLeaseFileDescriptor != nil { environment["BYORI_RUNTIME_LEASE_FD"] = "9" }
         guard fileManager.fileExists(atPath: paths.installer.path) else {
             let command = "/usr/bin/curl -fsSL "
                 + "https://github.com/byoridb/byori/releases/latest/download/install.sh "
@@ -319,15 +1012,17 @@ public actor ManagerService {
             return CommandSpec(
                 executable: "/bin/bash",
                 arguments: ["-o", "pipefail", "-c", command],
-                environment: commonEnvironment,
-                timeout: 900
+                environment: environment,
+                timeout: 900,
+                runtimeLeaseFileDescriptor: runtimeLeaseFileDescriptor
             )
         }
         return CommandSpec(
             executable: "/bin/bash",
             arguments: [paths.installer.path, "--assets", paths.runtimeRoot.path] + engineArguments,
-            environment: commonEnvironment,
-            timeout: 900
+            environment: environment,
+            timeout: 900,
+            runtimeLeaseFileDescriptor: runtimeLeaseFileDescriptor
         )
     }
 
@@ -696,19 +1391,24 @@ public actor ManagerService {
     }
 
     public func startService() async throws -> OperationResult {
+        try Task.checkCancellation()
+        let lease = try RuntimeMutationLease.acquire(home: paths.byoriHome)
+        defer { lease.release() }
         guard fileManager.fileExists(atPath: paths.launchAgent.path) else {
             throw ManagerError.prerequisite("ByoriDB를 먼저 설치해 주세요.")
         }
         let target = serviceTarget
         let bootstrap = await runner.run(CommandSpec(
             executable: "/bin/launchctl",
-            arguments: ["bootstrap", "gui/\(getuid())", paths.launchAgent.path]
+            arguments: ["bootstrap", "gui/\(getuid())", paths.launchAgent.path],
+            runtimeLeaseFileDescriptor: lease.fileDescriptor
         ))
         let detail: String
         if !bootstrap.succeeded {
             let kickstart = await runner.run(CommandSpec(
                 executable: "/bin/launchctl",
-                arguments: ["kickstart", "-k", target]
+                arguments: ["kickstart", "-k", target],
+                runtimeLeaseFileDescriptor: lease.fileDescriptor
             ))
             try require(kickstart, label: "ByoriDB 서비스 시작")
             detail = "이미 등록된 launchd 서비스를 다시 시작하고 상태 확인을 완료했습니다."
@@ -720,9 +1420,13 @@ public actor ManagerService {
     }
 
     public func stopService() async throws -> OperationResult {
+        try Task.checkCancellation()
+        let lease = try RuntimeMutationLease.acquire(home: paths.byoriHome)
+        defer { lease.release() }
         let result = await runner.run(CommandSpec(
             executable: "/bin/launchctl",
-            arguments: ["bootout", serviceTarget]
+            arguments: ["bootout", serviceTarget],
+            runtimeLeaseFileDescriptor: lease.fileDescriptor
         ))
         if !result.succeeded, await isServiceLoaded() {
             try require(result, label: "ByoriDB 서비스 중지")
@@ -731,9 +1435,13 @@ public actor ManagerService {
     }
 
     public func restartService() async throws -> OperationResult {
+        try Task.checkCancellation()
+        let lease = try RuntimeMutationLease.acquire(home: paths.byoriHome)
+        defer { lease.release() }
         let result = await runner.run(CommandSpec(
             executable: "/bin/launchctl",
-            arguments: ["kickstart", "-k", serviceTarget]
+            arguments: ["kickstart", "-k", serviceTarget],
+            runtimeLeaseFileDescriptor: lease.fileDescriptor
         ))
         try require(result, label: "ByoriDB 서비스 재시작")
         try await verifyByori()
@@ -1193,6 +1901,7 @@ public actor ManagerService {
     }
 
     private func healthCheck() async -> Bool {
+        if let healthProbe { return await healthProbe() }
         guard await serviceVerifier.verify(paths: paths) else { return false }
         guard let url = URL(string: "http://127.0.0.1:\(paths.httpPort)/health") else { return false }
         var request = URLRequest(url: url)
@@ -1211,9 +1920,16 @@ public actor ManagerService {
             (paths.byoriHome.appendingPathComponent("bin", isDirectory: true), "bin"),
             (paths.byoriHome.appendingPathComponent("byoridb_mcp.py"), "byoridb_mcp.py"),
             (paths.byoriHome.appendingPathComponent("env"), "env"),
+            (paths.byoriHome.appendingPathComponent("engine.json"), "engine.json"),
             (paths.launchAgent, "launch-agent.plist"),
         ]
-        let serviceWasLoaded = await isServiceLoaded()
+        let serviceState = await runner.run(CommandSpec(
+            executable: "/bin/launchctl", arguments: ["print", serviceTarget], timeout: 5
+        ))
+        guard !serviceState.timedOut, serviceState.succeeded || serviceState.exitCode == 113 else {
+            throw ManagerError.verificationFailed("서비스의 설치 전 상태를 확인할 수 없어 설치를 중단했습니다.")
+        }
+        let serviceWasLoaded = serviceState.succeeded
         var serviceWasHealthy = false
         if serviceWasLoaded {
             let endpointHealthy = await healthCheck()
@@ -1236,13 +1952,27 @@ public actor ManagerService {
         try fileManager.createDirectory(at: snapshot, withIntermediateDirectories: true)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: snapshot.path)
         var existingNames = Set<String>()
-        for (source, name) in sources where fileManager.fileExists(atPath: source.path) {
+        var inventory: [String: String] = [:]
+        for (source, name) in sources {
+            var sourceInfo = stat()
+            if lstat(source.path, &sourceInfo) != 0 {
+                guard errno == ENOENT else {
+                    throw ManagerError.verificationFailed("런타임 스냅샷 경로를 확인할 수 없습니다.")
+                }
+                continue
+            }
+            let entries = try runtimeInventory(at: source, name: name)
             existingNames.insert(name)
             try fileManager.copyItem(at: source, to: snapshot.appendingPathComponent(name))
+            guard try runtimeInventory(at: snapshot.appendingPathComponent(name), name: name) == entries else {
+                throw ManagerError.verificationFailed("런타임 스냅샷 검증에 실패했습니다. 설치하지 않았습니다.")
+            }
+            inventory.merge(entries) { _, new in new }
         }
         return RuntimeSnapshot(
             root: snapshot,
             existingNames: existingNames,
+            inventory: inventory,
             serviceWasLoaded: serviceWasLoaded,
             serviceWasHealthy: serviceWasHealthy
         )
@@ -1250,22 +1980,68 @@ public actor ManagerService {
 
     private func rollbackRuntimeIfPossible(
         _ snapshot: RuntimeSnapshot,
-        originalError: Error
+        originalError: Error,
+        runtimeLeaseFileDescriptor: Int32
     ) async throws {
         let destinations: [(String, URL)] = [
             ("bin", paths.byoriHome.appendingPathComponent("bin", isDirectory: true)),
             ("byoridb_mcp.py", paths.byoriHome.appendingPathComponent("byoridb_mcp.py")),
             ("env", paths.byoriHome.appendingPathComponent("env")),
+            ("engine.json", paths.byoriHome.appendingPathComponent("engine.json")),
             ("launch-agent.plist", paths.launchAgent),
         ]
 
-        _ = await runner.run(CommandSpec(
-            executable: "/bin/launchctl",
-            arguments: ["bootout", serviceTarget],
-            timeout: 15
-        ))
-
         do {
+            // Verify every saved byte before changing any live destination. The
+            // snapshot is private but a missing/corrupt backup must fail closed.
+            var inventory: [String: String] = [:]
+            for name in snapshot.existingNames {
+                inventory.merge(try runtimeInventory(at: snapshot.root.appendingPathComponent(name), name: name)) {
+                    _, new in new
+                }
+            }
+            guard inventory == snapshot.inventory else {
+                throw ManagerError.verificationFailed("런타임 스냅샷이 불완전하거나 변경되었습니다.")
+            }
+            // Runtime rollback is not a database backup. A replaced engine may
+            // already have migrated data even if installation later failed.
+            try validateRollbackData(snapshot)
+            _ = await runner.run(CommandSpec(
+                executable: "/bin/launchctl",
+                arguments: ["bootout", serviceTarget],
+                timeout: 15,
+                runtimeLeaseFileDescriptor: runtimeLeaseFileDescriptor
+            ))
+            // A successful request is not proof the old process stopped. Refuse
+            // restoration if service state is unknown or either port is occupied.
+            let loaded = await runner.run(CommandSpec(
+                executable: "/bin/launchctl", arguments: ["print", serviceTarget], timeout: 5
+            ))
+            guard loaded.exitCode == 113, !loaded.timedOut else {
+                throw ManagerError.verificationFailed("서비스 중지 상태를 확인할 수 없어 파일 복원을 중단했습니다.")
+            }
+            for port in Set([paths.httpPort, paths.graphPort]) {
+                let listener = await runner.run(CommandSpec(
+                    executable: "/usr/sbin/lsof",
+                    arguments: ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN", "-Fp"], timeout: 5
+                ))
+                guard listener.exitCode == 1, !listener.timedOut,
+                      listener.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw ManagerError.verificationFailed("엔진 포트의 중지 상태를 확인할 수 없어 파일 복원을 중단했습니다.")
+                }
+            }
+            // The engine could have created data while bootout was awaiting.
+            // Recheck after stopping, immediately before any replacement.
+            try validateRollbackData(snapshot)
+            var stoppedInventory: [String: String] = [:]
+            for name in snapshot.existingNames {
+                stoppedInventory.merge(try runtimeInventory(at: snapshot.root.appendingPathComponent(name), name: name)) {
+                    _, new in new
+                }
+            }
+            guard stoppedInventory == snapshot.inventory else {
+                throw ManagerError.verificationFailed("서비스 중지 중 런타임 스냅샷이 변경되었습니다.")
+            }
             for (name, destination) in destinations {
                 if fileManager.fileExists(atPath: destination.path) {
                     try fileManager.removeItem(at: destination)
@@ -1286,7 +2062,8 @@ public actor ManagerService {
                 let restart = await runner.run(CommandSpec(
                     executable: "/bin/launchctl",
                     arguments: ["bootstrap", "gui/\(getuid())", paths.launchAgent.path],
-                    timeout: 30
+                    timeout: 30,
+                    runtimeLeaseFileDescriptor: runtimeLeaseFileDescriptor
                 ))
                 try require(restart, label: "ByoriDB 자동 롤백 후 서비스 시작")
                 guard await isServiceLoaded() else {
@@ -1305,16 +2082,104 @@ public actor ManagerService {
         }
     }
 
+    private func validateRollbackData(_ snapshot: RuntimeSnapshot) throws {
+        let data = paths.byoriHome.appendingPathComponent("data", isDirectory: true)
+        var dataInfo = stat()
+        let dataExists = lstat(data.path, &dataInfo) == 0
+        if !dataExists, errno != ENOENT {
+            throw ManagerError.verificationFailed("데이터 상태를 확인할 수 없어 엔진 롤백을 중단했습니다.")
+        }
+        if dataExists {
+            guard (dataInfo.st_mode & S_IFMT) == S_IFDIR else {
+                throw ManagerError.verificationFailed("안전한 데이터 디렉터리가 아니어서 엔진 롤백을 중단했습니다.")
+            }
+            if !(try fileManager.contentsOfDirectory(atPath: data.path)).isEmpty {
+                let engineName = "bin/byoridb-server"
+                let engine = paths.byoriHome.appendingPathComponent(engineName)
+                var engineInfo = stat()
+                let engineExists = lstat(engine.path, &engineInfo) == 0
+                if !engineExists, errno != ENOENT {
+                    throw ManagerError.verificationFailed("엔진 파일 상태를 확인할 수 없어 롤백을 중단했습니다.")
+                }
+                let live = engineExists ? try runtimeInventory(at: engine, name: engineName)[engineName] : nil
+                guard live == snapshot.inventory[engineName] else {
+                    throw ManagerError.verificationFailed(
+                        "엔진이 변경되었고 데이터가 존재합니다. 데이터 호환성/백업 확인 전 자동 롤백하지 않습니다. 런타임 스냅샷은 보존했습니다."
+                    )
+                }
+            }
+        }
+    }
+
     /// Rollback must not inherit cancellation from the operation that caused
     /// it. Otherwise a user Cancel can terminate the installer and then also
     /// cancel the commands needed to restore the previous runtime.
     private func rollbackRuntimeUncancelled(
         _ snapshot: RuntimeSnapshot,
-        originalError: Error
+        originalError: Error,
+        runtimeLeaseFileDescriptor: Int32
     ) async throws {
         let rollback = Task.detached(priority: .userInitiated) { [self] in
-            try await rollbackRuntimeIfPossible(snapshot, originalError: originalError)
+            try await rollbackRuntimeIfPossible(
+                snapshot, originalError: originalError,
+                runtimeLeaseFileDescriptor: runtimeLeaseFileDescriptor
+            )
         }
         try await rollback.value
+    }
+
+    /// A bounded byte-and-mode inventory; never follow symlinks or read special
+    /// files while snapshotting. Original graph data is outside this inventory.
+    private func runtimeInventory(at root: URL, name: String) throws -> [String: String] {
+        var entries: [String: String] = [:]
+        var remainingBytes = 1_073_741_824
+        func visit(_ url: URL, _ key: String, depth: Int = 0) throws {
+            var info = stat()
+            guard depth <= 64, entries.count < 10_000, lstat(url.path, &info) == 0,
+                  info.st_uid == getuid() else {
+                throw ManagerError.verificationFailed("런타임 스냅샷 파일을 안전하게 확인할 수 없습니다.")
+            }
+            let mode = info.st_mode & 0o7777
+            switch info.st_mode & S_IFMT {
+            case S_IFDIR:
+                entries[key] = "directory:\(mode)"
+                for child in try fileManager.contentsOfDirectory(atPath: url.path).sorted() {
+                    try visit(url.appendingPathComponent(child), key + "/" + child, depth: depth + 1)
+                }
+            case S_IFREG:
+                guard info.st_nlink == 1, info.st_size >= 0, info.st_size <= remainingBytes else {
+                    throw ManagerError.verificationFailed("런타임 스냅샷의 파일 크기 또는 링크가 안전하지 않습니다.")
+                }
+                let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+                guard descriptor >= 0 else {
+                    throw ManagerError.verificationFailed("런타임 스냅샷 파일을 열 수 없습니다.")
+                }
+                let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+                defer { try? handle.close() }
+                var opened = stat()
+                guard fstat(descriptor, &opened) == 0, opened.st_dev == info.st_dev,
+                      opened.st_ino == info.st_ino, (opened.st_mode & S_IFMT) == S_IFREG else {
+                    throw ManagerError.verificationFailed("런타임 스냅샷 파일이 변경되었습니다.")
+                }
+                var digest = SHA256()
+                var size = 0
+                while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
+                    remainingBytes -= chunk.count
+                    guard remainingBytes >= 0 else {
+                        throw ManagerError.verificationFailed("런타임 스냅샷 크기 제한을 초과했습니다.")
+                    }
+                    size += chunk.count
+                    digest.update(data: chunk)
+                }
+                guard size == info.st_size else {
+                    throw ManagerError.verificationFailed("런타임 스냅샷 파일이 변경되었습니다.")
+                }
+                entries[key] = "file:\(mode):" + digest.finalize().map { String(format: "%02x", $0) }.joined()
+            default:
+                throw ManagerError.verificationFailed("런타임 스냅샷에 심볼릭 링크 또는 특수 파일이 있습니다.")
+            }
+        }
+        try visit(root, name)
+        return entries
     }
 }

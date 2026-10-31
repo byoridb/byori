@@ -30,6 +30,8 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
+import unicodedata
 from typing import Any, Dict, List, Optional
 
 OK = "ok"
@@ -460,3 +462,171 @@ def worst(checks):
     if any(check.status == WARN for check in checks):
         return WARN
     return OK
+
+
+# ---- bounded handbook diagnostics (no runtime/host-profile probes) -----------
+
+def _handbook_count(value):
+    return value if type(value) is int and value >= 0 else 0
+
+
+def gather_handbook(root):
+    """Read only the selected Git checkout through the guarded handbook APIs.
+
+    Never return bodies, source locators, raw warnings or exception messages.
+    Configuration and coverage refer to the saved selection, not an expanded
+    default scan. No coordinator, write lock, repair or connection is invoked.
+    Imports also must not create bytecode, including for direct API callers.
+    """
+    facts = {"project_root": None, "checkout_id": None, "source_access": False,
+             "handbook": {"state": "unavailable"}, "refresh": None,
+             "coverage": None, "connections": {}}
+    previous_bytecode = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        import handbook
+        import handbook_delivery
+        import handbook_refresh
+
+        errors = (handbook.HandbookError, handbook.SourceError,
+                  handbook_delivery.DeliveryError, OSError, ValueError,
+                  TypeError, KeyError, UnicodeError, RuntimeError)
+        try:
+            scope = handbook.collect_sources(pathlib.Path(root), max_commits=0, max_files=0)
+            canonical = pathlib.Path(scope["project_root"])
+        except errors:
+            return facts
+        label = str(canonical)
+        if (handbook._sensitive(label) or any(handbook._sensitive(part) for part in canonical.parts)
+                or any(unicodedata.category(char).startswith("C") for char in label)):
+            label = "[redacted project root]"
+        facts.update(project_root=label, checkout_id=scope["checkout_id"])
+        try:
+            config = handbook_refresh.read_config(canonical)
+            limits = config["source_limits"]
+            facts["refresh"] = {
+                "enabled": config["enabled"], "saved": config["revision"] is not None,
+                "debounce_ms": config["debounce_ms"], "max_chars": config["max_chars"],
+                "source_limits": {key: limits[key] for key in handbook_refresh.LIMIT_CEILINGS},
+                "excluded_path_count": len(limits["exclude_paths"]),
+            }
+            # Preview honors saved bounds/exclusions and checks policy races;
+            # it is never published or exposed as the guarded active artifact.
+            built = handbook_refresh.compile_project_handbook(canonical, publish=False)
+            evidence = built["evidence"]
+            facts["coverage"] = {
+                "selected_sources": len(evidence["sources"]),
+                "warnings": len(evidence["warnings"]),
+                "excluded_sources": len(evidence["exclusions"]),
+                "omitted_sections": _handbook_count(evidence["omitted_sections"]),
+                "sensitive_sources_withheld": _handbook_count(evidence["sensitive_sources_withheld"]),
+            }
+            facts["source_access"] = True
+        except errors:
+            pass
+        try:
+            status = handbook.handbook_status(canonical)
+            state = status.get("state")
+            facts["handbook"] = {"state": state if state in {
+                "missing", "stale", "current", "unavailable"} else "unavailable"}
+        except errors:
+            pass
+        for host in ("claude", "codex"):
+            try:
+                connection = handbook_delivery.connection_status(canonical, host)
+                status = connection.get("status")
+                facts["connections"][host] = {
+                    "status": status if status in {"configured", "unconfigured", "disconnected"}
+                    else "unavailable", "warnings": len(connection.get("warnings", [])),
+                }
+            except errors:
+                facts["connections"][host] = {"status": "unavailable", "warnings": 0}
+        return facts
+    except ImportError:
+        return facts
+    finally:
+        sys.dont_write_bytecode = previous_bytecode
+
+
+def check_handbook_sources(accessible):
+    if not accessible:
+        return Check("handbook-sources", FAIL, "Selected Git checkout sources cannot be verified.",
+                     "review the selected Git directory, source permissions and saved selection; rerun doctor")
+    return Check("handbook-sources", OK,
+                 "Canonical Git checkout is readable; selection is bounded to tracked project documents, "
+                 "Git history and retained original records, subject to saved exclusions.")
+
+
+def check_handbook_snapshot(state):
+    if state == "current":
+        return Check("handbook-snapshot", OK,
+                     "Current selected snapshot only; not proof of statement correctness or startup consumption.")
+    if state == "missing":
+        return Check("handbook-snapshot", WARN, "No published handbook snapshot.",
+                     "review `byori handbook preview PATH`, then explicitly build if desired")
+    if state == "stale":
+        return Check("handbook-snapshot", WARN, "Published handbook snapshot is stale; do not consume its body.",
+                     "review selected sources and policy, then explicitly refresh the handbook")
+    return Check("handbook-snapshot", FAIL, "Published handbook snapshot cannot be verified; body is withheld.",
+                 "review handbook ownership, integrity and retained originals; preserve manual edits before any rebuild")
+
+
+def check_handbook_coverage(coverage):
+    if coverage is None:
+        return Check("handbook-coverage", FAIL, "Selected source coverage cannot be verified.",
+                     "review source access and saved policy before relying on handbook context")
+    counts = {key: _handbook_count(coverage.get(key)) for key in (
+        "selected_sources", "warnings", "excluded_sources", "omitted_sections", "sensitive_sources_withheld")}
+    incomplete = any(counts[key] for key in counts if key != "selected_sources") or not counts["selected_sources"]
+    detail = ("Selected sources: {selected_sources}; warnings: {warnings}; excluded: {excluded_sources}; "
+              "whole sections omitted: {omitted_sections}; sensitive sources withheld: {sensitive_sources_withheld}. "
+              "Coverage is bounded, not exhaustive; secret detection is not a guarantee.").format(**counts)
+    return Check("handbook-coverage", WARN if incomplete else OK, detail,
+                 "review selected originals and omissions locally; missing context must not be inferred" if incomplete else None)
+
+
+def check_handbook_refresh(config):
+    if config is None:
+        return Check("handbook-refresh", FAIL, "Saved refresh policy cannot be verified.",
+                     "review checkout-scoped refresh configuration and permissions explicitly; no repair was attempted")
+    limits = config["source_limits"]
+    detail = ("Automatic refresh %s%s; %s policy applies only to this checkout. "
+              "Bounds: %d commits, %d documents, %d bytes/document, %d aggregate bytes, "
+              "%d handbook characters; debounce %d ms; %d excluded path rules (values withheld)." % (
+                  "on" if config["enabled"] else "off", "" if config["enabled"] else " (intentional)",
+                  "saved" if config["saved"] else "default", limits["max_commits"], limits["max_files"],
+                  limits["max_file_bytes"], limits["max_total_bytes"], config["max_chars"],
+                  config["debounce_ms"], config["excluded_path_count"]))
+    return Check("handbook-refresh", OK, detail)
+
+
+def check_handbook_connection(host, connection):
+    status = (connection or {}).get("status", "unavailable")
+    if status not in {"configured", "unconfigured", "disconnected"}:
+        return Check("handbook-" + host, FAIL,
+                     "Scoped %s handbook connection cannot be verified." % host,
+                     "review %s and .byori/connections/%s.json plus its backup locally; "
+                     "preserve unknown or manually edited blocks; never repair or connect automatically"
+                     % ("CLAUDE.md" if host == "claude" else "AGENTS.md", host))
+    warnings = _handbook_count(connection.get("warnings"))
+    return Check("handbook-" + host, OK if status == "configured" and not warnings else WARN,
+                 "Scoped %s handbook connection: %s; %d adapter warning(s). "
+                 "Configuration does not prove startup consumption." % (host, status, warnings),
+                 "review scoped connection and instruction precedence locally; connect only with explicit consent"
+                 if status != "configured" or warnings else None)
+
+
+def judge_handbook(facts) -> List[Check]:
+    """Pure judgments, independent of the legacy runtime doctor's fact schema."""
+    checks = [check_handbook_sources(facts["source_access"]),
+              check_handbook_snapshot(facts["handbook"]["state"]),
+              check_handbook_coverage(facts["coverage"]),
+              check_handbook_refresh(facts["refresh"])]
+    for host in ("claude", "codex"):
+        checks.append(check_handbook_connection(host, facts["connections"].get(host)))
+        # No real isolated-session evidence exists in this slice. A record or
+        # supported block, including a purported verification field, is not it.
+        checks.append(Check("handbook-" + host + "-consumption", WARN,
+                            "%s startup consumption: unverified; configuration alone is not evidence." % host,
+                            "verify handbook consumption in a real new host session after reviewing scoped setup"))
+    return checks

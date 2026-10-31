@@ -52,9 +52,14 @@ class _Spawned:
         return self.process
 
     def __exit__(self, *_):
-        if self.process.poll() is None:
-            self.process.kill()
-            self.process.wait(timeout=5)
+        try:
+            if self.process.poll() is None:
+                self.process.kill()
+                self.process.wait(timeout=5)
+        finally:
+            for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
+                if stream is not None:
+                    stream.close()
         return False
 
 

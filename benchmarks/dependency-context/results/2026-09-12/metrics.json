@@ -1,0 +1,23 @@
+{
+  "source": {
+    "reads": 19,
+    "payload_bytes": 56293,
+    "payload_tokens_o200k_base": 14462,
+    "actual_model_tokens": null,
+    "note": "Payload-only o200k_base encoding; excludes prompts, tool wrappers, model output, reasoning, caching, curation and update costs."
+  },
+  "docs": {
+    "reads": 19,
+    "payload_bytes": 54356,
+    "payload_tokens_o200k_base": 14237,
+    "actual_model_tokens": null,
+    "note": "Payload-only o200k_base encoding; excludes prompts, tool wrappers, model output, reasoning, caching, curation and update costs."
+  },
+  "context": {
+    "reads": 18,
+    "payload_bytes": 45210,
+    "payload_tokens_o200k_base": 12243,
+    "actual_model_tokens": null,
+    "note": "Payload-only o200k_base encoding; excludes prompts, tool wrappers, model output, reasoning, caching, curation and update costs."
+  }
+}

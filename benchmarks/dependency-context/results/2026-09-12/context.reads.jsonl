@@ -1,0 +1,18 @@
+{"action": "brief", "repo": null, "path": null, "start": 1, "end": 1, "term": null, "payload_bytes": 7422, "payload_tokens_o200k_base": 2477, "actual_model_tokens": null}
+{"action": "index", "repo": null, "path": null, "start": 1, "end": 1, "term": null, "payload_bytes": 463, "payload_tokens_o200k_base": 174, "actual_model_tokens": null}
+{"action": "source", "repo": "byori", "path": "mcp/byoridb_mcp.py", "start": 498, "end": 617, "term": null, "payload_bytes": 6083, "payload_tokens_o200k_base": 1591, "actual_model_tokens": null}
+{"action": "source", "repo": "byori", "path": "mcp/byoridb_mcp.py", "start": 440, "end": 498, "term": null, "payload_bytes": 2772, "payload_tokens_o200k_base": 767, "actual_model_tokens": null}
+{"action": "search", "repo": "byori", "path": "docs/engine-contract.md", "start": 1, "end": 1, "term": "session", "payload_bytes": 1933, "payload_tokens_o200k_base": 517, "actual_model_tokens": null}
+{"action": "source", "repo": "byoridb", "path": "byoridb-graph/src/server.rs", "start": 350, "end": 457, "term": null, "payload_bytes": 4110, "payload_tokens_o200k_base": 949, "actual_model_tokens": null}
+{"action": "source", "repo": "byori", "path": "docs/engine-contract.md", "start": 91, "end": 125, "term": null, "payload_bytes": 2035, "payload_tokens_o200k_base": 569, "actual_model_tokens": null}
+{"action": "source", "repo": "byoridb", "path": "byoridb-graph/src/service.rs", "start": 365, "end": 425, "term": null, "payload_bytes": 2550, "payload_tokens_o200k_base": 586, "actual_model_tokens": null}
+{"action": "source", "repo": "byoridb", "path": "byoridb-graph/src/server.rs", "start": 227, "end": 337, "term": null, "payload_bytes": 4355, "payload_tokens_o200k_base": 1016, "actual_model_tokens": null}
+{"action": "source", "repo": "byoridb", "path": "byoridb-graph/src/server.rs", "start": 550, "end": 605, "term": null, "payload_bytes": 2214, "payload_tokens_o200k_base": 641, "actual_model_tokens": null}
+{"action": "source", "repo": "byori", "path": "mcp/byoridb_mcp.py", "start": 694, "end": 755, "term": null, "payload_bytes": 3373, "payload_tokens_o200k_base": 816, "actual_model_tokens": null}
+{"action": "source", "repo": "byoridb", "path": "book/src/reference/api.md", "start": 190, "end": 208, "term": null, "payload_bytes": 1121, "payload_tokens_o200k_base": 334, "actual_model_tokens": null}
+{"action": "source", "repo": "byoridb", "path": "byoridb-graph/src/service.rs", "start": 318, "end": 365, "term": null, "payload_bytes": 2172, "payload_tokens_o200k_base": 531, "actual_model_tokens": null}
+{"action": "source", "repo": "byori", "path": "mcp/byoridb_mcp.py", "start": 355, "end": 385, "term": null, "payload_bytes": 1347, "payload_tokens_o200k_base": 371, "actual_model_tokens": null}
+{"action": "source", "repo": "byori", "path": "tests/test_mcp_lifecycle.py", "start": 536, "end": 554, "term": null, "payload_bytes": 874, "payload_tokens_o200k_base": 251, "actual_model_tokens": null}
+{"action": "search", "repo": "byoridb", "path": "byoridb-graph/src/service.rs", "start": 1, "end": 1, "term": "async fn live_session", "payload_bytes": 119, "payload_tokens_o200k_base": 50, "actual_model_tokens": null}
+{"action": "search", "repo": "byori", "path": "mcp/byoridb_mcp.py", "start": 1, "end": 1, "term": "LOGIN_THROTTLE_", "payload_bytes": 368, "payload_tokens_o200k_base": 138, "actual_model_tokens": null}
+{"action": "source", "repo": "byoridb", "path": "byoridb-graph/src/service.rs", "start": 210, "end": 251, "term": null, "payload_bytes": 1899, "payload_tokens_o200k_base": 465, "actual_model_tokens": null}

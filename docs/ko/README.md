@@ -6,80 +6,53 @@
   <img src="../../assets/byori-app-icon.png" width="160" alt="Byori 앱 아이콘">
 </p>
 
-> **당신 소프트웨어 프로젝트의 기억.**
->
-> Git은 무엇이 바뀌었는지 기억합니다. Byori는 왜 그렇게 됐는지 기억합니다.
+> **프로젝트 설명, 매번 다시 하지 마세요.**
 
-모든 코딩 에이전트는 잊습니다. 프로젝트는 잊으면 안 됩니다.
+## 확정한 방향 — 구현 진행 중
 
-```text
-$ byori init                       # 저장소의 히스토리를 읽는다
-analyzed
-  11,814 commits · 1,858 tracked files · 1,042 pull requests
-discovered
-  module 24 · bug 72 · task 64 · decision 19 · relations 453
-```
+2026-09-11, Byori를 **AI가 읽는 근거 있는 프로젝트 안내서를 만들고 최신으로 유지하는 작은 도구**로
+만들기로 확정했습니다. **Byori**는 사용자에게 보이는 제품이고, **ByoriDB**는 내부 지식 빌드 엔진이 됩니다.
 
-```text
-$ 에이전트에게: "sendfile은 왜 replication에서 사라졌어?"
+**프로젝트 연결 → 안내서 미리보기 → Claude Code/Codex 연결 → 최신으로 유지**
 
-Byori 없이   "현재 구현만 볼 수 있습니다. 여기에 sendfile 코드가 없으니
-              애초에 있었는지도 말할 수 없습니다."
+원본 근거와 확정 체크포인트는 보존합니다. 그래프와 생성 안내서는 파생 뷰이며, 따로 사람이 관리하는
+두 번째 기억 저장소가 아닙니다. 앱은 가벼운 매니저가 되고, 안내서를 쓰기 위해 새 터미널이나
+워크스페이스로 옮길 필요가 없도록 합니다.
 
-Byori와      bug:redis-revert-61074b43   (evidence-backed)
-             2020-06-06에 되돌림: "Implements sendfile for redis."
-               (commit 9cf500a3f67e)
-             revert는 그 변경이 잘못이었다는 히스토리의 진술이며,
-             왜 잘못이었는지는 커밋에 없으므로 기록하지 않습니다.
-```
+**안내서 컴파일러·연결 기능의 초기 구현을 개발 중이며 아직 출시·전체 검증된 기능은 아닙니다.**
+[Product](../../PRODUCT.md), [개발 계획](knowledge-compiler-plan.md),
+[로드맵](ROADMAP.md)에 범위·순서·완료 조건을 기록했습니다. 통폐합 과정에서 기존 데이터는 보존합니다.
 
-**redis 전체 히스토리에서 그래프와 함께 8/8, 빈 그래프로 0/8.** 통과 기준은 답이 열어볼 수 있는
-커밋이나 PR을 인용했는지입니다. ingest는 11초였습니다. 재현: [`benchmarks/why.py`](../../benchmarks/why.py).
+## 현재 구현된 것
 
-Byori는 요약 더미가 아니라 이 사슬을 보존합니다:
-
-```text
-incident ──caused_by──> bug ──fixed_by──> decision ──affects──> module
-                                      └──supersedes──> previous decision
-```
-
-벡터 검색은 비슷한 문단을 찾아 주지만, 이 구조는 이유를 찾아 주고 **무엇에 근거했는지 말합니다.**
-모든 기억은 `evidence-backed` 또는 `unsourced`로 표시되고, 더 새로운 것이 대체한 결정은 `stale`로
-돌아옵니다 — 확인할 수 없는 기억은 커밋을 인용하는 기억보다 값이 낮고, 작년 결정을 현재처럼
-답하는 것은 답이 없는 것보다 나쁘기 때문입니다.
-
-## 무엇으로 이루어져 있나
-
-| | |
+| 구성요소 | 현재 역할 |
 |---|---|
-| **`byori init`** | Git만으로 시작 그래프를 만듭니다 — 이슈 트레일러·revert·PR·ADR·디렉터리 트리. 결정론입니다: 모델도, 추측한 인과도 없고, 각 기억의 근거가 된 커밋·문서를 함께 기록합니다. |
-| **`memory_why`** | 어떤 에이전트든 호출하는 MCP 도구. **서버가** 답을 조립합니다 — 원인, 무엇이 해결했는지, 무엇을 대체했고 무엇에 의해 대체됐는지, 증거. 모델이 증거를 요약으로 지울 자리가 없습니다. |
-| **ByoriDB** | 아래에 있는 로컬 그래프 엔진: 타입 있는 인과 엣지, provenance, bitemporal 히스토리, `AS OF`. |
-| **워크스페이스** | Claude Code·Codex·평범한 터미널을 프로젝트별 기억 위에서 돌리는 macOS 앱. 그래프가 계속 쓰이게 하기 위해 존재하며, 그것이 제품의 핵심은 아닙니다. |
-| **`byori doctor`** | 엔진·서비스·자격증명·이 프로젝트의 기억·에이전트 배선을 점검하고, 실패한 것을 되돌리는 명령을 출력합니다. |
+| `byori init` | Git·문서 신호를 결정론적으로 추출해 시작 그래프를 생성합니다. 계획한 안내서를 컴파일하는 기능은 아직 아닙니다. |
+| `byori handbook` — 개발 체크아웃 | 원본 인용 미리보기·빌드, 명시된 모듈·조건부 결정·주의사항의 균형 잡힌 선별, 검증된 읽기·동의 기반 갱신. [초기 구현](../handbook-contract.md)·[투영](../handbook-projection-contract.md)·[갱신](../handbook-refresh-contract.md) 계약을 참고하세요. 실제 호스트 전달과 전체 제품 완료 조건은 남아 있습니다. |
+| `memory_why`를 포함한 Memory MCP | 구조화된 체크포인트, 타입 관계, 원본 참조가 있는 조회. 참조 문자열의 존재 자체가 주장의 근거를 검증하지는 않습니다. |
+| [ByoriDB](https://github.com/byoridb/byoridb) | 현재 MCP와 앱 뒤에서 사용하는 로컬 그래프 저장소입니다. |
+| 네이티브 macOS 워크스페이스 | 기존 프로젝트·에이전트/일반 터미널 세션·지식 조회 기능이며 이전 중 유지합니다. |
+| 설치 도구와 `byori doctor` | 로컬 런타임 설치·진단. 개발 체크아웃의 `doctor --handbook-only`는 엔진 로그인이나 사용자 호스트 프로필 조회 없이 선택한 안내서만 진단합니다. |
 
-## Byori는 무엇인가
+기존 `byori init`으로 초기 그래프를 만들 수 있고, 개발 체크아웃의 `init --handbook`은 새 로컬
+컴파일러를 선택합니다. 새 세션 전달 검증·자동 증분 갱신에는 추가 작업이 필요합니다. 아래 워크스페이스·설치 설명은
+현재 구현에 관한 내용이며 새 기본 사용 경험의 필수 요구사항이 아닙니다.
 
-Byori는 프로젝트 중심의 네이티브 멀티 에이전트 코딩 워크스페이스입니다. 로컬 Git 작업을
-**Project → Source Tree/Worktree → Task → Session**으로 구성하고, 각 대화형 터미널 세션에
-Claude Code 또는 Codex를 선택합니다. 어떤 소스트리에서 어떤 에이전트를 사용할지는 사용자가
-결정합니다. Byori가 프롬프트를 자동 fan-out하거나 winner를 고르고, branch를 merge하거나
-에이전트 작업을 삭제하지 않습니다.
+명시된 적용 조건과 충돌·대체 관계는 원본 기록과 함께 보여주며 검증된 현재 정책으로 승격하지 않습니다.
+같은 프로세스의 반복 컴파일에서는 변경 없는 원본별 결과를 재사용합니다. 별도의 CLI 실행 간에는
+재사용하지 않으므로 영속적인 증분 컴파일 완료를 의미하지 않습니다. 그래프 원본 이전과 실제
+Claude/Codex 시작 시 전달 검증은 아직 남아 있습니다.
 
-[ByoriDB](https://github.com/byoridb/byoridb)는 워크스페이스 하단의 영속 지식 엔진입니다.
-프로젝트의 결정과 근거, 모듈 관계, 반복 버그, 인시던트, 해결책, 작업 체크포인트를 에이전트와
-세션 사이에서 이어 줍니다. **Byori**는 제품, **ByoriDB**는 그래프 엔진, **`byori`**는 CLI입니다.
+### 현재 확보한 근거
 
-지식은 매 턴에서 자동 추출되는 것이 아니라 에이전트가 체크포인트에서 기록합니다. 따라서
-그래프는 설치 직후가 아니라 작업하면서 자랍니다. 저장소 자동 ingestion은 아직 개발
-중입니다. [현재 한계](#현재-한계)를 참고하세요.
+과거 Redis 테스트는 **그래프 수집 후 기대한 근거 토큰 8/8, 빈 그래프에서 0/8 일치**를 보고했습니다.
+[실행 코드](../../benchmarks/why.py)는 서버 응답 안의 토큰을 검사하며 에이전트·모델을 실행하지 않습니다.
+검색 smoke 벤치마크이지, Git을 읽는 에이전트와의 비교·답의 정확성 증명·사용자 시간 절약 근거가 아닙니다.
+[개발 계획](knowledge-compiler-plan.md)에 현실적인 비교 방법을 정했습니다.
 
 > [!WARNING]
-> 현재는 초기 실험 단계입니다. 네이티브 macOS 워크스페이스 MVP, 실제 대화형 PTY,
-> 로컬 단일 노드 ByoriDB, MCP surface, notes + typed wiki schema v2, 별도의 foreground
-> 멀티 CLI 프로토타입은 구현되어 있습니다. 터미널 세션 유지는 tmux 3.2 이상이 필요하며,
-> 없으면 앱과 함께 종료됩니다. 저장소 자동 ingestion도 아직 개발 중입니다. 중요한 데이터의 유일한
-> 저장소로 사용하지 마세요.
+> Byori는 실험 단계입니다. 중요한 데이터는 별도로 백업하세요. 현재 유지형 터미널 세션에는 tmux 3.2 이상이
+> 필요하지만 계획한 안내서 흐름의 요구사항은 아닙니다. 기반 구성요소가 있다고 새 제품 단계가 완료된 것은 아닙니다.
 
 ## 워크스페이스 모델
 
@@ -403,7 +376,8 @@ bitemporal history(`AS OF`), similarity recommendation을 제공합니다. macOS
 
 ## 현재 한계
 
-- 저장소, 문서, symbol, git diff를 자동으로 읽어 graph로 만드는 ingestion pipeline은 아직 없습니다.
+- 현재 `byori init`은 제한된 Git·문서 신호를 추출합니다. 개발 중인 안내서는 원본 인용이며 검증된 현재
+  정책이 아닙니다. 시작 시 실제 전달·그래프 원본 기록 보존과 연결·자동 증분 갱신의 완료 조건이 남아 있습니다.
 - capture는 매 턴 자동 추출이 아니라 체크포인트에서 에이전트가 수행합니다.
 - 기본 `memory_recall`은 note 이름·본문 substring 검색이며 엔진의 vector search를 사용하지 않습니다.
 - Codex·NaraeClaw용 체크포인트 hook은 없습니다(번들 reminder hook은 Claude Code 전용).
@@ -415,11 +389,10 @@ bitemporal history(`AS OF`), similarity recommendation을 제공합니다. macOS
 
 ## 로드맵
 
-네이티브 프로젝트 워크스페이스가 핵심 제품 화면입니다. 별도의 cross-platform `byori` CLI
-프로토타입은 provider 탐색, 신뢰 프로젝트 등록, 명시적 foreground run, run 조회를 제공하며,
-관리 명령은 Byori macOS 앱의 공용 코어와 수렴할 예정입니다. 자동 ingestion과 ranked graph
-recall은 후속 작업입니다. 엔진 호환성은 [계약 문서](engine-contract.md)와 CI 스모크로
-게이트하며 자세한 내용은 [로드맵](ROADMAP.md)을 참고하세요.
+확정 방향은 작은 매니저를 갖춘 프로젝트 안내서 컴파일러입니다. 결정론적 안내서와 새 세션 실제 전달을
+먼저 입증하고 증분 갱신·신뢰할 수 있는 설치를 추가합니다. 모델 편집은 선택이고 새 워크스페이스·실행 관리
+기능은 보류합니다. [개발 계획](knowledge-compiler-plan.md)과 [로드맵](ROADMAP.md)을 참고하세요.
+기존 엔진 호환성은 [계약 문서](engine-contract.md)와 CI로 검증합니다.
 
 ## 문서
 
@@ -433,6 +406,7 @@ recall은 후속 작업입니다. 엔진 호환성은 [계약 문서](engine-con
 - [Agent adapter 자산 (skill/hooks)](adapters.md)
 - [Memory ontology 설계와 PoC](memory-ontology.md)
 - [ByoriDB 엔진 호환성 계약](engine-contract.md)
+- [프로젝트 안내서 개발 계획](knowledge-compiler-plan.md)
 - [로드맵](ROADMAP.md)
 - [ByoriDB 엔진](https://github.com/byoridb/byoridb)
 

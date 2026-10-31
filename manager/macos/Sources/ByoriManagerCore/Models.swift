@@ -203,19 +203,22 @@ public struct CommandSpec: Sendable {
     public let environment: [String: String]
     public let workingDirectory: String?
     public let timeout: TimeInterval
+    public let runtimeLeaseFileDescriptor: Int32?
 
     public init(
         executable: String,
         arguments: [String] = [],
         environment: [String: String] = [:],
         workingDirectory: String? = nil,
-        timeout: TimeInterval = 30
+        timeout: TimeInterval = 30,
+        runtimeLeaseFileDescriptor: Int32? = nil
     ) {
         self.executable = executable
         self.arguments = arguments
         self.environment = environment
         self.workingDirectory = workingDirectory
         self.timeout = timeout
+        self.runtimeLeaseFileDescriptor = runtimeLeaseFileDescriptor
     }
 }
 

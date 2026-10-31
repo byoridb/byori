@@ -1,0 +1,53 @@
+{
+  "scores": {
+    "X": {
+      "criteria": [0, 0, 0, 1, 0, 0, 0, 0],
+      "total": 1,
+      "omissions": [
+        "C1: Identifies the server/API discrepancy ('every other service error becomes 400/QUERY_ERROR'), but does not identify both the mcp:504–509 and lifecycle:131–134 descriptions as conflicting with this pinned mapping.",
+        "C2: Gives 'one fresh login → USE SPACE → replace ... session ID → replay' and pinning exceptions, but omits lifecycle:536–554's mock-only query → USE → query assertion.",
+        "C3: Gives the per-call bound and terminal recovery failures, but omits the arbitrary-write replay-safety disclaimer and lifecycle:358–375's assertion/evidence limitation.",
+        "C5: Gives LoginRefused propagation and generic server 401 AUTH_FAILED, but omits lifecycle:308–319's bootstrap-stop assertion, the lifecycle:174–175 version-description boundary, an explicit server/client login-403 boundary, and the warning against inferring credential/lockout causes.",
+        "C6: Gives the exact status/substr classifier, but omits lifecycle:145–156's assertion-only negative/positive cases and possible whole-body false positives. 'Deliberately retained for older engines' does not explicitly distinguish comment intent from verified older-engine behavior.",
+        "C7: Says 'D emits decimal strings and accepts strings/integers' and avoids float, but omits Python json.loads/json.dumps and the unsigned v as i64 cast/out-of-range-validation limitation.",
+        "C8: Gives logout/diagnostics distinctions and raw-query plain-text 413, but omits the explicit ordinary-query JSON-object versus serialized-JSON-text distinction, ordinary-query 413 QUERY_TOO_LARGE, and the complete hashes/manual-review/semantic-correctness evidence limitation."
+      ],
+      "material_errors": []
+    },
+    "Y": {
+      "criteria": [0, 1, 0, 1, 0, 0, 1, 0],
+      "total": 3,
+      "omissions": [
+        "C1: Identifies the MCP docstring conflict and server/API agreement, but omits the conflicting lifecycle:131–134 description.",
+        "C3: Explicitly says 'This does not establish safe replay of arbitrary writes' and bounds terminal recovery, but omits lifecycle:358–375's second-failure assertion and its engine-restart/write-safety evidence limitation.",
+        "C5: Gives refusal propagation, bootstrap stopping, generic authentication failure, and the client/server 403/429 boundary, but omits lifecycle:308–319's assertion and the specific lifecycle:174–175 0.4.0+ throttle-description boundary.",
+        "C6: Gives the exact whole-body classifier and false-positive warning, but omits the required assertion-only auth-denial/syntax negatives and Invalid session positive from lifecycle:145–156.",
+        "C8: Distinguishes both oversized-response formats and endpoint authentication, but does not explicitly distinguish ordinary /query JSON objects from /query/json serialized JSON text generally. Its 'committed-source conclusions only' disclaimer omits explicit manual-review, hash-proof, and semantic-correctness limitations."
+      ],
+      "material_errors": []
+    },
+    "Z": {
+      "criteria": [0, 0, 0, 0, 0, 0, 0, 0],
+      "total": 0,
+      "omissions": [
+        "C1: Gives the non-SessionNotFound 400 mapping and permission denial, but omits permission-check-error → SessionNotFound, API agreement, and identification of both conflicting MCP/lifecycle descriptions.",
+        "C2: Gives fresh login → USE → replay and bootstrap exceptions, but omits successful login clearing remembered space and lifecycle:536–554's mock-only sequence assertion.",
+        "C3: Gives the per-call bound and second HTTP failure → RuntimeError, but does not explicitly state that every failed recovery login propagates, disclaim arbitrary-write replay safety, or discuss lifecycle:358–375's assertion/evidence limitation.",
+        "C4: 'Recoverable only for HTTP 401' and 'Query 403 ... must not trigger login' support the intended classifier, but omit the expressly required body-independence statements: 403 remains rejected with session/auth text, and any query-path 401 needs no body code. This is an omission, not a contradictory classifier.",
+        "C5: Gives terminal LoginRefused and the generic server 401/no-429 boundary, but omits lifecycle:308–319's assertion, the lifecycle:174–175 version-description boundary, and explicit acknowledgment that client login-403 support does not establish server login-403 responses.",
+        "C6: Gives status 400 plus case-insensitive session and excludes auth alone, but omits the required lifecycle assertion cases, whole-decoded-body false-positive warning, and comment-intent-only older-version qualification.",
+        "C7: Gives representation preservation and avoids float, but omits explicit Python json.loads/json.dumps, explicit decimal-string server output, and the unsigned v as i64/out-of-range-validation limitation.",
+        "C8: Gives header authentication and raw-query error mapping, but omits the two query response representations, both oversized-query response contracts, and the complete hashes/manual-review/deployed-compatibility/semantic-correctness evidence limitation."
+      ],
+      "material_errors": []
+    }
+  },
+  "rubric_limitations": [
+    "Passing evidence: X C4 says '401 ... regardless of body' and '403 ... never reauthenticate'; Y C4 says 'Any 401 ... regardless of body code' and 'Every 403 ... without re-login'. Universal 403 wording covers session/auth-containing bodies.",
+    "Y C2 supplies the recovery order, login space reset, protected initial pin, bootstrap exceptions, and 'lifecycle test asserts query → pin → replay, but was not executed here'. Y C7 supplies decimal-string output, string/integer input, Python JSON preservation, JavaScript Number avoidance, and the unsigned-to-signed cast limitation.",
+    "Separate materially wrong implementation-advice assessment: none established for X, Y, or Z from the supplied rubric. Empty material_errors arrays do not certify extra claims or cited source ranges that cannot be checked here.",
+    "These totals measure complete rubric coverage, not proportional core-task correctness. All three substantially describe bounded query recovery; missing explicit qualifications or prescribed test/documentation discussions can zero an otherwise correct criterion.",
+    "The rubric does penalize omission of peripheral-to-implementation material, particularly endpoint-format details and provenance/test caveats. It does not penalize verbosity itself. Those supplemental requirements are legitimate for the broader curated-source task, but the totals should not be read as implementation-advice rankings.",
+    "The serving/evaluation boundary is outside the eight scored criteria. These answers do not establish inspector execution, freshness checks, clean selected files, or authorization to serve dirty-source claims."
+  ]
+}

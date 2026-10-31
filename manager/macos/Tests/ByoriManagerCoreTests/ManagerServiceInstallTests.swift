@@ -32,7 +32,7 @@ final class ManagerServiceInstallTests: XCTestCase {
             installer.path,
             "--assets", runtime.path,
             "--engine-tag", "latest",
-            "--no-claude", "--no-codex",
+            "--no-claude", "--no-codex", "--no-hooks",
         ])
     }
 

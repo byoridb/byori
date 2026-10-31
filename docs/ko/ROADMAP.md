@@ -2,12 +2,57 @@
 
 # Byori 로드맵
 
-byoridb 저장소에서 분리된 2026-07-13에 처음 수립하고 2026-08-07에 갱신한 계획. Byori는
-프로젝트 중심 코딩 워크스페이스, ByoriDB는 지식 엔진, `byori`는 CLI다. 원칙은
-**의존성이 Byori → ByoriDB 한 방향으로 흐르는 것**이다. Byori가 검증된 엔진 릴리스를
-설치·관리하고 엔진은 Byori를 모른다.
+**2026-09-12 변경:** 제품 방향을 원점에서 재검토합니다. 현재 작업은
+[프로젝트 의존 지식 재사용 실험](../dependency-context-pilot.md)이며, 아래 앱 중심
+로드맵의 완성이 선행 조건은 아닙니다. 기존 구현은 삭제하지 않고 중단·보존합니다.
 
-## P3 — 엔진 호환성 계약 🟡 (계약·CI 완료)
+**2026-09-11 확정한 방향:** Byori는 AI가 읽는 근거 있는 프로젝트 안내서를 만들고 최신으로
+유지합니다. ByoriDB는 내부 지식 빌드 엔진입니다. 제품 통폐합은 가능하지만 기존 사용자 데이터는
+보존해야 합니다.
+
+범위·의존성·완료 조건은 [Product](../../PRODUCT.md), [Design](../../DESIGN.md),
+[개발 계획](knowledge-compiler-plan.md)을 따릅니다. 아래 목표는 새로 출시된 기능이 아닙니다.
+
+## Now — 첫 효용 확인
+
+| ID | 결과 | 상태 |
+|---|---|---|
+| KC-00 | 확정 전략과 일치하는 제품·디자인·개발 계획 | 문서화 완료 |
+| KC-01 | 프로젝트 하나의 결정론적·근거 연결 안내서 | 초기 구현과 독립 검증 진행 중 |
+| KC-02 | Claude Code·Codex 새 세션 실제 전달과 명시적 갱신 | 어댑터 기반 작업 중, 실제 전달 완료 조건 미통과 |
+
+내부 데모 조건: 프로젝트 하나 → 유용한 안내서 → 새 에이전트 세션이 사용 → 원본 변경·명시적
+재빌드 → 다음 세션에 대체 내용 전달. 모델 편집이나 DB 전면 재작성은 필요하지 않습니다.
+
+## Next — 신뢰성과 설치 경험 완성
+
+| ID | 결과 | 상태 |
+|---|---|---|
+| KC-03 | 증분 컴파일·범위 격리·안전한 공개·오프라인 결과 | 동의 기반 갱신과 인증된 실행 간 중간 결과 재사용 구현, 호스트·오프라인·제품 가치 조건은 미통과 |
+| KC-04 | 작은 매니저·단일 런타임 관리·복구 가능한 설치와 이전 | 네이티브 UI 초기 구현, 전체 조건은 KC-02/KC-03·복구 검증 필요 |
+| KC-06 | 다섯 명 파일럿·공정한 대안 비교·출시 판단 | 미착수, KC-04 필요 |
+
+외부 파일럿에 KC-05는 필수가 아닙니다. 안전·호환성 테스트는 각 변경에 함께 들어갑니다.
+유지관리자가 저장소 간 의존성을 책임지고 실제 막히는 요구를 확인한 후 엔진을 수정합니다.
+한 번에 한 단계만 진행하고 통합·결함 대응 여유를 둡니다. 첫 구현을 측정하기 전에 날짜를 약속하지 않습니다.
+
+## Later — 효과가 입증될 때 확장
+
+- **KC-05, 선택:** 원본 근거로 수행하는 비용 제한·동의 기반 모델 편집. KC-03 이후 품질 개선을
+  확인해야 합니다. 출시 범위에 넣으면 KC-06 전에 완료 조건을 통과해야 합니다.
+- 추가 원본 커넥터·팀 기능은 반복 사용 가치가 확인된 다음 검토합니다.
+- 기존 코드 정리는 보존·복구 검증 뒤 별도 진행하며 처음부터 전면 재작성하지 않습니다.
+
+우선순위를 내린 것: 새 터미널·워크트리·세션 실행 관리, 그래프 대시보드 꾸미기, 범용 DB 기능 확대,
+내부 구성요소별 독립 제품 출시. 새 요구는 낮은 우선순위 작업과 교체하며 1인 개발 범위를 늘리지 않습니다.
+
+## 과거 로드맵 — 2026-08-07 스냅샷, 현재 계획으로 대체됨
+
+아래 P3~P8은 설계 이력으로 보존합니다. 완료 표시와 ‘남음’은 과거 스냅샷이며 **현재 구현 상태나
+진행 약속이 아닙니다.** 우선순위는 위 KC 단계로 대체합니다. 과거 이슈는 현재 의존성으로 삼기 전에
+재확인합니다. 최초 수립일은 저장소 분리 시점인 2026-07-13입니다.
+
+### P3 — 엔진 호환성 계약 🟡 (계약·CI 완료)
 
 - ✅ [`docs/engine-contract.md`](engine-contract.md) 작성: MCP가 실제 사용하는 엔진 표면만 명시
   - `/health`, 세션 로그인, 400 `Invalid session` 재로그인 시맨틱, `USE` 재-pin
@@ -21,7 +66,7 @@ byoridb 저장소에서 분리된 2026-07-13에 처음 수립하고 2026-08-07�
   edge 삭제, cascade vertex 삭제까지 커버한다
 - 🟡 hash 63bit 마스킹과 VID 범위 문서화는 완료. 엔진의 음수 VID planner 정식 수정은 남음
 
-## P4 — Byori macOS 앱 + 공용 관리 코어 🟡 (워크스페이스·서명 릴리스 완료, CLI 수렴 남음)
+### P4 — Byori macOS 앱 + 공용 관리 코어 🟡 (워크스페이스·서명 릴리스 완료, CLI 수렴 남음)
 
 SwiftUI **Byori macOS 앱**은 구현되었고 릴리스마다 서명·공증·staple을 마친 universal DMG로
 배포한다. 앱은 새 릴리스의 서명과 공증을 확인한 뒤 스스로 업데이트한다. 핵심 화면은
@@ -49,7 +94,7 @@ backup / upgrade --plan / rollback / uninstall`.
   재사용하지 않았다
 - 남음: cross-platform `byori` CLI의 관리 표면을 앱 코어와 수렴
 
-## P5 — memory schema versioning + migration 🟡 (additive v2 + structured MCP 완료)
+### P5 — memory schema versioning + migration 🟡 (additive v2 + structured MCP 완료)
 
 - ✅ `claude_memory` space에 `byori:schema-version` note — MCP 시작 시 버전을 읽고
   부족한 additive migration만 적용
@@ -63,7 +108,7 @@ backup / upgrade --plan / rollback / uninstall`.
 - 남음: 비-additive(파괴적) migration의 명시적 단계 실행(`byori migrate`) — P4의
   공용 관리 코어/CLI로 수렴
 
-## P6 — `byori` project registry + foreground CLI 프로토타입 🟡 (로컬 MVP 완료)
+### P6 — `byori` project registry + foreground CLI 프로토타입 🟡 (로컬 MVP 완료)
 
 이 경로는 명시적으로 사용하는 호환 프로토타입이며 네이티브 워크스페이스의 상호작용 모델이
 아니다. 사용자가 run에 사용할 provider를 하나 이상 선택한다. 앱에서 task나 session을 만든다고
@@ -86,14 +131,14 @@ backup / upgrade --plan / rollback / uninstall`.
 - 남음: background/attach/resume 제어, provider adapter 추가, patch 비교, 명시적
   merge/cleanup workflow, 앱 관리 명령과의 수렴
 
-## P7 — 자동 ingestion + ranked recall
+### P7 — 자동 ingestion + ranked recall
 
 - 지식이 확정되는 경계(작업 종료·commit·PR·인시던트 해소)에서만 구조화 capture
 - repository의 module, symbol, dependency, document, git change를 project-aware하게
   indexing → canonical name과 merge candidate로 파편화 방지
 - traversal + temporal + semantic ranking recall, 읽기 좋은 wiki surface 추가
 
-## P8 — 첫 가치까지의 시간
+### P8 — 첫 가치까지의 시간
 
 현재 Byori의 가치는 지연되어 있습니다. 설치 시점의 그래프는 비어 있고, 몇 주간 체크포인트가
 쌓여야 쓸모가 생깁니다. 새 프로젝트는 이득을 보기 전에 비용부터 냅니다. 이 단계는 100번째

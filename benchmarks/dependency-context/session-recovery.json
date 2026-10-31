@@ -1,0 +1,143 @@
+{
+  "schema_version": 1,
+  "title": "Manual source review: Byori Python MCP session recovery",
+  "task": "Explain bounded Python MCP session-loss recovery at the pinned commits: query/login errors, endpoint contracts, and ID precision. Manual committed-source review, not runtime, test-execution, or release evidence.",
+  "repositories": {
+    "byori": {"revision": "566b8b355f12e8db271e43f2e203555daccbaed5"},
+    "byoridb": {"revision": "a5c6223a4fd9346dc94860580e4bd1c95961ef5c"}
+  },
+  "sources": [
+    {
+      "id": "server",
+      "repo": "byoridb",
+      "path": "byoridb-graph/src/server.rs",
+      "sha256": "c88a1df80d38b1f78948f685fc118a1d6a99d7a91e314b4f157479c85d84c3d1"
+    },
+    {
+      "id": "service",
+      "repo": "byoridb",
+      "path": "byoridb-graph/src/service.rs",
+      "sha256": "26669f2990844df2e042e107fcd0522c082c6197007d8da6b96ab7e5b406619b"
+    },
+    {
+      "id": "api",
+      "repo": "byoridb",
+      "path": "book/src/reference/api.md",
+      "sha256": "8b864d259509d91d9e0bc6f8b69f1b9a527dc2afd2f43db500b622ba5d56898e"
+    },
+    {
+      "id": "mcp",
+      "repo": "byori",
+      "path": "mcp/byoridb_mcp.py",
+      "sha256": "ec2a867e77baed8ec9500cf25fca898373c6ef9d08f4040c0525e3bccf69b1d6"
+    },
+    {
+      "id": "lifecycle",
+      "repo": "byori",
+      "path": "tests/test_mcp_lifecycle.py",
+      "sha256": "38629b646521660fb9c4b320b572f8479192a83e4fc316627f6a4c0f73e0de88"
+    }
+  ],
+  "claims": [
+    {
+      "id": "query-error-contract",
+      "kind": "contract",
+      "text": "Pinned query mapping: SessionNotFound -> 401 SESSION_EXPIRED; other service errors -> 400 QUERY_ERROR. Permission-check Err yields SessionNotFound; a live-session denial yields AuthFailed. The API table agrees. The MCP docstring's query 403 PERMISSION_DENIED is a documentation discrepancy with this source revision, not runtime evidence.",
+      "evidence": [
+        {"source": "server", "start": 396, "end": 406},
+        {"source": "service", "start": 397, "end": 414},
+        {"source": "api", "start": 194, "end": 201},
+        {"source": "mcp", "start": 504, "end": 509}
+      ]
+    },
+    {
+      "id": "query-recovery-order",
+      "kind": "consumer_policy",
+      "text": "Query/pin 401 -> login -> USE SPACE -> replace payload.session_id -> replay the ordinary statement. Login clears remembered space. Bare USE/CREATE SPACE are self-pinning exceptions; bootstrap skips the initial automatic pin until ready. Lifecycle source asserts query -> USE -> query, not an executed test result.",
+      "evidence": [
+        {"source": "mcp", "start": 464, "end": 467},
+        {"source": "mcp", "start": 551, "end": 554},
+        {"source": "mcp", "start": 571, "end": 603},
+        {"source": "lifecycle", "start": 536, "end": 554}
+      ]
+    },
+    {
+      "id": "recovery-bound",
+      "kind": "consumer_policy",
+      "text": "Per _raw_query: at most one recovery login and one original-query replay, not recursive retries. Recovery pin/replay HTTPError, including another 401, becomes RuntimeError; failed recovery login propagates. This is separate from startup retries and does not establish safe replay of arbitrary writes.",
+      "evidence": [
+        {"source": "mcp", "start": 595, "end": 617},
+        {"source": "lifecycle", "start": 358, "end": 375}
+      ]
+    },
+    {
+      "id": "never-relogin-403",
+      "kind": "consumer_policy",
+      "text": "Client query policy: every 403 surfaces an error without re-login, regardless of body; every 401 triggers session-loss recovery without checking its body code. Lifecycle source asserts 403 rejection. Neither establishes that the pinned server emits query 403.",
+      "evidence": [
+        {"source": "mcp", "start": 521, "end": 525},
+        {"source": "mcp", "start": 595, "end": 598},
+        {"source": "mcp", "start": 617, "end": 617},
+        {"source": "lifecycle", "start": 136, "end": 143}
+      ]
+    },
+    {
+      "id": "fresh-login-refusal",
+      "kind": "consumer_policy",
+      "text": "POST /api/v1/session maps every authenticate error to generic 401 AUTH_FAILED, not stale-query recovery. Client login 401/403 becomes LoginRefused: initial/recovery refusal propagates; bootstrap stops. Client 403/429 handling/comments do not prove those server responses; generic 401 does not identify the refusal cause.",
+      "evidence": [
+        {"source": "server", "start": 298, "end": 311},
+        {"source": "mcp", "start": 448, "end": 460},
+        {"source": "mcp", "start": 571, "end": 572},
+        {"source": "mcp", "start": 597, "end": 599},
+        {"source": "mcp", "start": 734, "end": 738},
+        {"source": "lifecycle", "start": 308, "end": 319}
+      ]
+    },
+    {
+      "id": "legacy-400-boundary",
+      "kind": "consumer_policy",
+      "text": "Legacy fallback: 400 retries only when the decoded body contains session, case-insensitively; auth alone is insufficient. This is a whole-body substring heuristic, not structured QUERY_ERROR handling, and can misclassify errors. Pre-0.4.0 behavior is comment/test intent, not independently verified.",
+      "evidence": [
+        {"source": "mcp", "start": 517, "end": 525},
+        {"source": "mcp", "start": 595, "end": 597},
+        {"source": "lifecycle", "start": 145, "end": 156}
+      ]
+    },
+    {
+      "id": "session-id-precision",
+      "kind": "contract",
+      "text": "HTTP session IDs serialize as decimal strings; query input accepts strings/integers. Preserve the string: JavaScript Number can round large IDs. Python json.loads/json.dumps and unchanged body.session_id carry it into query payloads. This establishes neither precision for all IDs nor out-of-range validation.",
+      "evidence": [
+        {"source": "server", "start": 555, "end": 565},
+        {"source": "server", "start": 574, "end": 600},
+        {"source": "mcp", "start": 370, "end": 376},
+        {"source": "mcp", "start": 461, "end": 464},
+        {"source": "mcp", "start": 575, "end": 575}
+      ]
+    },
+    {
+      "id": "endpoint-differences",
+      "kind": "contract",
+      "text": "/api/v1/query/json returns JSON text with the same 401 SESSION_EXPIRED / 400 QUERY_ERROR mapping. Oversized /query: 413 QUERY_TOO_LARGE; /query/json: plain 413 string. Header-authenticated logout/diagnostics use 401 AUTH_REQUIRED; diagnostics denies live non-admins with 403 FORBIDDEN. Do not automatically extend MCP query recovery to these endpoints.",
+      "evidence": [
+        {"source": "server", "start": 350, "end": 360},
+        {"source": "server", "start": 438, "end": 457},
+        {"source": "server", "start": 227, "end": 240},
+        {"source": "server", "start": 252, "end": 270},
+        {"source": "server", "start": 323, "end": 337},
+        {"source": "api", "start": 190, "end": 206}
+      ]
+    },
+    {
+      "id": "source-review-only",
+      "kind": "limitation",
+      "text": "Manual committed-source/test-assertion review only; no runtime exercised. Blob hashes do not validate semantics, prove tests ran, release inclusion, installed-binary identity, or deployed compatibility. Version-labelled client comments do not override pinned server code.",
+      "evidence": [
+        {"source": "server", "start": 396, "end": 406},
+        {"source": "mcp", "start": 504, "end": 509},
+        {"source": "lifecycle", "start": 550, "end": 554}
+      ]
+    }
+  ]
+}

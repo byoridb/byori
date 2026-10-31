@@ -191,7 +191,7 @@ private final class ByoriApplicationDelegate: NSObject, NSApplicationDelegate {
 }
 
 @MainActor
-private final class WorkspaceWindowCoordinator {
+private final class WorkspaceWindowCoordinator: NSObject, NSWindowDelegate {
     private let managerModel: ManagerViewModel
     private let workspaceModel: WorkspaceViewModel
     private let terminalController: TerminalSessionController
@@ -208,6 +208,7 @@ private final class WorkspaceWindowCoordinator {
         self.workspaceModel = workspaceModel
         self.terminalController = terminalController
         self.openSettingsWindow = openSettingsWindow
+        super.init()
     }
 
     func showWindow() {
@@ -216,6 +217,7 @@ private final class WorkspaceWindowCoordinator {
             $0.title == "Byori" && $0.canBecomeMain
         }) {
             window.makeKeyAndOrderFront(nil)
+            workspaceModel.setWorkspaceVisible(true)
             NSApplication.shared.activate(ignoringOtherApps: true)
             return
         }
@@ -232,10 +234,24 @@ private final class WorkspaceWindowCoordinator {
         window.setContentSize(NSSize(width: 1_480, height: 880))
         window.isReleasedWhenClosed = false
         window.isRestorable = false
+        window.delegate = self
         window.center()
         retainedWindow = window
         window.makeKeyAndOrderFront(nil)
+        workspaceModel.setWorkspaceVisible(true)
         NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        workspaceModel.setWorkspaceVisible(false)
+    }
+
+    func windowDidMiniaturize(_ notification: Notification) {
+        workspaceModel.setWorkspaceVisible(false)
+    }
+
+    func windowDidDeminiaturize(_ notification: Notification) {
+        workspaceModel.setWorkspaceVisible(true)
     }
 }
 

@@ -2,196 +2,157 @@
 
 <!-- impeccable:product-schema 1 -->
 
+## Decision and Status
+
+**2026-09-12 — strategy reopened; dependency-context pilot authorized.** The owner
+has explicitly removed the previous product documents as design constraints.
+The active next step is the bounded [dependency-context reuse experiment](docs/dependency-context-pilot.md):
+test whether version-bound, source-backed knowledge reduces repeated cross-repository
+exploration without harming correctness. App-first delivery, a mandatory graph DB,
+local/cloud storage and public plugins are not settled requirements for the next product.
+The earlier direction below is retained as history; its unfinished implementation is
+preserved and paused. A successful plumbing test alone will not establish token savings.
+
+Strategy accepted by the product owner on **2026-09-11**. This document replaces the
+workspace-first product direction. It specifies the target product, not a claim that the
+handbook compiler or automatic delivery has shipped. Implementation is tracked in the
+[development plan](docs/knowledge-compiler-plan.md) and [roadmap](docs/ROADMAP.md).
+
 ## Platform
 
 adaptive
 
+The first product surface is the existing native macOS app, supported by the CLI and MCP.
+Keep existing macOS/Linux CLI compatibility; additional desktop platforms are not a launch gate.
+
 ## Users
 
-Byori's primary user is a developer working in local Git repositories with several coding
-agents available, such as Claude Code and Codex. For each source tree and task, the developer
-chooses which agent and model should own an interactive session. They need important project
-knowledge to survive when they move between those agents, sessions, and tools.
-
-The same developer also operates the local ByoriDB service and its MCP and Skill connections.
-Service administration is a supporting responsibility, not a separate primary persona.
+Start with developers maintaining a Git project across repeated AI coding sessions, especially
+those moving between Claude Code and Codex. Their problem is repeated project explanation and
+outdated context, not a shortage of terminals or graph visualizers. There is currently one
+confirmed user: the product owner. Broader demand and willingness to pay remain unvalidated.
 
 ## Product Purpose
 
-Byori is a project-first native multi-agent coding workspace. The project is its largest
-organizing unit. Within a project, a developer works in source trees or worktrees, creates tasks,
-and opens interactive sessions with a chosen coding CLI. Byori records one launch agent and model
-choice per session; using another agent through Byori means opening another session rather than
-automatically fanning out the same task. Provider-side changes made inside the interactive CLI
-remain provider-controlled.
+**Byori automatically builds and updates a short, source-backed project handbook for coding AI.**
 
-ByoriDB is the integrated knowledge layer beneath that workspace. It preserves decisions and
-their rationale, module relationships, recurring bugs, incidents, resolutions, and task
-checkpoints so agents do not have to relearn the project from scratch in every session.
+User promise: **“Stop explaining your project over and over.”**
 
-Success means a developer can move between source trees, tasks, agents, and sessions without
-losing the project's important "what" and "why," while keeping each session's code changes and
-execution under explicit human control.
+Korean: **“프로젝트 설명, 매번 다시 하지 마세요.”**
 
-## Positioning
+Connect a project, see what Byori learned and where it came from, then let an explicitly
+connected coding agent read the handbook in its next session. When selected sources change,
+Byori rebuilds the affected knowledge and makes its freshness visible.
 
-Byori combines two mechanisms that neighboring tools cannot truthfully claim from either one
-alone:
+The handbook covers the project's purpose, important modules, established decisions and their
+reasons, relevant constraints, and known pitfalls. Missing reasons stay missing. It is neither
+an exhaustive transcript nor an instruction to trust historical claims over current code.
 
-- a provider-neutral local workspace where the developer can open separate, interactive coding
-  sessions with different CLIs in selected source trees and worktrees; and
-- a typed, temporal, provenance-aware knowledge graph shared across those agents and sessions.
+## Positioning and Brand
 
-The graph is not a flat document wiki, a transcript archive, or the process supervisor. The
-foreground CLI prototype keeps its raw prompts, provider events, logs, and operational run state
-in its local run store; the native app does not store terminal prompts or transcripts. Only
-bounded context and compact, durable checkpoints belong in ByoriDB.
+**Byori** is the single user-facing product. **ByoriDB** is its internal knowledge build engine.
+**`byori`** remains the CLI. A customer should not need to select a database, create a graph
+space, configure a port, or understand MCP to get the first useful result.
 
-## Operating Context
+The graph is an implementation choice for provenance, dependencies, conflicts, and incremental
+updates—not the headline or a claim of exclusive technology. ByoriDB can evolve toward this
+workload; general-purpose database expansion is not a prerequisite. Existing repositories and
+runtime interfaces need not be merged or rewritten to unify the product experience.
 
-The current workflow is local and Git-centered:
+The product must earn adoption by reducing context-maintenance work without reducing answer
+quality. Neither graph structure nor shorter prompts alone proves that outcome.
 
-1. The developer signs in through each vendor CLI and explicitly registers a trusted Git
-   project with Byori.
-2. They use the source-tree or task `+` action, accept or edit a generated session name,
-   and choose one installed agent and model for the new session.
-3. Byori opens an interactive terminal for that session and loads a bounded slice of project
-   knowledge in the Context inspector. The agent accesses project memory through its separately
-   configured MCP and Memory Skill. Byori preserves the launch selection; any provider-side model
-   change made inside the interactive CLI is outside Byori's observation.
-4. The developer may open other sessions manually, including sessions with other agents or in
-   other worktrees. Byori does not automatically broadcast a prompt, select a winner, merge, or
-   delete agent work.
-5. At durable boundaries, the configured agent can record compact project and task checkpoints in
-   the project's ByoriDB graph space for later recall.
+## Target Experience
 
-Ordinary removal from the native workspace is deliberately non-destructive. Removing a project
-archives its exact registry record outside the active project list; adding the same canonical
-repository root again restores the prior project ID, graph space, and task/session linkage. Hiding
-a linked checkout only removes that canonical path from the project's outline until it is restored.
-Removing a task moves its exact task/session metadata directory into recoverable archived storage.
-An explicit, separately confirmed cleanup action may delete only a clean Byori-managed worktree
-after its sessions have stopped and its tasks have been removed. The user can keep its branch or
-ask Git to delete the branch with safe `-d` semantics, which preserves unmerged work. None of these
-actions deletes ByoriDB data or an original/external checkout.
+1. **Connect:** choose a trusted project and review the source scope. Use selected repository
+   documents, bounded Git history, existing durable memories, and structured checkpoints.
+2. **Preview:** build a handbook without a model first. Show useful content, source links,
+   exclusions, and unresolved questions. Do not make the user wait for a complete history scan.
+3. **Connect an agent:** explicitly approve the proposed Claude Code/Codex configuration changes.
+   Load a bounded handbook on session start; fetch detailed evidence through MCP when needed.
+4. **Stay current:** detect source changes and incrementally rebuild. Display current, outdated,
+   building, failed, or disconnected status independently. A configured MCP server is not proof
+   that an agent actually received the handbook.
 
-The primary product surface is a workspace layout: a project, source-tree/worktree, task, and
-session hierarchy in the left navigation; the selected session's real interactive terminal in
-the main area; Files, Git, and contextual ByoriDB knowledge in a right inspector; and a compact
-bottom status bar for verified local health, checkout, session, and Context state. Provider quota
-percentages are excluded until a supported provider API can supply them truthfully.
-Installation, agent connections, database maintenance, and system diagnostics belong in
-Settings rather than the primary navigation. ByoriDB installation does not implicitly connect
-or alter a provider; MCP and Memory Skill changes remain explicit per-agent actions. Settings
-may inventory user-scoped MCP registrations and Skills, but it never presents secret-bearing
-command arguments, headers, environment values, or tokens.
+The app's primary surface becomes a small project manager: handbook preview, evidence, freshness,
+and agent connections. A graph canvas, terminal, session tree, and worktree controls are not
+required to complete this flow. Existing users' work remains recoverable during the transition.
 
-Claude Code may optionally be launched through Upstage's official Solar integration or a
-user-configured Anthropic-compatible gateway. Byori stores the API credential in macOS Keychain,
-stores only non-secret routing metadata in its preferences, and injects that configuration only
-into newly launched Claude sessions. It does not rewrite Claude's settings files. Disabling the
-option restores the user's ordinary Claude login and inherited configuration for subsequent
-sessions. The Upstage preset follows Upstage's published Claude Code environment for
-`https://api.upstage.ai` and Solar Pro 4; other providers must expose a Claude-compatible API.
+## Knowledge Ownership
 
-The current Byori macOS app is built with SwiftUI for macOS 13 or later. The CLI and local runtime
-support macOS and Linux. Web, iOS, Android, remote collaboration, and a cross-platform desktop UI
-are not current product commitments.
+- Original selected sources and accepted durable checkpoints are the authoritative records.
+  Preserve checkpoint-only knowledge that cannot be reconstructed from Git.
+- The normalized graph and generated handbook are derived views. Every published claim carries
+  source lineage, scope, and a build version. They must be rebuildable from retained originals.
+- Generated files are read-only products of the compiler, not a second independently maintained
+  memory store. Corrections go to the source or an explicit accepted correction record.
+- A source locator resolving successfully does not prove that the source supports the claim.
+  Inferences, conflicts, and unverified legacy knowledge must not silently become current policy.
+- Project-wide accepted facts and checkout-specific observations have distinct scopes. One
+  worktree's experimental change must not overwrite another checkout's handbook.
+- Rebuild from originals and accepted records, not recursively from the last summary. Retain
+  conditions, rejected alternatives when documented, supersession, and unresolved contradictions.
 
 ## Capabilities and Constraints
 
-Existing repository capabilities that the workspace can build on:
+Reuse the existing project registry, deterministic `byori init` archaeology, structured memory
+MCP, local engine, native manager, installer, and doctor. Their existence does not mean that the
+target compiler is already implemented. Current archaeology extracts signals; current evidence
+labels and retrieval results are not a validated claim-entailment system.
 
-- detect and invoke Claude Code and Codex through provider-neutral adapters;
-- create new local Git projects, or explicitly initialize and register trusted existing folders,
-  with stable ByoriDB graph spaces;
-- archive and restore project registrations, and hide or restore linked checkouts, without deleting
-  their underlying Git or workspace data;
-- create isolated branches and managed worktrees for explicit foreground CLI workers;
-- archive completed task/session metadata and explicitly delete clean Byori-managed worktrees,
-  with optional Git-safe deletion of their merged local branches;
-- preserve foreground CLI prompts, capped stdout/stderr logs, provider session identifiers, Git
-  revisions, and prototype run state under `~/.byori`;
-- recall and checkpoint durable knowledge through a guarded MCP surface backed by ByoriDB;
-- install, update, start, stop, diagnose, and connect the local runtime through the Byori macOS
-  app and installer;
-- optionally route newly launched Claude Code sessions through an Anthropic-compatible gateway,
-  with Keychain-backed credentials and a reversible default-Claude state; and
-- inspect a bounded, read-only view of the knowledge graph.
+The first end-to-end slice is one project, a deterministic handbook, real new-session delivery,
+and an explicit rebuild after a source change. Add optional model-assisted editing only after
+this loop works. Add automatic refresh and distribution hardening before a public pilot.
 
-Current implementation constraints:
+Must have: source-backed preview, safe incremental publication, Claude Code/Codex delivery,
+visible freshness, source exclusions, reversible setup, and preservation of existing data.
 
-- the existing CLI orchestration path is a foreground fan-out prototype and is not the new
-  workspace interaction model;
-- the Byori macOS app exposes the project/source-tree/task/session hierarchy, creates managed
-  worktrees, and retains interactive PTY sessions through its private tmux server;
-- remote UI, automatic patch comparison, winner selection, merge, and automatic worktree cleanup
-  are not implemented; managed-worktree deletion remains an explicit user action;
-- native project removal and checkout hiding are visibility/registration operations, not Git
-  cleanup or knowledge deletion;
-- the default managed-worktree mode requires a clean registered repository;
-- vendor authentication and model data handling remain owned by each coding CLI unless the user
-  explicitly enables Byori's Claude gateway override for new sessions;
-- memory is historical reference and must be checked against the current repository;
-- ByoriDB stores durable knowledge, not raw reasoning traces or complete provider logs;
-- automatic repository ingestion and semantic-ranked recall are not implemented; and
-- important data must not rely on the current experimental local installation as its only copy.
+Not in the first release: new workspace/orchestration features, full transcript ingestion,
+all-company search, Slack/Jira connectors, team sync, billing, RBAC, a general-purpose graph query
+product, or a database rewrite. Remove legacy code only after its replacement and recovery path
+are verified; consolidation permission is not permission to erase user data.
 
-Open product decisions:
+## Privacy and Reliability
 
-- whether the native workspace will remain macOS-first or gain another desktop surface;
-- whether session survival should extend beyond the local app process, and when patch
-  comparison and integration workflows enter the supported product; and
-- whether future team collaboration remains local-first or introduces a remote control plane.
+Local storage and deterministic compilation are the default. Model-assisted editing is an
+explicit opt-in with a disclosed provider, outbound source scope, and hard usage budget. An
+installed vendor CLI or subscription is not authorization to reuse its credentials or model.
 
-## Brand Commitments
+Do not ingest secrets, `.env` files, arbitrary home directories, raw reasoning traces, or entire
+chat histories. Treat repository text as untrusted input, never as commands to execute. Preserve
+user-owned instruction files; show and back up configuration edits before applying them.
 
-The product name is **Byori**, the graph engine beneath it is **ByoriDB**, and the CLI executable
-is **`byori`**. Product language must keep their roles unambiguous: Byori is the coding workspace;
-ByoriDB is its durable knowledge graph; `byori` is a supporting command-line surface.
+A previously published handbook should remain readable when the engine is unavailable, with
+its snapshot and freshness limitations visible. Wrong-checkout, retracted, or newly excluded
+sensitive material must be withheld rather than served as an unconditional fallback.
 
-The voice is technically precise, candid about experimental limitations, and explicit about
-trust and privacy boundaries. English documentation is canonical, with maintained Korean
-translations. Interaction references such as Orca and Paseo inform workspace patterns but do
-not authorize copying their source code, identity, or factual claims.
+Use one runtime lifecycle owner and a validated app/CLI/MCP/engine compatibility bundle. Test
+backup restoration and rollback; a bounded graph export or runtime-only snapshot is not a full
+knowledge backup. Important data must not rely on this experimental installation as its only copy.
 
-## Evidence on Hand
+## Evidence and Success
 
-- The repository contains a working provider registry, trusted-project registry, parallel
-  Claude/Codex coordinator, isolated-worktree lifecycle, and durable local run records in
-  `cli/byori.py`.
-- `docs/orchestration.md` documents the current run boundary, local record layout, graph
-  promotion policy, and limitations.
-- `mcp/byoridb_mcp.py` and `docs/memory-ontology.md` implement and document the note plus typed
-  knowledge-graph memory surface.
-- The SwiftUI app under `manager/macos/` implements the project-first workspace, real
-  app-retained SwiftTerm PTYs, bounded Files/Git inspection, project-scoped ByoriDB context, and
-  separate administration Settings.
-- A preliminary single-repository synthetic dogfood run reported roughly 40 seconds, 5 turns,
-  and $0.43 with Byori versus 125 seconds, 15 turns, and $1.15 without it, with 20/20 versus
-  0/20 recovery of knowledge absent from the code. This is directional evidence only, not a
-  statistically rigorous benchmark or marketing guarantee.
-- There are no confirmed customer testimonials, production deployments, pricing claims, or
-  independent benchmarks; future work must not fabricate them.
+The Redis 8/8 versus 0/8 result is historical evidence-token retrieval against an empty-graph
+baseline. It does not establish superiority over an agent reading Git or a maintained Markdown
+handbook. No independent performance, customer, or revenue claim is established.
+
+Evaluate repeated tasks against the same sources with (a) agent plus repository/Git, (b) a
+manually maintained handbook, and (c) Byori. Measure factual correctness, citation support,
+currentness after changes, user maintenance time, first-use latency, and total model cost.
+Use a graph ablation to decide which graph operations actually earn their complexity.
+Release gates and provisional targets belong in the development plan, not in marketing as results.
 
 ## Product Principles
 
-1. **Workspace first, knowledge throughout.** Multi-agent coding means the user can choose the
-   right agent for each session; it does not mean automatic fan-out. ByoriDB should surface useful
-   context inside that work instead of becoming a separate admin destination.
-2. **Durable knowledge over exhaustive capture.** Promote decisions, causes, resolutions, and
-   checkpoints—not every turn, transcript, or reasoning trace.
-3. **Recall, then verify.** Historical memory accelerates work but never replaces reading and
-   testing the current code.
-4. **One owner per session, with explicit human control.** A session has one recorded launch agent
-   and model; provider-side changes inside the terminal remain provider-controlled. The developer
-   chooses source trees, creates additional sessions, and controls trust, comparison, integration,
-   and cleanup.
-5. **Local-first, with visible boundaries.** Keep graph data and run evidence local by default,
-   clearly disclose what vendor models may receive, and never hide consequential automation.
+1. **Useful before sophisticated.** The first preview matters more than node counts.
+2. **Maintain knowledge, not summaries of summaries.** Preserve evidence and compile incrementally.
+3. **Delivery is part of the product.** Verify consumption in a new agent session, not registration alone.
+4. **Honest context.** Unknown, conflicting, outdated, and inferred are visible states.
+5. **One product, reversible operations.** Hide infrastructure complexity, not failures or data boundaries.
 
-## Accessibility & Inclusion
+## Accessibility and Documentation
 
-The native workspace should preserve standard macOS keyboard navigation, semantic controls,
-system text rendering, reduced-motion behavior, and light/dark appearance. A formal conformance
-target and product-specific assistive-technology requirements remain undecided.
+Preserve native macOS keyboard navigation, semantic controls, readable system typography,
+light/dark appearance, and reduced-motion behavior. Freshness and failures must not rely on color
+alone. English product/development documents are canonical; maintain Korean development-plan,
+roadmap, and README counterparts. Existing terminal design rules apply only to retained legacy UI.

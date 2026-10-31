@@ -2,12 +2,62 @@
 
 # Byori Roadmap
 
-Originally established when Byori split from the byoridb repository on 2026-07-13; updated
-2026-08-07. Byori is the project-first coding workspace, ByoriDB is its knowledge engine, and
-`byori` is its CLI. Principle: **dependencies flow in one direction, from Byori to ByoriDB**.
-Byori installs and manages a validated engine release; the engine knows nothing about Byori.
+**2026-09-12 update:** the owner reopened strategy. The active next step is the
+[dependency-context reuse pilot](dependency-context-pilot.md), not completion of
+the app-first roadmap below. Earlier work is retained and paused, not discarded.
 
-## P3 — Engine Compatibility Contract 🟡 (Contract and CI Complete)
+Active direction accepted **2026-09-11**: Byori automatically builds and updates a source-backed
+project handbook for coding AI. ByoriDB is the internal knowledge build engine. Product
+consolidation is allowed; existing user data must survive the transition.
+
+See [Product](../PRODUCT.md), [Design](../DESIGN.md), and the
+[development plan](knowledge-compiler-plan.md) for scope, dependencies, and acceptance tests.
+These are planned outcomes, not newly shipped features.
+
+## Now — Establish first value
+
+| ID | Outcome | Status |
+|---|---|---|
+| KC-00 | Accepted strategy and consistent product/design/plan documents | Documented |
+| KC-01 | Deterministic, source-linked handbook for one project | Prototype under implementation and independent verification |
+| KC-02 | Real Claude Code/Codex new-session delivery and explicit refresh | Adapter groundwork; real-delivery gate still pending |
+
+Internal-demo gate: one project → useful handbook → new agent session uses it → source change
+and explicit rebuild → next session receives the replacement. No model editor or DB rewrite
+is needed for this gate.
+
+## Next — Make it dependable and easy to install
+
+| ID | Outcome | Status |
+|---|---|---|
+| KC-03 | Incremental compilation, scope isolation, safe publication and offline output | Consent-gated refresh and authenticated cross-invocation projection reuse implemented; host/offline and product-value gates pending |
+| KC-04 | Small manager, one runtime owner, reversible installation and migration | Native UI prototype; full gate requires KC-02/KC-03 and recovery tests |
+| KC-06 | Five-user pilot, fair baseline comparison, release decision | Not started; requires KC-04 |
+
+The public pilot does not require KC-05. Safety and compatibility tests accompany each change.
+The maintainer owns cross-repository dependencies; assess actual blockers before engine changes.
+One active milestone at a time, with integration/defect capacity reserved. No calendar date is
+promised before the first slice is measured.
+
+## Later — Earn complexity
+
+- **KC-05 (optional):** bounded, opt-in model-assisted editing from original evidence. Requires
+  KC-03 and a demonstrated quality gain. If included in a release, it must pass before KC-06.
+- Additional source connectors or team features only after repeated-use value is demonstrated.
+- Legacy code retirement only after tested preservation and recovery; not an initial rewrite.
+
+Deprioritized: new terminal/worktree/session orchestration, graph-dashboard polish, generic DB
+feature expansion, and independent product launches for each internal component. New work must
+displace lower-priority work rather than inflate this single-maintainer plan.
+
+## Historical roadmap — 2026-08-07 snapshot, superseded
+
+The P3–P8 material below is retained as design history. Its completion labels and “remaining”
+lists describe that old snapshot, **not current implementation status or active commitments**.
+The KC milestones above replace its priorities. Revalidate an old issue before treating it as a
+current dependency. Originally established at the 2026-07-13 repository split.
+
+### P3 — Engine Compatibility Contract 🟡 (Contract and CI Complete)
 
 - ✅ Created [`docs/engine-contract.md`](engine-contract.md), documenting only the engine surface that the MCP actually uses:
   - `/health`, session login, re-login semantics for `400 Invalid session`, and re-pinning with `USE`
@@ -23,7 +73,7 @@ Byori installs and manages a validated engine release; the engine knows nothing 
 - 🟡 The 63-bit hash mask and documented VID range are in place. The canonical upstream
   planner fix for negative VIDs remains pending in the engine
 
-## P4 — Byori macOS App + Shared Management Core 🟡 (Workspace and Signed Release Shipped, CLI Convergence Pending)
+### P4 — Byori macOS App + Shared Management Core 🟡 (Workspace and Signed Release Shipped, CLI Convergence Pending)
 
 The SwiftUI **Byori macOS app** is implemented and distributed as a signed, notarized, stapled
 universal DMG on each release; the app installs its own updates after verifying that signature and
@@ -53,7 +103,7 @@ backup / upgrade --plan / rollback / uninstall`.
   or synchronous process execution
 - Remaining: convergence of the cross-platform `byori` CLI management surface with the app core
 
-## P5 — Memory Schema Versioning + Migration 🟡 (Additive v2 + Structured MCP Complete)
+### P5 — Memory Schema Versioning + Migration 🟡 (Additive v2 + Structured MCP Complete)
 
 - ✅ Store a `byori:schema-version` note in the `claude_memory` space; at MCP startup,
   read the version and apply only missing additive migrations
@@ -68,7 +118,7 @@ backup / upgrade --plan / rollback / uninstall`.
 - Remaining: explicit staged execution of non-additive (destructive) migrations
   (`byori migrate`), converging on the shared management core/CLI from P4
 
-## P6 — `byori` Project Registry + Foreground CLI Prototype 🟡 (Local MVP Complete)
+### P6 — `byori` Project Registry + Foreground CLI Prototype 🟡 (Local MVP Complete)
 
 This is an explicit compatibility/prototype path, not the native workspace interaction model.
 The user selects one or more providers for a run; multi-provider execution is never an automatic
@@ -90,7 +140,7 @@ response to creating a task or session in the app.
 - Remaining: background/attach/resume control, additional provider adapters, patch comparison,
   explicit merge/cleanup workflows, and convergence with the app's management commands
 
-## P7 — Automatic Ingestion + Ranked Recall
+### P7 — Automatic Ingestion + Ranked Recall
 
 - Perform structured capture only at boundaries where knowledge becomes established
   (task completion, commit, PR, or incident resolution)
@@ -98,7 +148,7 @@ response to creating a task or session in the app.
   awareness; use canonical names and merge candidates to prevent fragmentation
 - Add traversal-, temporal-, and semantic-ranking recall, with a readable wiki surface
 
-## P8 — Time to First Value
+### P8 — Time to First Value
 
 Byori's value is currently deferred: the graph is empty at install time and only becomes useful
 after weeks of checkpoint capture. A new project therefore pays the cost before seeing any
