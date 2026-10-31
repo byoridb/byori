@@ -180,6 +180,18 @@ done
   die "missing Codex skill metadata: adapters/claude/skills/byori-design/agents/openai.yaml"
 [ -f "$REPO_ROOT/adapters/claude/hooks.snippet.json" ] || \
   die "missing Claude hooks snippet"
+# install.sh `get`s every one of these from --assets; a missing file makes the
+# in-app update fail at validation, so they are checked and packaged together.
+BULK_READ_ASSETS=(
+  "adapters/claude/agents/byori-bulk-reader.md"
+  "adapters/claude/skills/byori-bulk-read/SKILL.md"
+  "adapters/codex/skills/byori-bulk-read/SKILL.md"
+  "adapters/claude/bulk-read-guard.sh"
+  "adapters/claude/hooks.bulk-read.snippet.json"
+)
+for asset in "${BULK_READ_ASSETS[@]}"; do
+  [ -f "$REPO_ROOT/$asset" ] || die "missing bulk-read asset: $asset"
+done
 
 for tool in codesign ditto hdiutil install lipo plutil sed strip xattr xcrun; do
   need "$tool"
@@ -223,6 +235,9 @@ RUNTIME_DIR="$RESOURCES_DIR/runtime"
 mkdir -p "$MACOS_DIR" "$RUNTIME_DIR/mcp" "$RUNTIME_DIR/cli" \
   "$RUNTIME_DIR/adapters/claude/skills/byoridb-memory" \
   "$RUNTIME_DIR/adapters/claude/skills/byori-design/agents"
+for asset in "${BULK_READ_ASSETS[@]}"; do
+  mkdir -p "$RUNTIME_DIR/$(dirname "$asset")"
+done
 
 build_arch() {
   local target_arch="$1"
@@ -306,6 +321,9 @@ install -m 644 \
 install -m 644 \
   "$REPO_ROOT/adapters/claude/hooks.snippet.json" \
   "$RUNTIME_DIR/adapters/claude/hooks.snippet.json"
+for asset in "${BULK_READ_ASSETS[@]}"; do
+  install -m 644 "$REPO_ROOT/$asset" "$RUNTIME_DIR/$asset"
+done
 printf '%s\n' "$VERSION" > "$RESOURCES_DIR/VERSION"
 install -m 644 \
   "$REPO_ROOT/manager/macos/THIRD_PARTY_NOTICES.md" \
