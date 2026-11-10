@@ -176,6 +176,9 @@ struct WorkspaceView<TerminalHost: View>: View {
         .sheet(isPresented: fileEditorPresentation) {
             WorkspaceFileEditorSheet(model: model)
         }
+        .sheet(item: codeIndexPresentation) { scope in
+            WorkspaceCodeIndexSheet(workspace: model, scope: scope)
+        }
         .alert(item: $model.alert) { alert in
             Alert(
                 title: Text(alert.title),
@@ -375,6 +378,13 @@ struct WorkspaceView<TerminalHost: View>: View {
         )
     }
 
+    private var codeIndexPresentation: Binding<WorkspaceCodeIndexScope?> {
+        Binding(
+            get: { model.codeIndexScope },
+            set: { if $0 == nil { model.dismissCodeIndex() } }
+        )
+    }
+
     private var fileEditorPresentation: Binding<Bool> {
         Binding(
             get: { model.fileEditor != nil },
@@ -564,6 +574,7 @@ private struct WorkspaceSidebar: View {
                                 await model.buildProjectMemory()
                             }
                         },
+                        showCodeIndex: { model.showCodeIndex(projectID: $0) },
                         addSourceTree: { projectID in
                             Task { await model.prepareNewSourceTree(projectID: projectID) }
                         },
@@ -754,6 +765,7 @@ private struct WorkspaceSidebarBranch: View {
     let newSession: (WorkspaceNewSessionTarget) -> Void
     let newTerminal: (WorkspaceNewSessionTarget) -> Void
     let buildMemory: (String) -> Void
+    let showCodeIndex: (String) -> Void
     let addSourceTree: (String) -> Void
     let requestRemoval: (WorkspaceRemovalRequest) -> Void
     let restoreSourceTree: (WorkspaceHiddenSourceTreeItem) -> Void
@@ -775,6 +787,7 @@ private struct WorkspaceSidebarBranch: View {
                         newSession: newSession,
                         newTerminal: newTerminal,
                         buildMemory: buildMemory,
+                        showCodeIndex: showCodeIndex,
                         addSourceTree: addSourceTree,
                         requestRemoval: requestRemoval,
                         restoreSourceTree: restoreSourceTree,
@@ -813,6 +826,7 @@ private struct WorkspaceSidebarBranch: View {
             newSession: newSession,
             newTerminal: newTerminal,
             buildMemory: buildMemory,
+            showCodeIndex: showCodeIndex,
             addSourceTree: addSourceTree,
             requestRemoval: requestRemoval,
             restoreSourceTree: restoreSourceTree,
@@ -827,6 +841,7 @@ private struct WorkspaceSidebarRow: View {
     let newSession: (WorkspaceNewSessionTarget) -> Void
     let newTerminal: (WorkspaceNewSessionTarget) -> Void
     let buildMemory: (String) -> Void
+    let showCodeIndex: (String) -> Void
     let addSourceTree: (String) -> Void
     let requestRemoval: (WorkspaceRemovalRequest) -> Void
     let restoreSourceTree: (WorkspaceHiddenSourceTreeItem) -> Void
@@ -983,6 +998,7 @@ private struct WorkspaceSidebarRow: View {
             // what this does should not have to go looking for the empty state.
             Button("프로젝트 분석") { buildMemory(projectID) }
                 .disabled(isMutatingWorkspace)
+            Button("코드 인덱스 보기") { showCodeIndex(projectID) }
             Button("Add Source Tree…") { addSourceTree(projectID) }
                 .disabled(isMutatingWorkspace)
         }
@@ -1554,6 +1570,20 @@ private struct WorkspaceInspector: View {
     @ViewBuilder
     private var contextContent: some View {
         VStack(alignment: .leading, spacing: 0) {
+            Button { model.showCodeIndex() } label: {
+                HStack {
+                    Label("코드 인덱스 보기", systemImage: "curlybraces")
+                    Spacer()
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.caption)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(14)
+            .disabled(model.selectedProject?.sourceTrees.isEmpty != false)
+            .help("선택한 작업 트리의 파일·심볼·호출 관계를 봅니다.")
+            Divider()
             if let summary = model.selectedProjectMemorySummary {
                 DisclosureGroup("최근 프로젝트 분석 결과") {
                     ScrollView {
@@ -1615,7 +1645,7 @@ private struct WorkspaceInspector: View {
                     detail: model.isBuildingProjectMemory
                         ? "Git 이력과 소스 코드의 심볼·호출·의존 관계를 분석하고 있습니다. 큰 저장소는 몇 분 걸립니다."
                         : (model.selectedProjectMemorySummary != nil
-                           ? "소스 코드 분석은 완료했습니다. 위에서 분석 결과를 확인하고, 에이전트의 코드 조회 도구로 코드 구조를 탐색할 수 있습니다."
+                           ? "소스 코드 분석은 완료했습니다. 코드 인덱스 보기에서 파일·심볼·호출 관계를 탐색할 수 있습니다."
                            : "Git 이력·결정 문서와 Python·Swift·JavaScript/TypeScript·Rust 코드를 함께 분석합니다. "
                              + "과거 결정의 근거와 현재 코드 구조를 프로젝트 기억에 저장합니다."),
                     showsProgress: model.isBuildingProjectMemory,

@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-public actor ManagerService {
+public actor ManagerService: CodeIndexProviding {
     private struct RuntimeSnapshot: Sendable {
         let root: URL
         let existingNames: Set<String>
@@ -142,6 +142,83 @@ public actor ManagerService {
         limit: Int = 200
     ) async throws -> KnowledgeGraphSnapshot {
         try await graphProvider.loadGraph(paths: paths, nodeLimit: limit, space: space)
+    }
+
+    /// Reads the same snapshot/query implementation as the MCP tools. This path
+    /// never launches the Rust indexer and needs no installed agent integration.
+    public func queryCodeIndex(
+        _ request: CodeIndexRequest, projectRoot: URL, space: String
+    ) async throws -> CodeIndexResponse {
+        try Task.checkCancellation()
+        let result = await runner.run(try codeIndexCommand(request, projectRoot: projectRoot, space: space))
+        try Task.checkCancellation()
+        guard result.succeeded else {
+            throw ManagerError.verificationFailed(result.timedOut
+                ? "코드 인덱스 조회 시간이 초과되었습니다. ByoriDB 상태를 확인한 뒤 다시 시도해 주세요."
+                : "코드 인덱스를 읽을 수 없습니다. ByoriDB 연결 상태와 런타임 설치를 확인한 뒤 다시 시도해 주세요.")
+        }
+        do {
+            return try JSONDecoder().decode(CodeIndexResponse.self, from: Data(result.output.utf8))
+        } catch {
+            // Never reflect raw command output or credentials in an app alert.
+            throw ManagerError.verificationFailed("코드 인덱스 응답을 읽을 수 없습니다. 앱과 Byori 런타임을 업데이트해 주세요.")
+        }
+    }
+
+    func codeIndexCommand(_ request: CodeIndexRequest, projectRoot: URL, space: String) throws -> CommandSpec {
+        guard (1...100).contains(request.limit), (0...100_000).contains(request.offset),
+              (1...5).contains(request.depth), request.query.count <= 1024,
+              request.symbolID?.isEmpty != true,
+              request.symbolID.map({ $0.count <= 8192 }) ?? true,
+              request.language.map({ ["python", "swift", "javascript", "typescript", "rust"].contains($0) }) ?? true,
+              ["incoming", "outgoing"].contains(request.direction),
+              ["calls", "imports"].contains(request.kind),
+              space.range(of: "^[A-Za-z_][A-Za-z0-9_]{0,63}$", options: .regularExpression) != nil else {
+            throw ManagerError.prerequisite("코드 인덱스 조회 조건이 올바르지 않습니다.")
+        }
+        var arguments = ["code", request.action.rawValue, projectRoot.path, "--space", space, "--json"]
+        switch request.action {
+        case .status: break
+        case .files, .symbols:
+            arguments += ["--query=\(request.query)", "--limit", String(request.limit), "--offset", String(request.offset)]
+            if let language = request.language { arguments += ["--language", language] }
+            if request.action == .symbols {
+                if let file = request.file { arguments += ["--file=\(file)"] }
+                if let symbol = request.symbolID { arguments += ["--symbol-id=\(symbol)"] }
+            }
+        case .relations, .impact:
+            guard let symbol = request.symbolID else {
+                throw ManagerError.prerequisite("관계를 조회할 파일이나 심볼을 선택해 주세요.")
+            }
+            arguments += ["--symbol-id=\(symbol)", "--limit", String(request.limit)]
+            if request.action == .relations {
+                arguments += ["--direction", request.direction, "--kind", request.kind]
+            } else {
+                arguments += ["--depth", String(request.depth)]
+            }
+        }
+        if fileManager.fileExists(atPath: paths.bundledByoriCLI.path) {
+            guard let python = paths.executable(named: "python3") else {
+                throw ManagerError.prerequisite("코드 인덱스 조회에는 Python 3가 필요합니다.")
+            }
+            for asset in [paths.bundledMCP, paths.bundledCodeGraph] {
+                guard fileManager.fileExists(atPath: asset.path) else {
+                    throw ManagerError.missingResource(asset.path)
+                }
+            }
+            return CommandSpec(executable: python.path, arguments: [paths.bundledByoriCLI.path] + arguments,
+                               environment: commonEnvironment, workingDirectory: projectRoot.path, timeout: 45)
+        }
+        guard fileManager.isExecutableFile(atPath: paths.byoriCLI.path) else {
+            throw ManagerError.missingResource(paths.bundledByoriCLI.path)
+        }
+        for name in ["byoridb_mcp.py", "code_graph.py"] {
+            guard fileManager.fileExists(atPath: paths.byoriHome.appendingPathComponent(name).path) else {
+                throw ManagerError.prerequisite("코드 인덱스 조회 모듈이 없습니다. Settings의 ByoriDB에서 런타임을 업데이트해 주세요.")
+            }
+        }
+        return CommandSpec(executable: paths.byoriCLI.path, arguments: arguments,
+                           environment: commonEnvironment, workingDirectory: projectRoot.path, timeout: 45)
     }
 
     /// Reads many bodies in one batch. Prefer this over calling

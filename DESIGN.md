@@ -177,6 +177,25 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 - Present kind, date, title, bounded body summary, provenance, and relation tags in that order.
 - System teal may identify the record kind; body and provenance remain semantic primary/secondary text.
 
+### Code Index Browser
+
+- Keep **코드 인덱스 보기** visible at the top of the project's Context inspector and in the
+  project row menu. Open a wide native sheet, like Git History, with a file/symbol list and
+  relationship detail separated by a divider. Do not turn the workspace into a global dashboard.
+- Capture the project and selected checkout when opening; a project row defaults to its primary
+  checkout. Display that identity and path. Queries, analysis, and source reads keep this same
+  scope even if the outline selection changes behind the sheet.
+- Read the published ByoriDB snapshot when opening or refreshing, including after app restart.
+  Show its date, revision, language coverage, counts, diagnostics, and unverified working-tree
+  freshness. Analysis is a separate explicit action and targets the displayed checkout.
+- Offer bounded file/symbol search, language filters, and additional result pages. On selection,
+  show calls or imports in both directions and bounded change-impact evidence. Name unresolved
+  references and truncated results; an empty result never proves runtime independence.
+- Read source through the existing checkout-contained document service, in a native read-only
+  preview at the indexed line. Explain that the current file can differ from the saved snapshot.
+- Cancel or ignore superseded searches and selections. When the published snapshot changes,
+  clear old selection/detail rather than combining records from different snapshots.
+
 ### New Session Sheet
 
 - Treat session creation as protected focus: location, task, provider, launch model, dirty-tree confirmation, and Context depth belong in one native sheet.
