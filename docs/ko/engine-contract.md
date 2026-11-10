@@ -31,6 +31,22 @@ Byori 호환성과 무관하게 바뀌어도 된다. 반대로 이 문서의 표
 계약은 Context inspector가 사용하는 프로젝트 범위 ByoriDB 지식 그래프를 다룬다. 한
 Project의 모든 Source Tree/Worktree, Task, Session, agent 선택은 그 graph space를 공유한다.
 
+코드 분석은 같은 space 안에서 **checkout + snapshot**으로 구분한다. Schema v3는
+`code_index`(활성 포인터), `code_snapshot`(내용 식별), `code_file`, `code_symbol`,
+`code_reference`와 `code_defines`, `code_calls`, `code_imports`를 추가한다. 정확한 DDL은
+`mcp/code_graph.py:MIGRATION`이며 기존 note/wiki tag는 유지한다. 소스 해시는
+`content_hash`에 저장한다(`hash`는 엔진 예약어다).
+
+브리지는 64 KiB 이하의 다중 값 `INSERT VERTEX`/`INSERT EDGE`와 scope를 제한한
+`MATCH`/`ORDER BY`/`LIMIT`/`OFFSET`을 사용한다. 모든 snapshot 데이터와 관계를 저장한
+뒤 단일 active-pointer upsert로 게시한다. 전체 import transaction 대신 단일 statement의
+원자성에 의존하며 CLI writer는 기존 프로젝트 graph lock으로 직렬화한다. 이전 snapshot은 보존한다.
+
+엔진 업그레이드 시 `tests/smoke_mcp.py`와 함께 `tests/smoke_code_index.py`를 실행한다.
+후자는 실제 Rust 분석기·CLI·MCP·엔진을 연결해 변경/삭제와 worktree 격리를 확인한다.
+기존 v2 space는 writable runtime으로 v3 migration을 적용한 뒤 v3 readonly client를
+사용해야 한다. 앱은 기존 note/wiki만 표시한다. 사용법과 한계는 [코드 인덱스](code-index.md)를 참고한다.
+
 ## 엔진 버전 올리기 체크리스트
 
 1. `install.sh`의 `ENGINE_TAG_DEFAULT` 갱신(CI의 고정 태그이자 오프라인 fallback.

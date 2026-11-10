@@ -811,10 +811,16 @@ final class WorkspaceViewModel: ObservableObject {
     @Published private(set) var inspectorSnapshot: WorkspaceInspectorSnapshot?
     @Published private(set) var contextPhase: WorkspaceInspectorPhase = .idle
     @Published private(set) var contextSnapshot: WorkspaceContextSnapshot?
-    /// Set while `byori init` is reading a project's history, so the affordance
+    /// Set while `byori init` is reading history and indexing source, so the affordance
     /// that started it can show progress instead of looking ignored.
     @Published private(set) var isBuildingProjectMemory = false
     @Published private(set) var lastProjectMemorySummary: String?
+    private var lastProjectMemoryProjectID: String?
+
+    var selectedProjectMemorySummary: String? {
+        guard selectedLineage?.project.id == lastProjectMemoryProjectID else { return nil }
+        return lastProjectMemorySummary
+    }
     /// Set right after a repository is added, when its graph turns out to be empty.
     @Published private(set) var projectMemoryOffer: WorkspaceProjectMemoryOffer?
     @Published private(set) var isRefreshing = false
@@ -1901,10 +1907,13 @@ final class WorkspaceViewModel: ObservableObject {
     func buildProjectMemory() async {
         guard !isBuildingProjectMemory, let project = selectedLineage?.project else { return }
         isBuildingProjectMemory = true
+        lastProjectMemorySummary = nil
+        lastProjectMemoryProjectID = nil
         defer { isBuildingProjectMemory = false }
         do {
             let summary = try await dataSource.buildProjectMemory(projectID: project.id)
             lastProjectMemorySummary = summary
+            lastProjectMemoryProjectID = project.id
             await loadContext()
         } catch {
             alert = WorkspaceAlert(

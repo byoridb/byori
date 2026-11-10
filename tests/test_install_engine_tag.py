@@ -57,6 +57,9 @@ class InstallEngineTagTests(unittest.TestCase):
         self.stub_directory.mkdir()
         self.home = self.root / "home"
         self.home.mkdir()
+        self.indexer = self.root / "byori-indexer"
+        self.indexer.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        self.indexer.chmod(0o755)
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -84,6 +87,8 @@ class InstallEngineTagTests(unittest.TestCase):
                 str(INSTALLER),
                 "--assets",
                 str(ROOT),
+                "--indexer-binary",
+                str(self.indexer),
                 "--no-claude",
                 "--no-codex",
                 "--no-service",

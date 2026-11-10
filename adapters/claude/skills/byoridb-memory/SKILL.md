@@ -44,7 +44,7 @@ a true one.
 knowledge is in another store and go look, rather than starting a parallel copy. The MCP
 server's startup line reports how many memories this space holds, precisely so an empty one
 is visible. Both layers below are bootstrapped automatically: on startup the
-MCP server migrates the space to the current memory schema (v2 = notes + typed wiki),
+MCP server migrates the space to the current memory schema (v3 adds code indexes to notes and the typed wiki),
 recording the version in the reserved note `byori:schema-version`.
 
 Prefer the validated structured surface:
@@ -64,6 +64,23 @@ Prefer the validated structured surface:
 
 `memory_query` is a legacy unrestricted raw-nGQL escape hatch. Do not use it when a structured
 tool or `memory_query_read` is sufficient; it is unavailable when the MCP runs in `safe` profile.
+
+## Source structure — query before broad exploration
+
+For Python, Swift, JavaScript/TypeScript, or Rust source exploration, call
+`code_status` to check whether this checkout has an index and which revision and
+snapshot it describes. If indexed, use bounded `code_search` results and
+`code_relations` (incoming/outgoing calls or imports) to choose relevant source
+locations. `code_impact` follows resolved incoming relationships with a depth and
+result limit. Use returned symbol/file IDs exactly. These read tools are available
+in all MCP profiles; `byori index .` explicitly refreshes the graph from source.
+
+The index is a static, checkout-specific snapshot, not compiler or runtime truth.
+Inspect diagnostics and unresolved references, verify current source, and run
+appropriate tests. A missing edge does not prove there is no caller. Do not copy
+the generated code graph into memory notes; keep decisions and rationale in the
+existing memory wiki. If there is no index or it is stale, use direct source
+exploration and explain the gap rather than claiming graph coverage.
 
 ## Two layers — pick by whether relationships matter
 

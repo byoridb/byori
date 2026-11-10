@@ -16,9 +16,22 @@ final class WorkspaceProjectMemoryTests: XCTestCase {
 
         XCTAssertEqual(dataSource.builtProjectIDs, ["project123"])
         XCTAssertEqual(model.lastProjectMemorySummary, "wrote 350 memories and 453 relations")
+        XCTAssertEqual(model.selectedProjectMemorySummary, model.lastProjectMemorySummary)
         XCTAssertGreaterThanOrEqual(dataSource.contextLoads, 2, "the tab that was empty must reload")
         XCTAssertFalse(model.isBuildingProjectMemory)
         XCTAssertNil(model.alert)
+    }
+
+    func testAnAnalysisSummaryIsHiddenWhenAnotherProjectIsSelected() async {
+        let dataSource = ProjectMemoryDataSource(snapshot: makeSnapshot())
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+        await model.buildProjectMemory()
+
+        model.select(.project("another-project"))
+
+        XCTAssertNotNil(model.lastProjectMemorySummary)
+        XCTAssertNil(model.selectedProjectMemorySummary)
     }
 
     func testAFailureIsReportedAndNotSilentlySwallowed() async {

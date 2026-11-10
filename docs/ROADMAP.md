@@ -92,6 +92,11 @@ response to creating a task or session in the app.
 
 ## P7 — Automatic Ingestion + Ranked Recall
 
+- ✅ Rust/Tree-sitter source indexing for Python, Swift, JS/TS (including JSX/TSX), and Rust;
+  content-hash parse caching, explicit CLI refresh/foreground watch, checkout-scoped ByoriDB
+  snapshots and `code_status/search/relations/impact` MCP reads. See [code indexing](code-index.md).
+- Remaining for code intelligence: compiler/LSP resolution, snapshot garbage collection,
+  native code exploration, and coverage-backed test selection.
 - Perform structured capture only at boundaries where knowledge becomes established
   (task completion, commit, PR, or incident resolution)
 - Index repository modules, symbols, dependencies, documents, and Git changes with project

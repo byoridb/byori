@@ -30,6 +30,7 @@ Env:
                             unset/0 disables it (default). See `main()`.
 """
 import hashlib
+import importlib.util
 import json
 import os
 import pathlib
@@ -41,6 +42,14 @@ import sys
 import time
 import urllib.error
 import urllib.request
+
+# Loaded by path because the CLI also imports this server through importlib,
+# without adding the installed runtime directory to sys.path.
+_code_spec = importlib.util.spec_from_file_location(
+    "byori_code_graph", pathlib.Path(__file__).with_name("code_graph.py")
+)
+_code_module = importlib.util.module_from_spec(_code_spec)
+_code_spec.loader.exec_module(_code_module)
 
 HTTP = os.environ.get("BYORIDB_HTTP", "http://127.0.0.1:19669").rstrip("/")
 USER = os.environ.get("BYORIDB_USER", "root")
@@ -94,7 +103,8 @@ RELATION_RULES = {
 }
 READ_ONLY_STATEMENTS = {"MATCH", "FETCH", "GO", "LOOKUP", "SHOW", "WHY"}
 READONLY_TOOL_NAMES = frozenset(
-    {"memory_recall", "memory_query_read", "memory_read", "memory_export", "memory_why"}
+    {"memory_recall", "memory_query_read", "memory_read", "memory_export", "memory_why",
+     "code_status", "code_search", "code_relations", "code_impact"}
 )
 MUTATING_STATEMENTS = {
     "ALTER",
@@ -112,7 +122,8 @@ MUTATING_STATEMENTS = {
 # Memory schema version of the space, recorded in a reserved `note` vertex.
 # v1 = base note/rel only (pre-versioning installs carry no version note).
 # v2 = + typed wiki ontology (docs/memory-ontology.md §4, adapters SKILL.md).
-SCHEMA_VERSION = 2
+# v3 = + checkout/snapshot-scoped source code graph (mcp/code_graph.py).
+SCHEMA_VERSION = 3
 SCHEMA_VERSION_NAME = "byori:schema-version"
 
 # How a login throttle (HTTP 429) is absorbed. The engine's failure budgets are
@@ -144,6 +155,7 @@ MIGRATIONS = {
         "CREATE EDGE IF NOT EXISTS about(ts INT64)",
         "CREATE EDGE IF NOT EXISTS relates_to(ts INT64)",
     ),
+    3: _code_module.MIGRATION,
 }
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -2041,6 +2053,26 @@ TOOLS = {
 }
 
 
+_code_graph = _code_module.CodeGraph(
+    lambda query, read_only=False: _raw_query(query, read_only=read_only),
+    lambda: _ensure_ready(),
+)
+
+
+def store_code_index(payload):
+    """Publish a Rust indexer snapshot. Called by the CLI under its graph lock.
+
+    Deliberately not a model-callable write tool: indexing requires an explicit
+    local CLI action, and readonly workers cannot publish snapshots.
+    """
+    if PROFILE == "readonly":
+        raise ValueError("code index publication is unavailable in readonly profile")
+    return _code_graph.store(payload)
+
+
+TOOLS.update(_code_module.tool_definitions(_code_graph))
+
+
 # ---- JSON-RPC / MCP plumbing ----------------------------------------------
 
 def _send(obj):
@@ -2094,6 +2126,9 @@ def _server_instructions():
         "around the module or topic at hand. If recall comes back empty for a project "
         "that plainly has history, another store probably holds it — migrate it here "
         "rather than starting a parallel copy.",
+        "For source structure, use code_status and code_search, then code_relations "
+        "or code_impact. These read a checkout-specific static snapshot created by "
+        "byori index. Check source freshness; unresolved calls are not runtime facts.",
     ]
     if PROFILE != "readonly":
         lines += [

@@ -6,6 +6,21 @@ on:
   pull_request:
 
 jobs:
+  code-indexer:
+    name: Rust code indexer
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Prepare Rust
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - name: Check indexer formatting, lint, and language fixtures
+        run: |
+          cargo +stable fmt --manifest-path indexer/Cargo.toml --check
+          cargo +stable clippy --locked --manifest-path indexer/Cargo.toml --all-targets -- -D warnings
+          cargo +stable test --locked --manifest-path indexer/Cargo.toml
+      - name: Build distributable indexer and license notices
+        run: scripts/build-indexer.sh
+
   cli-python:
     name: Multi-agent CLI (Python ${{ matrix.python-version }})
     # ubuntu-latest moved to 26.04, which has no Python 3.9 build for setup-python.
@@ -22,9 +37,11 @@ jobs:
 
       - name: Test Python contracts
         run: |
-          python -m py_compile cli/byori.py cli/archaeology.py cli/doctor.py mcp/byoridb_mcp.py scripts/next_release_tag.py \
-            scripts/migrate-legacy-memory.py
+          python -m py_compile cli/byori.py cli/archaeology.py cli/doctor.py mcp/byoridb_mcp.py mcp/code_graph.py scripts/next_release_tag.py \
+            scripts/migrate-legacy-memory.py tests/test_code_index_cli.py tests/smoke_code_index.py
           python -m unittest tests/test_cli.py tests/test_mcp_contract.py tests/test_mcp_lifecycle.py tests/test_release_workflow.py tests/test_memory_space.py tests/test_install_engine_tag.py tests/test_install_hooks.py tests/test_archaeology.py tests/test_memory_why.py tests/test_doctor.py
+          python -m unittest discover -s tests -p 'test_*index*.py'
+          python -m unittest tests/test_code_graph.py tests/test_dmg_bundles_installer_assets.py
 
   smoke:
     name: Engine contract smoke
@@ -65,6 +82,7 @@ jobs:
       # release appears.
       - name: Install (pinned engine + local assets)
         run: |
+          scripts/build-indexer.sh
           export BYORIDB_HOME="$RUNNER_TEMP/byoridb-home"
           ENGINE_TAG="$(sed -n 's/^ENGINE_TAG_DEFAULT="\([^"]*\)".*/\1/p' install.sh)"
           test -n "$ENGINE_TAG"
@@ -78,6 +96,9 @@ jobs:
 
       - name: MCP roundtrip smoke
         run: python3 tests/smoke_mcp.py
+
+      - name: Rust indexer, CLI, ByoriDB, and MCP roundtrip
+        run: python3 tests/smoke_code_index.py
 
   manager-macos:
     name: Byori (macOS)
@@ -104,6 +125,9 @@ jobs:
           test -x "dist/Byori.app/Contents/MacOS/Byori"
           test -f "dist/Byori.app/Contents/Resources/Byori.icns"
           test -f "dist/Byori.app/Contents/Resources/runtime/cli/byori.py"
+          test -f "dist/Byori.app/Contents/Resources/runtime/mcp/code_graph.py"
+          test -x "dist/Byori.app/Contents/Resources/runtime/bin/byori-indexer"
+          "dist/Byori.app/Contents/Resources/runtime/bin/byori-indexer" --help
           test "$(plutil -extract CFBundleExecutable raw "$INFO_PLIST")" = "Byori"
           test "$(plutil -extract CFBundleDisplayName raw "$INFO_PLIST")" = "Byori"
           test "$(plutil -extract CFBundleName raw "$INFO_PLIST")" = "Byori"
@@ -116,7 +140,7 @@ jobs:
   release-main:
     name: Tag the verified main commit
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [cli-python, smoke, manager-macos]
+    needs: [code-indexer, cli-python, smoke, manager-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write

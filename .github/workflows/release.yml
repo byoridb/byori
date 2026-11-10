@@ -14,8 +14,51 @@ env:
   RELEASE_TAG: ${{ github.event.client_payload.tag || inputs.tag }}
 
 jobs:
+  indexer:
+    name: Build indexer (${{ matrix.target }})
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+      - name: Require the release tag to be on main
+        run: scripts/require_release_tag_on_main.sh "$RELEASE_TAG"
+      - name: Build locked native indexer
+        env:
+          INDEXER_TARGET: ${{ matrix.target }}
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+        run: |
+          rustup target add "$INDEXER_TARGET"
+          scripts/build-indexer.sh --target "$INDEXER_TARGET" --output staging/byori-indexer
+          cp LICENSE staging/LICENSE
+          mkdir -p assets
+          archive="byori-indexer-${INDEXER_TARGET}.tar.gz"
+          tar -czf "assets/$archive" -C staging byori-indexer THIRD_PARTY_LICENSES.txt LICENSE
+          python3 - "$archive" <<'PY'
+          import hashlib, pathlib, sys
+          name = sys.argv[1]
+          path = pathlib.Path("assets") / name
+          path.with_name(name + ".sha256").write_text(hashlib.sha256(path.read_bytes()).hexdigest() + "  " + name + "\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: indexer-${{ matrix.target }}
+          path: assets/*
+          if-no-files-found: error
+
   release:
     name: Create Release
+    needs: [indexer]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -31,25 +74,26 @@ jobs:
       - name: Sanity check installer
         run: bash -n install.sh
 
-      # Created as a draft on purpose. This job finishes in seconds while the
-      # DMG is still being built, signed and notarised by "Release Byori", so
-      # publishing here would expose a release whose only asset is install.sh.
-      # The app's updater reads the newest published release and reports a
-      # release with no DMG as an outright failure — for the several minutes
-      # notarisation takes, every update check would fail.
-      #
-      # "Release Byori" publishes it once the DMG is attached. A release that
-      # never gets its DMG stays a draft, which is the safe direction: no user
-      # is offered an update that cannot be installed.
-      - name: Create draft release
-        # Third-party action: pinned to a commit so a moved tag cannot run new code here.
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+      - uses: actions/download-artifact@v4
         with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          draft: true
-          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
-          generate_release_notes: true
-          files: |
-            install.sh
+          pattern: indexer-*
+          path: indexer-assets
+          merge-multiple: true
+
+      # Keep the release private until the signed DMG and every native-indexer
+      # archive are attached. gh sees drafts created by the other workflow;
+      # tag-only release API lookups do not, and would create duplicate drafts.
+      - name: Create draft release
+        run: |
+          set -euo pipefail
+          prerelease=false
+          case "$RELEASE_TAG" in *-*) prerelease=true ;; esac
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --draft --generate-notes --title "$RELEASE_TAG" --prerelease="$prerelease" \
+              || gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          fi
+          gh release upload "$RELEASE_TAG" install.sh indexer-assets/* \
+            --clobber --repo "$GITHUB_REPOSITORY"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

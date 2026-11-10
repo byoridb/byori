@@ -27,6 +27,10 @@ public struct ManagerPaths: Sendable {
     /// in this release asks it for a subcommand it has never heard of. The copy that
     /// shipped with the app always matches the app's own expectations.
     public var bundledByoriCLI: URL { runtimeRoot.appendingPathComponent("cli/byori.py") }
+    public var bundledCodeIndexer: URL { runtimeRoot.appendingPathComponent("bin/byori-indexer") }
+    public var bundledMCP: URL { runtimeRoot.appendingPathComponent("mcp/byoridb_mcp.py") }
+    public var bundledCodeGraph: URL { runtimeRoot.appendingPathComponent("mcp/code_graph.py") }
+    public var installedCodeIndexer: URL { byoriHome.appendingPathComponent("bin/byori-indexer") }
     /// What the installer recorded about the engine it installed. The binary
     /// itself cannot be asked.
     public var engineManifest: URL { byoriHome.appendingPathComponent("engine.json") }

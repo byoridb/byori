@@ -88,6 +88,11 @@ backup / upgrade --plan / rollback / uninstall`.
 
 ## P7 — 자동 ingestion + ranked recall
 
+- ✅ Rust/Tree-sitter로 Python·Swift·JS/TS(JSX/TSX 포함)·Rust 코드 인덱싱.
+  내용 해시 기반 parse cache, CLI 갱신/foreground watch, checkout별 ByoriDB snapshot과
+  `code_status/search/relations/impact` MCP 조회를 제공한다. [코드 인덱스](code-index.md) 참고.
+- 코드 분석의 남은 범위: compiler/LSP 해석, 이전 snapshot 정리, 앱 코드 탐색,
+  coverage에 근거한 테스트 선택.
 - 지식이 확정되는 경계(작업 종료·commit·PR·인시던트 해소)에서만 구조화 capture
 - repository의 module, symbol, dependency, document, git change를 project-aware하게
   indexing → canonical name과 merge candidate로 파편화 방지

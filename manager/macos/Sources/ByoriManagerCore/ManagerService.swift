@@ -237,13 +237,14 @@ public actor ManagerService {
         return OperationResult(summary: "ByoriDB 설치/업데이트 완료", detail: result.output)
     }
 
-    /// Builds a project's starting memory out of its own Git history.
+    /// Builds project memory from Git history and the current source checkout.
     ///
     /// The graph used to start empty, which meant the first weeks of using Byori
     /// were spent earning the thing it advertises. The history that explains a
     /// codebase is already in the clone, so this reads it — `byori init`, whose pass
     /// is deterministic and records the commit, pull request or document behind every
-    /// memory it writes. Re-running updates rather than duplicating.
+    /// memory it writes. The same command runs the matching Rust source indexer
+    /// and publishes a checkout-specific code snapshot. Re-running refreshes both.
     public func buildProjectMemory(
         projectRoot: URL,
         space: String,
@@ -264,7 +265,23 @@ public actor ManagerService {
             )
         }
         try require(result, label: "프로젝트 기억 생성")
-        return OperationResult(summary: "프로젝트 기억 생성 완료", detail: result.output)
+        var detail = result.output
+        if fileManager.fileExists(atPath: paths.bundledMCP.path),
+           !installedCodeToolsMatchBundle {
+            detail += "\n\n코드 구조는 ByoriDB에 저장되었습니다. 에이전트에서 새 코드 조회 도구를 사용하려면 "
+                + "Settings > ByoriDB에서 런타임을 업데이트한 뒤 에이전트 세션을 다시 시작해 주세요. "
+                + "이번 분석은 앱에 포함된 인덱서와 연결 모듈로 완료했습니다."
+        }
+        return OperationResult(summary: "프로젝트 분석 완료", detail: detail)
+    }
+
+    private var installedCodeToolsMatchBundle: Bool {
+        [
+            (paths.bundledMCP, paths.byoriHome.appendingPathComponent("byoridb_mcp.py")),
+            (paths.bundledCodeGraph, paths.byoriHome.appendingPathComponent("code_graph.py")),
+        ].allSatisfy { bundled, installed in
+            fileManager.contentsEqual(atPath: bundled.path, andPath: installed.path)
+        }
     }
 
     /// Prefers the CLI that shipped with this app over the installed one, because
@@ -279,25 +296,60 @@ public actor ManagerService {
             "--space", space,
             "--limit", String(commitLimit),
         ]
-        // A large repository is minutes of Git, not seconds; the summary at the end
-        // is what the caller shows.
+        // History and source analysis can take minutes on a large repository.
         let timeout: TimeInterval = 1_800
-        if fileManager.fileExists(atPath: paths.bundledByoriCLI.path),
-           let python = paths.executable(named: "python3") {
+        if fileManager.fileExists(atPath: paths.bundledByoriCLI.path) {
+            guard let python = paths.executable(named: "python3") else {
+                throw ManagerError.prerequisite("프로젝트 분석에는 Python 3가 필요합니다.")
+            }
+            // The bundled CLI loads its sibling MCP bridge before the installed
+            // copy. Require the complete pair rather than silently writing with
+            // an older bridge after an app-only update.
+            for asset in [paths.bundledMCP, paths.bundledCodeGraph] {
+                guard fileManager.fileExists(atPath: asset.path) else {
+                    throw ManagerError.missingResource(asset.path)
+                }
+            }
+            let candidates = [
+                paths.bundledCodeIndexer,
+                paths.runtimeRoot.appendingPathComponent("indexer/target/release/byori-indexer"),
+                paths.runtimeRoot.appendingPathComponent("indexer/target/debug/byori-indexer"),
+            ]
+            guard let indexer = candidates.first(where: {
+                fileManager.isExecutableFile(atPath: $0.path)
+            }) else {
+                throw ManagerError.prerequisite(
+                    "이 앱의 코드 인덱서를 찾을 수 없습니다. 앱을 다시 설치하거나, "
+                    + "소스에서 실행 중이면 scripts/build-indexer.sh를 먼저 실행해 주세요."
+                )
+            }
+            var environment = commonEnvironment
+            environment["BYORI_INDEXER"] = indexer.path
             return CommandSpec(
                 executable: python.path,
                 arguments: [paths.bundledByoriCLI.path] + arguments,
-                environment: commonEnvironment,
+                environment: environment,
+                workingDirectory: projectRoot.path,
                 timeout: timeout
             )
         }
         guard fileManager.isExecutableFile(atPath: paths.byoriCLI.path) else {
             throw ManagerError.missingResource(paths.bundledByoriCLI.path)
         }
+        guard fileManager.isExecutableFile(atPath: paths.installedCodeIndexer.path),
+              fileManager.fileExists(atPath: paths.byoriHome.appendingPathComponent("code_graph.py").path) else {
+            throw ManagerError.prerequisite(
+                "설치된 Byori 런타임에 코드 분석 기능이 없습니다. "
+                + "Settings의 ByoriDB에서 설치/업데이트를 실행해 주세요."
+            )
+        }
+        var environment = commonEnvironment
+        environment["BYORI_INDEXER"] = paths.installedCodeIndexer.path
         return CommandSpec(
             executable: paths.byoriCLI.path,
             arguments: arguments,
-            environment: commonEnvironment,
+            environment: environment,
+            workingDirectory: projectRoot.path,
             timeout: timeout
         )
     }
@@ -1210,6 +1262,8 @@ public actor ManagerService {
         let sources: [(URL, String)] = [
             (paths.byoriHome.appendingPathComponent("bin", isDirectory: true), "bin"),
             (paths.byoriHome.appendingPathComponent("byoridb_mcp.py"), "byoridb_mcp.py"),
+            (paths.byoriHome.appendingPathComponent("code_graph.py"), "code_graph.py"),
+            (paths.byoriHome.appendingPathComponent("INDEXER_LICENSES.txt"), "INDEXER_LICENSES.txt"),
             (paths.byoriHome.appendingPathComponent("env"), "env"),
             (paths.launchAgent, "launch-agent.plist"),
         ]
@@ -1255,6 +1309,8 @@ public actor ManagerService {
         let destinations: [(String, URL)] = [
             ("bin", paths.byoriHome.appendingPathComponent("bin", isDirectory: true)),
             ("byoridb_mcp.py", paths.byoriHome.appendingPathComponent("byoridb_mcp.py")),
+            ("code_graph.py", paths.byoriHome.appendingPathComponent("code_graph.py")),
+            ("INDEXER_LICENSES.txt", paths.byoriHome.appendingPathComponent("INDEXER_LICENSES.txt")),
             ("env", paths.byoriHome.appendingPathComponent("env")),
             ("launch-agent.plist", paths.launchAgent),
         ]

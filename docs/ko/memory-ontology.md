@@ -5,8 +5,10 @@
 > 상태: **설계 + dogfood PoC 검증 완료**. 이 문서는 Byori 멀티 에이전트 워크스페이스
 > 하단의 지속 가능한 지식 계층을 정의한다. 선별된 프로젝트 사실을 명시적 체크포인트에서
 > 축적하고 연결된 위키처럼 읽는다. §4의 typed wiki schema는 v0.2.0부터 MCP 시작 시
-> schema v2로 자동 bootstrap/migration된다. repository나 terminal transcript의 자동
-> ingestion은 미구현이다. 작성 계기: 2026-07-11 대화 (파일 메모리 vs 그래프 메모리 → 타입드 지식그래프 비전).
+> schema v2에 추가됐으며 현재 MCP는 코드 그래프용 v3 migration도 적용한다.
+> `byori index`와 foreground watch로 Python·Swift·JS/TS·Rust를 분석한다.
+> terminal transcript 수집은 미구현이다. [코드 인덱스](code-index.md) 참고.
+> 작성 계기: 2026-07-11 대화 (파일 메모리 vs 그래프 메모리 → 타입드 지식그래프 비전).
 
 ---
 

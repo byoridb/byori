@@ -13,7 +13,7 @@
 모든 코딩 에이전트는 잊습니다. 프로젝트는 잊으면 안 됩니다.
 
 ```text
-$ byori init                       # 저장소의 히스토리를 읽는다
+$ byori init                       # Git 히스토리와 소스 코드를 분석한다
 analyzed
   11,814 commits · 1,858 tracked files · 1,042 pull requests
 discovered
@@ -52,7 +52,7 @@ incident ──caused_by──> bug ──fixed_by──> decision ──affects
 
 | | |
 |---|---|
-| **`byori init`** | Git만으로 시작 그래프를 만듭니다 — 이슈 트레일러·revert·PR·ADR·디렉터리 트리. 결정론입니다: 모델도, 추측한 인과도 없고, 각 기억의 근거가 된 커밋·문서를 함께 기록합니다. |
+| **`byori init`** | Git 이력(이슈 트레일러·revert·PR·ADR)을 읽은 뒤 Rust 인덱서로 Python·Swift·JS/TS·Rust 소스를 분석합니다. 모델 없이 커밋·문서 근거와 코드 위치를 기록합니다. |
 | **`memory_why`** | 어떤 에이전트든 호출하는 MCP 도구. **서버가** 답을 조립합니다 — 원인, 무엇이 해결했는지, 무엇을 대체했고 무엇에 의해 대체됐는지, 증거. 모델이 증거를 요약으로 지울 자리가 없습니다. |
 | **ByoriDB** | 아래에 있는 로컬 그래프 엔진: 타입 있는 인과 엣지, provenance, bitemporal 히스토리, `AS OF`. |
 | **워크스페이스** | Claude Code·Codex·평범한 터미널을 프로젝트별 기억 위에서 돌리는 macOS 앱. 그래프가 계속 쓰이게 하기 위해 존재하며, 그것이 제품의 핵심은 아닙니다. |
@@ -70,15 +70,16 @@ Claude Code 또는 Codex를 선택합니다. 어떤 소스트리에서 어떤 �
 프로젝트의 결정과 근거, 모듈 관계, 반복 버그, 인시던트, 해결책, 작업 체크포인트를 에이전트와
 세션 사이에서 이어 줍니다. **Byori**는 제품, **ByoriDB**는 그래프 엔진, **`byori`**는 CLI입니다.
 
-지식은 매 턴에서 자동 추출되는 것이 아니라 에이전트가 체크포인트에서 기록합니다. 따라서
-그래프는 설치 직후가 아니라 작업하면서 자랍니다. 저장소 자동 ingestion은 아직 개발
-중입니다. [현재 한계](#현재-한계)를 참고하세요.
+에이전트는 체크포인트에서 지속할 지식을 기록합니다. `byori init`은 Git 이력·ADR에 이어
+Python·Swift·JavaScript/TypeScript·Rust의 코드 구조도 자동으로 분석합니다.
+`byori index`는 코드 구조만 갱신합니다.
+설정과 참조 해석 범위는 [소스 코드 인덱스](code-index.md)를 참고하세요.
 
 > [!WARNING]
 > 현재는 초기 실험 단계입니다. 네이티브 macOS 워크스페이스 MVP, 실제 대화형 PTY,
-> 로컬 단일 노드 ByoriDB, MCP surface, notes + typed wiki schema v2, 별도의 foreground
+> 로컬 단일 노드 ByoriDB, MCP surface, notes + typed wiki + 코드 인덱스 schema v3, 별도의 foreground
 > 멀티 CLI 프로토타입은 구현되어 있습니다. 터미널 세션 유지는 tmux 3.2 이상이 필요하며,
-> 없으면 앱과 함께 종료됩니다. 저장소 자동 ingestion도 아직 개발 중입니다. 중요한 데이터의 유일한
+> 없으면 앱과 함께 종료됩니다. 코드 인덱싱은 명시적인 정적 분석이며 미해결 참조를 별도 표시합니다. 중요한 데이터의 유일한
 > 저장소로 사용하지 마세요.
 
 ## 워크스페이스 모델
@@ -138,7 +139,7 @@ Byori
 # 1. 런타임 설치 (엔진·MCP 서버·CLI·스킬·체크포인트 훅)
 curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh | bash
 
-# 2. 이 프로젝트의 기억을 히스토리로 만든다
+# 2. 이 프로젝트의 히스토리와 소스 코드를 분석한다
 cd ~/code/your-project
 byori init
 
@@ -152,7 +153,7 @@ byori doctor
 설치기가 `byori`를 `~/.local/bin`에 링크합니다. 그 디렉터리가 아직 `PATH`에 없으면 추가할 줄을
 출력합니다 — 셸 설정 파일은 건드리지 않습니다. `~/.byoridb/bin/byori`도 그대로 동작합니다.
 
-`byori init`은 결정론이고 재실행이 안전합니다 — Git만 읽고 모델은 쓰지 않으며, 이미 쓴 기억은
+`byori init`은 결정론이고 재실행이 안전합니다 — Git과 소스를 읽고 모델은 쓰지 않으며, 이미 쓴 기억은
 중복이 아니라 갱신됩니다. `byori doctor`는 엔진·서비스·자격증명·이 프로젝트의 기억·에이전트
 배선을 점검하고 실패한 것을 되돌리는 명령을 출력합니다.
 
@@ -164,7 +165,7 @@ byori                              # `byori open .`과 같습니다
 ```
 
 체크아웃을 프로젝트로 등록하고 앱을 그 프로젝트 위로 띄웁니다. 그래프가 비어 있으면 앱이 그 자리에서
-히스토리를 읽을지 묻습니다. 앱에서 프로젝트를 추가할 때도 같은 제안이 뜨고, 모든 프로젝트 행의
+히스토리와 소스를 분석할지 묻습니다. 앱에서 프로젝트를 추가할 때도 같은 제안이 뜨고, 모든 프로젝트 행의
 컨텍스트 메뉴에도 남아 있습니다.
 
 
@@ -376,7 +377,7 @@ login/`USE`/schema-version read만 수행하며 writer가 현재 schema를 준�
 아니므로 신뢰 영역이 다르면 별도 instance와 credential이 필요합니다. 입력 한도와 정확한
 profile 경계는 [엔진 계약](engine-contract.md)을 참고합니다.
 
-writer profile의 MCP 서버는 시작 시 space를 현재 memory schema(v2)로 자동 migration하고,
+writer profile의 MCP 서버는 시작 시 space를 현재 memory schema(v3)로 자동 migration하고,
 `readonly`는 version만 확인합니다. Writer bootstrap은 독립적인 사실을 위한 `note`/`rel`
 layer와, `module`/`decision`/`bug`/`incident`/
 `concept`/`entity`/`task` + causal edge로 구성된 typed wiki layer가 함께
@@ -403,7 +404,10 @@ bitemporal history(`AS OF`), similarity recommendation을 제공합니다. macOS
 
 ## 현재 한계
 
-- 저장소, 문서, symbol, git diff를 자동으로 읽어 graph로 만드는 ingestion pipeline은 아직 없습니다.
+- `byori index .`로 Python·Swift·JS/TS·Rust를 분석합니다. LSP 보강, 범용 문서 수집,
+  자동 테스트 선택은 아직 지원하지 않습니다. [사용법과 정확도](code-index.md)를 참고하세요.
+- `byori index . --watch --interval 5`는 foreground 폴링입니다. 변경된 그래프는 전체
+  스냅샷으로 게시되며 이전 DB 스냅샷의 자동 정리는 아직 없습니다.
 - capture는 매 턴 자동 추출이 아니라 체크포인트에서 에이전트가 수행합니다.
 - 기본 `memory_recall`은 note 이름·본문 substring 검색이며 엔진의 vector search를 사용하지 않습니다.
 - Codex·NaraeClaw용 체크포인트 hook은 없습니다(번들 reminder hook은 Claude Code 전용).
@@ -417,7 +421,7 @@ bitemporal history(`AS OF`), similarity recommendation을 제공합니다. macOS
 
 네이티브 프로젝트 워크스페이스가 핵심 제품 화면입니다. 별도의 cross-platform `byori` CLI
 프로토타입은 provider 탐색, 신뢰 프로젝트 등록, 명시적 foreground run, run 조회를 제공하며,
-관리 명령은 Byori macOS 앱의 공용 코어와 수렴할 예정입니다. 자동 ingestion과 ranked graph
+관리 명령은 Byori macOS 앱의 공용 코어와 수렴할 예정입니다. 더 넓은 ingestion과 ranked graph
 recall은 후속 작업입니다. 엔진 호환성은 [계약 문서](engine-contract.md)와 CI 스모크로
 게이트하며 자세한 내용은 [로드맵](ROADMAP.md)을 참고하세요.
 
@@ -428,6 +432,7 @@ recall은 후속 작업입니다. 엔진 호환성은 [계약 문서](engine-con
 다국어 trigger 예시입니다.
 
 - [설치·관리](install.md)
+- [소스 코드 인덱스](code-index.md)
 - [멀티 CLI 오케스트레이션](orchestration.md)
 - [Byori macOS 앱](manager-macos.md)
 - [Agent adapter 자산 (skill/hooks)](adapters.md)
