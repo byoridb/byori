@@ -36,6 +36,23 @@ engine contract covers the project-scoped ByoriDB knowledge graph consumed by th
 inspector; all Source Trees/Worktrees, Tasks, Sessions, and agent choices in one Project
 share that graph space.
 
+Code analysis uses that same space with a separate **checkout + snapshot** scope. Schema v3
+adds `code_index` (active pointer), `code_snapshot` (content identity), `code_file`,
+`code_symbol`, and `code_reference`, plus `code_defines`, `code_calls`, and `code_imports`.
+Their exact DDL is `mcp/code_graph.py:MIGRATION`; existing note/wiki tags are unchanged.
+Source hashes use the `content_hash` property (`hash` is a reserved engine keyword).
+The bridge uses multi-value `INSERT VERTEX` and `INSERT EDGE` batches capped at 64 KiB,
+and scoped `MATCH` queries with `ORDER BY`, `LIMIT`, and `OFFSET`. Every snapshot record
+and edge is written before a single active-pointer upsert; this relies on one statement's
+atomicity, not a transaction spanning the whole import. CLI writers serialize through
+the existing project graph lock. Old snapshot records are retained.
+
+`tests/smoke_code_index.py` exercises the real Rust binary, CLI importer, and four read MCP
+tools against the running engine, including changed/deleted files and worktree isolation.
+Run it alongside `tests/smoke_mcp.py` for engine upgrades. A writable runtime must apply v3
+before a v3 readonly client can query a previously v2 space. The native app continues to
+project the note/wiki tags only. See [source code index](code-index.md) for usage and limits.
+
 ## Engine Upgrade Checklist
 
 1. Update `ENGINE_TAG_DEFAULT` in `install.sh` (CI's pin and the offline fallback;

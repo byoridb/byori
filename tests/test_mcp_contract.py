@@ -78,6 +78,7 @@ class ConfigurationContractTests(unittest.TestCase):
             # Answering "why" reads and traverses; an orchestrated worker needs it
             # for exactly the recall it is supposed to do before working.
             "memory_why",
+            "code_status", "code_search", "code_relations", "code_impact",
         }
         with mock.patch.object(MCP, "PROFILE", "readonly"):
             self.assertEqual(set(MCP._active_tools()), expected)

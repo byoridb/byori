@@ -21,6 +21,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -1168,9 +1169,10 @@ class MemoryWriter:
         self.module = self._load_module()
 
     def _load_module(self):
+        # A source CLI must use its matching bridge, not an older installed one.
         candidates = [
-            self.byoridb_home / "byoridb_mcp.py",
             pathlib.Path(__file__).resolve().parents[1] / "mcp" / "byoridb_mcp.py",
+            self.byoridb_home / "byoridb_mcp.py",
         ]
         source = next((path for path in candidates if path.is_file()), None)
         if source is None:
@@ -1269,29 +1271,54 @@ def read_runtime_env(path: pathlib.Path) -> Dict[str, str]:
     return values
 
 
+def is_unborn_branch(root: pathlib.Path) -> bool:
+    """Distinguish a new branch with no commits from a failed history read."""
+    try:
+        symbolic = subprocess.run(
+            ["git", "-C", str(root), "symbolic-ref", "-q", "HEAD"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if symbolic.returncode != 0 or not symbolic.stdout.strip():
+            return False
+        reference = subprocess.run(
+            ["git", "-C", str(root), "show-ref", "--verify", "--quiet", symbolic.stdout.strip()],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        # show-ref returns 1 for an absent ref, but 128 for corruption or other
+        # failures. An unreadable established history must remain an error.
+        return reference.returncode == 1
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def command_init(args: argparse.Namespace) -> int:
-    """Build a starting graph out of the repository's own history.
+    """Build project memory from history and a Rust source-code index.
 
     An empty graph is why Byori used to take weeks to become useful: the history
     that explains the code was already in the clone, just not in a form anything
     could traverse. This reads it — deterministically, see cli/archaeology.py —
-    and writes what the history states outright.
+    and writes what the history states outright. Source analysis runs as well,
+    even when the history produced no memories. --skip-code is the explicit
+    history-only path; --dry-run analyzes both without publishing either.
     """
-    from archaeology import ArchaeologyError, excavate  # noqa: PLC0415 - installed beside this file
+    from archaeology import ArchaeologyError, Plan, excavate, read_tracked_paths  # noqa: PLC0415
 
     root = repository_root(pathlib.Path(args.path))
-    registry = ProjectRegistry(default_byori_home())
-    project = registry.find(root)
-    space = args.space or (project or {}).get("space") or memory_space_for_root(root)
-    validate_space(space)
+    home = default_byori_home()
+    space = code_index_space(root, args.space, home)
 
     print("reading %s" % root)
     try:
         plan = excavate(root, root.name, limit=args.limit, max_modules=args.max_modules)
     except ArchaeologyError as exc:
-        # Reported rather than presented as an empty result: "analyzed 0 commits"
-        # reads like a fact about the repository when it is a fact about the run.
-        raise ByoriError(str(exc))
+        if not is_unborn_branch(root):
+            # A failed walk of established history is not an empty history.
+            raise ByoriError(str(exc))
+        print("no commits yet; source files can still be indexed")
+        try:
+            plan = Plan(stats={"commits_scanned": 0, "tracked_files": len(read_tracked_paths(root))})
+        except ArchaeologyError as tracked_error:
+            raise ByoriError(str(tracked_error)) from tracked_error
     stats = plan.stats
 
     print(
@@ -1331,27 +1358,210 @@ def command_init(args: argparse.Namespace) -> int:
         print("  %d merged branches were longer than the walk and were not fully traced"
               % truncated)
 
+    history_failed = 0
     if args.dry_run:
         print("\ndry run: nothing was written to %s" % space)
-        return 0
-    if not plan.nodes:
-        print("\nnothing to write: no history in this repository named an issue, a "
+    elif not plan.nodes:
+        print("\nno history memories to write: no history in this repository named an issue, a "
               "revert, or a decision document")
-        return 0
-
-    writer = MemoryWriter(space, default_byoridb_home())
-    written = writer.write(plan)
-    print(
-        "\nwrote %d memories and %d relations into %s%s"
-        % (
-            written["nodes"],
-            written["edges"],
-            space,
-            "" if not written["failed"] else " (%d skipped, see above)" % written["failed"],
+    else:
+        writer = MemoryWriter(space, default_byoridb_home())
+        try:
+            with graph_lock(home, space):
+                written = writer.write(plan)
+        except Exception as exc:
+            raise ByoriError("could not publish project history: %s" % exc) from exc
+        finally:
+            writer.module._logout()
+        history_failed = written["failed"]
+        print(
+            "\nwrote %d memories and %d relations into %s%s"
+            % (
+                written["nodes"],
+                written["edges"],
+                space,
+                "" if not history_failed else " (%d failed, see above)" % history_failed,
+            )
         )
-    )
-    print("ask an agent why something is the way it is; the evidence is in each memory.")
+        if not history_failed:
+            print("ask an agent why something is the way it is; the evidence is in each memory.")
+
+    if not args.skip_code:
+        print("\nanalyzing source code")
+        code_result = command_index(argparse.Namespace(
+            path=str(root), space=space, indexer=args.indexer,
+            dry_run=args.dry_run, json=args.json, no_cache=args.no_cache,
+            watch=False, interval=2,
+        ))
+        if code_result:
+            return code_result
+    if history_failed:
+        raise ByoriError("project history import is incomplete: %d writes failed; "
+                         "rerun byori init to retry" % history_failed)
     return 0
+
+
+def code_index_space(root: pathlib.Path, explicit: Optional[str], home: pathlib.Path) -> str:
+    """Match the MCP's project-space resolution, keeping checkout identity separate."""
+    override = explicit or os.environ.get("BYORIDB_MEMORY_SPACE", "").strip()
+    if override:
+        return validate_space(override)
+    common = pathlib.Path(git_output(root, "rev-parse", "--git-common-dir"))
+    if not common.is_absolute():
+        common = root / common
+    common = common.resolve()
+    primary = common.parent if common.name == ".git" else common
+    registry = ProjectRegistry(home)._load()
+    for key in ("projects", "removed_projects"):
+        for candidate in (root, primary):
+            for item in registry[key]:
+                if item.get("root") == str(candidate):
+                    return validate_space(item.get("space", ""))
+    return memory_space_for_root(primary)
+
+
+def code_indexer_binary(explicit: Optional[str] = None) -> pathlib.Path:
+    """Never build or download executables implicitly while indexing a repository."""
+    requested = explicit or os.environ.get("BYORI_INDEXER")
+    if requested:
+        candidate = pathlib.Path(requested).expanduser()
+        if not candidate.is_file() or not os.access(candidate, os.X_OK):
+            raise ByoriError("indexer is not executable: %s" % candidate)
+        return candidate.resolve()
+    source_root = pathlib.Path(__file__).resolve().parents[1]
+    candidates = [
+        source_root / "indexer" / "target" / "release" / "byori-indexer",
+        source_root / "indexer" / "target" / "debug" / "byori-indexer",
+        source_root / "bin" / "byori-indexer",  # app bundle's matching runtime
+        default_byoridb_home() / "bin" / "byori-indexer",
+    ]
+    on_path = shutil.which("byori-indexer")
+    if on_path:
+        candidates.append(pathlib.Path(on_path))
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate.resolve()
+    raise ByoriError(
+        "byori-indexer is not installed. Reinstall the Byori runtime, or build it "
+        "with `cargo build --release --locked --manifest-path indexer/Cargo.toml` "
+        "and pass --indexer PATH."
+    )
+
+
+def run_code_indexer(
+    binary: pathlib.Path, root: pathlib.Path, cache: pathlib.Path, no_cache: bool,
+) -> Dict[str, Any]:
+    argv = [str(binary), "index", "--root", str(root), "--cache-dir", str(cache)]
+    if no_cache:
+        argv.append("--no-cache")
+    environment = os.environ.copy()
+    for key in SECRET_ENV_KEYS:
+        environment.pop(key, None)
+    # Source analysis has no reason to receive database credentials. Spool the
+    # graph to disk so a large index does not deadlock on a full pipe.
+    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+        try:
+            child = subprocess.Popen(argv, cwd=str(root), env=environment,
+                                     stdout=output, stderr=errors)
+            try:
+                returncode = child.wait(timeout=600)
+            except BaseException:
+                child.kill()
+                child.wait()
+                raise
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ByoriError("code indexer failed: %s" % exc) from exc
+        errors.seek(0)
+        detail = errors.read(16_384).decode("utf-8", errors="replace").strip()
+        if returncode:
+            raise ByoriError("code indexer exited %s: %s" % (returncode, detail))
+        # On success the indexer's diagnostics are in the JSON payload. Emit
+        # them only with a new snapshot, not on every unchanged watch poll.
+        if output.tell() > 256 * 1024 * 1024:
+            raise ByoriError("code index exceeds the 256 MiB import limit")
+        output.seek(0)
+        try:
+            payload = json.load(output)
+        except (ValueError, UnicodeError) as exc:
+            raise ByoriError("code indexer returned invalid JSON: %s" % exc) from exc
+    expected_checkout = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
+    if (not isinstance(payload, dict) or payload.get("format_version") != 1
+            or payload.get("root") != str(root)
+            or payload.get("checkout_id") != expected_checkout):
+        raise ByoriError("code indexer returned an incompatible format or a different checkout")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("snapshot_id", ""))):
+        raise ByoriError("code indexer returned an invalid snapshot identity")
+    return payload
+
+
+def command_index(args: argparse.Namespace) -> int:
+    """Analyze sources in Rust, then publish an isolated graph through the MCP runtime."""
+    if not 1 <= args.interval <= 3600:
+        raise ByoriError("--interval must be between 1 and 3600 seconds")
+    root = repository_root(pathlib.Path(args.path))
+    home = default_byori_home()
+    checkout = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
+    space = code_index_space(root, args.space, home)
+    binary = code_indexer_binary(args.indexer)
+    cache = ensure_private_dir(home / "indexes" / checkout)
+    writer = None
+    previous = None
+    try:
+        while True:
+            # Serialize cache access as well as imports for this checkout, but
+            # never hold either lock while waiting for the next watch interval.
+            with FileLock(home / "locks" / ("index-%s.lock" % checkout)):
+                payload = run_code_indexer(binary, root, cache, args.no_cache)
+                identity = (payload["snapshot_id"], payload.get("revision", ""))
+                if identity != previous:
+                    stored = None
+                    if not args.dry_run:
+                        if writer is None:
+                            writer = MemoryWriter(space, default_byoridb_home())
+                        if not hasattr(writer.module, "store_code_index"):
+                            raise ByoriError("installed MCP runtime lacks code indexing; update Byori")
+                        try:
+                            with graph_lock(home, space):
+                                stored = writer.module.store_code_index(payload)
+                        except Exception as exc:
+                            raise ByoriError("could not publish code index: %s" % exc) from exc
+                    report = {
+                        "root": str(root), "space": space, "checkout_id": checkout,
+                        "snapshot_id": payload["snapshot_id"],
+                        "revision": payload.get("revision", ""), "dry_run": args.dry_run,
+                        "stats": payload.get("stats", {}),
+                        "diagnostics": payload.get("diagnostics", []), "stored": stored,
+                    }
+                    if args.json:
+                        # --watch --json is a stream of one JSON object per published snapshot.
+                        print(json.dumps(report, ensure_ascii=False), flush=True)
+                    else:
+                        stats = report["stats"]
+                        print(
+                            "%s %s: %s files, %s symbols, %s resolved / %s unresolved references"
+                            % ("analyzed" if args.dry_run else "indexed", root,
+                               stats.get("files", len(payload.get("files", []))),
+                               stats.get("symbols", len(payload.get("symbols", []))),
+                               stats.get("resolved_references", 0),
+                               stats.get("unresolved_references", 0)), flush=True,
+                        )
+                        print("  checkout %s · snapshot %s · space %s"
+                              % (checkout, payload["snapshot_id"][:12], space), flush=True)
+                        print("  parsed %s · cached %s"
+                              % (stats.get("parsed_files", 0), stats.get("cached_files", 0)),
+                              flush=True)
+                        for diagnostic in report["diagnostics"][:20]:
+                            print("  %s: %s" % (diagnostic.get("file", ""),
+                                                  diagnostic.get("message", "")), file=sys.stderr)
+                        if len(report["diagnostics"]) > 20:
+                            print("  more diagnostics available with --json", file=sys.stderr)
+                    previous = identity
+            if not args.watch:
+                return 0
+            time.sleep(args.interval)
+    finally:
+        if writer is not None:
+            writer.module._logout()
 
 
 def command_doctor(args: argparse.Namespace) -> int:
@@ -1736,7 +1946,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     init = commands.add_parser(
         "init",
-        help="build a starting project graph from this repository's history",
+        help="analyze repository history and source code into the project graph",
     )
     init.add_argument("path", nargs="?", default=".")
     init.add_argument("--space", help="write into this memory space instead of the project's")
@@ -1749,8 +1959,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="how many directories to record as modules, busiest first (default: 60)",
     )
     init.add_argument("--dry-run", action="store_true", help="show what would be written")
-    init.add_argument("--json", action="store_true", help="also print the plan as JSON")
+    init.add_argument("--json", action="store_true",
+                      help="also print the history plan and code-index report as JSON, alongside progress text")
+    init.add_argument("--skip-code", action="store_true", help="analyze history only; skip the Rust source indexer")
+    init.add_argument("--indexer", help="path to the byori-indexer executable")
+    init.add_argument("--no-cache", action="store_true", help="reparse every supported source file")
     init.set_defaults(handler=command_init)
+
+    index = commands.add_parser(
+        "index", help="index Python, Swift, JavaScript/TypeScript and Rust into ByoriDB",
+    )
+    index.add_argument("path", nargs="?", default=".")
+    index.add_argument("--space", help="write into this memory space instead of the project's")
+    index.add_argument("--indexer", help="path to the byori-indexer executable")
+    index.add_argument("--dry-run", action="store_true", help="analyze without writing to ByoriDB")
+    index.add_argument("--json", action="store_true", help="print machine-readable result (JSONL in watch mode)")
+    index.add_argument("--no-cache", action="store_true", help="reparse every supported file")
+    index.add_argument("--watch", action="store_true", help="keep indexing changes until interrupted")
+    index.add_argument("--interval", type=float, default=2, help="watch polling interval in seconds (1..3600)")
+    index.set_defaults(handler=command_index)
 
     open_command = commands.add_parser(
         "open",

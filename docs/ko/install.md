@@ -57,6 +57,7 @@ ByoriDB 지식 그래프를 공유한다.
 ```sh
 install.sh [--no-hooks] [--with-bulk-read-hook] [--tag vX.Y.Z]
            [--engine-tag vX.Y.Z|latest] [--uninstall] [--binary PATH] [--assets DIR]
+           [--indexer-binary PATH]
            [--no-service] [--no-claude] [--no-codex]
 ```
 
@@ -89,6 +90,9 @@ install.sh [--no-hooks] [--with-bulk-read-hook] [--tag vX.Y.Z]
   **데이터는 확인 후 보존/삭제 선택.** merge되지 않은 사용자 변경이 있을 수 있어
   `~/.byori`의 오케스트레이션 record와 worktree는 보존한다.
 - `--binary PATH` — 다운로드 대신 로컬 `byoridb-server` 바이너리 사용.
+- `--indexer-binary PATH` — 로컬 `byori-indexer` 실행 파일 사용. 온라인 설치는 릴리스의
+  사전 빌드 파일과 SHA-256을 내려받아 검증합니다. 소스 `--assets` 설치는 먼저
+  `scripts/build-indexer.sh`를 실행해야 하며, 앱 번들에는 실행 파일이 포함됩니다.
 - `--assets DIR` — 다운로드 대신 로컬 repo 체크아웃(`DIR`)에서 CLI/mcp.py/템플릿/스킬을 가져옴.
 - `--no-service` — launchd/systemd 등록 없이 현재 세션의 background process로 실행.
 - `--no-claude` — Claude MCP 등록, skill들, hook 설치를 건너뜀.

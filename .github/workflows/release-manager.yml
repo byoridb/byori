@@ -121,6 +121,7 @@ jobs:
 
       - name: Build signed universal Byori DMG
         run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
           scripts/build-macos-dmg.sh \
             --version "${{ steps.release.outputs.version }}" \
             --universal \
@@ -150,12 +151,15 @@ jobs:
           tag="v${{ steps.release.outputs.version }}"
           dmg="dist/Byori-${{ steps.release.outputs.version }}-universal.dmg"
           test -f "$dmg"
+          prerelease=false
+          case "$tag" in *-*) prerelease=true ;; esac
           # Normally the other workflow has already created the draft. Create it
           # here when this job won the race, or when dispatched by hand against
           # a tag that has no release yet.
           gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
             || gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
-                 --draft --generate-notes --title "$tag"
+                 --draft --generate-notes --title "$tag" --prerelease="$prerelease" \
+            || gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null
           gh release upload "$tag" "$dmg" --clobber --repo "$GITHUB_REPOSITORY"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -173,8 +177,25 @@ jobs:
           # without a DMG is the exact state this ordering exists to prevent.
           # `--draft` is only honoured on a release that is still a draft, so
           # this also covers a re-run against an already published one.
-          assets=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
-            --json assets --jq '[.assets[].name] | join(" ")')
+          # The native-indexer matrix in Release can finish after the DMG.
+          # Wait for its assets before making the installer visible to users.
+          for attempt in $(seq 1 90); do
+            assets=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
+              --json assets --jq '[.assets[].name] | join(" ")')
+            missing=0
+            for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu; do
+              for suffix in tar.gz tar.gz.sha256; do
+                case " $assets " in
+                  *" byori-indexer-${target}.${suffix} "*) ;;
+                  *) missing=1 ;;
+                esac
+              done
+            done
+            case " $assets " in *" install.sh "*) ;; *) missing=1 ;; esac
+            [ "$missing" = 0 ] && break
+            sleep 10
+          done
+          [ "$missing" = 0 ] || { echo "::error::native indexer release assets are incomplete"; exit 1; }
           echo "assets: $assets"
           case " $assets " in
             *" install.sh "*) ;;

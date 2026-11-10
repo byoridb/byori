@@ -13,7 +13,7 @@
 Every coding agent forgets. Your project shouldn't.
 
 ```text
-$ byori init                       # reads the repository's own history
+$ byori init                       # reads Git history and indexes source code
 analyzed
   11,814 commits · 1,858 tracked files · 1,042 pull requests
 discovered
@@ -53,7 +53,7 @@ cites a commit, and last year's decision presented as current is worse than no a
 
 | | |
 |---|---|
-| **`byori init`** | Builds the starting graph from Git alone — issue trailers, reverts, pull requests, ADRs, the directory tree. Deterministic: no model, no guessed causes, and the commit or document behind every memory recorded with it. |
+| **`byori init`** | Reads Git history — issue trailers, reverts, pull requests, ADRs — then runs the Rust source indexer for Python, Swift, JS/TS, and Rust. Deterministic: no model, with commit/document evidence and source locations. |
 | **`memory_why`** | An MCP tool any agent can call. The *server* assembles the answer — cause, what resolved it, what it superseded, what superseded it, evidence — so a model cannot summarise the evidence away. |
 | **ByoriDB** | The local graph engine underneath: typed causal edges, provenance, bitemporal history, `AS OF`. |
 | **The workspace** | A native macOS app that runs Claude Code, Codex and a plain terminal over per-project memory. It exists so the graph keeps being written; it is not the point. |
@@ -72,15 +72,17 @@ workspace. It keeps project decisions and rationale, module relationships, recur
 incidents, resolutions, and task checkpoints available across agents and sessions. **Byori** is
 the product, **ByoriDB** is its graph engine, and **`byori`** is the command-line interface.
 
-Knowledge is captured by the agent at checkpoints, not extracted automatically from every turn,
-so the graph grows as you work rather than on first install. Automatic repository ingestion is
-still under development; see [current limitations](#current-limitations).
+Agents capture durable knowledge at checkpoints. `byori init` imports Git history and ADRs
+and automatically indexes Python, Swift, JavaScript/TypeScript, and Rust source. `byori index`
+refreshes just the source-code graph.
+See [source code indexing](docs/code-index.md) for setup and resolution limits.
 
 > [!WARNING]
 > Byori is currently an early experiment. The native macOS workspace MVP, real interactive PTY,
-> local single-node ByoriDB setup, MCP surface, schema v2 (notes plus the typed wiki), and a
+> local single-node ByoriDB setup, MCP surface, schema v3 (notes, typed wiki, code indexes), and a
 > separate foreground multi-CLI prototype are implemented. Retained terminal sessions require
-> tmux 3.2 or later; without it they end with the app. Automatic repository ingestion is still under development.
+> tmux 3.2 or later; without it they end with the app. Code indexing is explicit and static;
+> unresolved references remain visible rather than being presented as known relationships.
 > Do not use Byori as the only copy of important data.
 
 ## Workspace model
@@ -140,7 +142,7 @@ validated engine release. Raw terminal prompts and transcripts are not stored in
 # 1. install the runtime (engine, MCP server, CLI, skills, checkpoint hooks)
 curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh | bash
 
-# 2. build this project's memory from its own history
+# 2. analyze this project's history and source code
 cd ~/code/your-project
 byori init
 
@@ -154,8 +156,8 @@ byori doctor
 The installer links `byori` into `~/.local/bin`; if that is not on your `PATH` yet, it prints the line
 to add. It never edits your shell profile. `~/.byoridb/bin/byori` always works too.
 
-`byori init` is deterministic and idempotent: it reads Git, never a model, and re-running updates the
-memories it already wrote instead of duplicating them. `byori doctor` checks the engine, its service,
+`byori init` is deterministic and idempotent: it reads Git and source code, never a model. Re-running
+updates history memories and reuses unchanged files' parse cache. `byori doctor` checks the engine, its service,
 the credential, this project's memory and the agent wiring, and prints the command that fixes whatever
 failed.
 
@@ -167,8 +169,21 @@ byori                              # same as `byori open .`
 ```
 
 That registers the checkout and brings the app forward on it, and when its graph is empty the app
-offers to read the repository's history right there. The same offer appears whenever a project is
+offers to analyze the repository's history and source right there. The same offer appears whenever a project is
 added in the app, and every project row keeps it in the context menu.
+
+### Index source structure
+
+```bash
+byori index .                       # Python, Swift, JS/TS (including JSX/TSX), Rust
+byori index . --watch --interval 5  # refresh while this foreground command runs
+```
+
+The Rust Tree-sitter indexer stores source locations, symbols, imports, and resolved
+calls in ByoriDB without an LLM. Agents use `code_status`, `code_search`,
+`code_relations`, and `code_impact` through the existing MCP connection. Each
+worktree has its own snapshot; unchanged files reuse the parse cache. See the
+[code-index guide](docs/code-index.md) for source builds, limits, and examples.
 
 ### Byori macOS app
 
@@ -205,7 +220,9 @@ below.
 <details>
 <summary>Build from source instead</summary>
 
-Requires Xcode Command Line Tools. The version defaults to the current git tag.
+Requires Xcode Command Line Tools and Rust 1.90 or later. Universal builds also need
+`rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
+The version defaults to the current git tag.
 
 ```bash
 git clone https://github.com/byoridb/byori.git && cd byori
@@ -389,7 +406,7 @@ mixing between clients or projects. A space is a logical namespace, not an autho
 separate trust domains require separate instances and credentials. See the
 [engine contract](docs/engine-contract.md) for input limits and the exact profile boundary.
 
-At startup, writer profiles automatically migrate the space to the current memory schema (v2);
+At startup, writer profiles automatically migrate the space to the current memory schema (v3);
 `readonly` only checks that version. The writer bootstrap creates both the `note`/`rel` layer for
 standalone facts and the typed-wiki layer made up
 of `module`/`decision`/`bug`/`incident`/`concept`/`entity`/`task` plus causal edges. See the
@@ -416,7 +433,10 @@ documentation for the engine's feature set and constraints.
 
 ## Current limitations
 
-- There is no ingestion pipeline yet that automatically turns repositories, documents, symbols, and git diffs into a graph.
+- Source indexing supports Python, Swift, JS/TS, and Rust with conservative static resolution;
+  LSP enrichment, general document ingestion, and automatic test selection are not implemented.
+- Code watch mode is a foreground polling command. Changed graphs publish complete snapshots,
+  and old database snapshots are retained without automatic garbage collection.
 - Capture is performed by the agent at checkpoints rather than extracted automatically on every turn.
 - The default `memory_recall` searches substrings in note names and bodies; it does not use the engine's vector search.
 - There is no checkpoint hook for Codex or NaraeClaw; the bundled reminder hook is Claude Code-only.
@@ -431,7 +451,7 @@ documentation for the engine's feature set and constraints.
 The native project workspace is the primary product surface. The separate cross-platform `byori`
 CLI prototype covers provider discovery, trusted project registration, explicit foreground runs,
 and run inspection; its management commands will converge with the Byori macOS app's shared core.
-Automatic ingestion and ranked graph recall remain future work. Engine compatibility is gated by
+Broader ingestion and ranked graph recall remain future work. Engine compatibility is gated by
 the [contract](docs/engine-contract.md) and a CI smoke test; see
 [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -442,6 +462,7 @@ and are linked from every translated page. Executable adapter skills remain Engl
 quoted Korean phrases in the Claude/Codex skill are intentional multilingual trigger examples.
 
 - [Installation and management](docs/install.md)
+- [Source code indexing](docs/code-index.md)
 - [Multi-CLI orchestration](docs/orchestration.md)
 - [Byori macOS app](docs/manager-macos.md)
 - [Agent adapter assets (skill/hooks)](adapters/README.md)

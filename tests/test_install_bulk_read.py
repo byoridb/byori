@@ -42,6 +42,9 @@ class BulkReadInstallerTests(unittest.TestCase):
         self.stub_directory.mkdir()
         self.home = self.root / "home"
         self.home.mkdir()
+        self.indexer = self.root / "byori-indexer"
+        self.indexer.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        self.indexer.chmod(0o755)
 
     def run_installer(self, *arguments):
         stub = self.stub_directory / "curl"
@@ -62,7 +65,7 @@ class BulkReadInstallerTests(unittest.TestCase):
             HOME=str(self.home),
         )
         return subprocess.run(
-            ["bash", str(INSTALLER), "--assets", str(ROOT), "--no-codex", "--no-service", *arguments],
+            ["bash", str(INSTALLER), "--assets", str(ROOT), "--indexer-binary", str(self.indexer), "--no-codex", "--no-service", *arguments],
             env=environment,
             cwd=self.root,
             stdout=subprocess.PIPE,

@@ -231,17 +231,17 @@ struct WorkspaceView<TerminalHost: View>: View {
         // Asked once, right after the repository is added, and never for a project
         // that already remembers something.
         .confirmationDialog(
-            "히스토리로 기억을 만들까요?",
+            "프로젝트를 분석할까요?",
             isPresented: projectMemoryOfferPresentation,
             titleVisibility: .visible,
             presenting: model.projectMemoryOffer
         ) { offer in
-            Button("기억 만들기") {
+            Button("프로젝트 분석") {
                 Task { await model.acceptProjectMemoryOffer(offer) }
             }
             Button("나중에", role: .cancel) { model.declineProjectMemoryOffer() }
         } message: { offer in
-            Text("\(offer.projectName)의 기억이 비어 있습니다. 커밋이 참조한 이슈, 되돌린 변경, PR, 결정 문서를 읽어 시작 그래프를 만듭니다. 추론은 하지 않고 각 기억은 근거가 된 커밋·문서를 함께 기록하며, 저장소는 읽기만 합니다. 큰 저장소는 몇 분 걸리고, 나중에 Context 탭에서 다시 실행할 수 있습니다.")
+            Text("\(offer.projectName)의 Git 이력·결정 문서와 소스 코드를 함께 분석합니다. Python·Swift·JavaScript/TypeScript·Rust의 심볼과 확인 가능한 호출·의존 관계를 저장하고, 과거 결정에는 근거가 된 커밋·문서를 남깁니다. 소스 파일은 변경하지 않습니다. 큰 저장소는 몇 분 걸리며 나중에 다시 실행할 수 있습니다.")
         }
     }
 
@@ -981,7 +981,7 @@ private struct WorkspaceSidebarRow: View {
         if let projectID = node.addSourceTreeProjectID {
             // Reachable without opening the Context tab: someone who already knows
             // what this does should not have to go looking for the empty state.
-            Button("히스토리로 기억 만들기") { buildMemory(projectID) }
+            Button("프로젝트 분석") { buildMemory(projectID) }
                 .disabled(isMutatingWorkspace)
             Button("Add Source Tree…") { addSourceTree(projectID) }
                 .disabled(isMutatingWorkspace)
@@ -1553,6 +1553,27 @@ private struct WorkspaceInspector: View {
 
     @ViewBuilder
     private var contextContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let summary = model.selectedProjectMemorySummary {
+                DisclosureGroup("최근 프로젝트 분석 결과") {
+                    ScrollView {
+                        Text(summary)
+                            .font(.caption)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 180)
+                }
+                .font(.caption)
+                .padding(12)
+                Divider()
+            }
+            contextContentBody
+        }
+    }
+
+    @ViewBuilder
+    private var contextContentBody: some View {
         switch model.contextPhase {
         case .loading:
             WorkspaceUnavailableView(
@@ -1587,14 +1608,18 @@ private struct WorkspaceInspector: View {
                 WorkspaceUnavailableView(
                     icon: "clock.arrow.circlepath",
                     title: model.isBuildingProjectMemory
-                        ? "히스토리를 읽고 있습니다"
-                        : "이 프로젝트의 기억이 비어 있습니다",
+                        ? "프로젝트를 분석하고 있습니다"
+                        : (model.selectedProjectMemorySummary != nil
+                           ? "기록된 결정·이력이 없습니다"
+                           : "이 프로젝트의 기억이 비어 있습니다"),
                     detail: model.isBuildingProjectMemory
-                        ? "커밋·PR·이슈·결정 문서에서 그래프를 만들고 있습니다. 큰 저장소는 몇 분 걸립니다."
-                        : "커밋이 참조한 이슈, 되돌린 변경, PR, 결정 문서로 시작 그래프를 만들 수 있습니다. "
-                          + "추론은 하지 않고, 각 기억은 근거가 된 커밋·문서를 함께 기록합니다.",
+                        ? "Git 이력과 소스 코드의 심볼·호출·의존 관계를 분석하고 있습니다. 큰 저장소는 몇 분 걸립니다."
+                        : (model.selectedProjectMemorySummary != nil
+                           ? "소스 코드 분석은 완료했습니다. 위에서 분석 결과를 확인하고, 에이전트의 코드 조회 도구로 코드 구조를 탐색할 수 있습니다."
+                           : "Git 이력·결정 문서와 Python·Swift·JavaScript/TypeScript·Rust 코드를 함께 분석합니다. "
+                             + "과거 결정의 근거와 현재 코드 구조를 프로젝트 기억에 저장합니다."),
                     showsProgress: model.isBuildingProjectMemory,
-                    primaryTitle: model.isBuildingProjectMemory ? nil : "히스토리로 기억 만들기",
+                    primaryTitle: model.isBuildingProjectMemory ? nil : "프로젝트 분석",
                     primaryAction: model.isBuildingProjectMemory
                         ? nil
                         : { Task { await model.buildProjectMemory() } }

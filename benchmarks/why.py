@@ -62,12 +62,12 @@ def load_mcp(space):
 
 
 def ingest(repository, space, limit):
-    """Run `byori init` into `space`, the way a new user would."""
+    """Measure historical-evidence ingestion, excluding unrelated source analysis."""
     started = time.time()
     result = subprocess.run(
         [
             sys.executable, str(ROOT / "cli" / "byori.py"), "init", str(repository),
-            "--space", space, "--limit", str(limit),
+            "--space", space, "--limit", str(limit), "--skip-code",
         ],
         check=False,
         stdout=subprocess.PIPE,

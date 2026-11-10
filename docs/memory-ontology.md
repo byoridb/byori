@@ -5,8 +5,9 @@
 > Status: **design and dogfood PoC validation complete**. This document defines the durable
 > knowledge layer beneath the Byori multi-agent workspace: selected project facts accumulate at
 > explicit checkpoints and can be read as a connected wiki. Since v0.2.0, the typed wiki schema
-> in §4 is automatically bootstrapped or migrated as schema v2 when the MCP starts. Automatic
-> repository or transcript ingestion is not implemented. Origin:
+> in §4 was introduced as schema v2. The current MCP also applies the additive v3 source-code
+> graph migration. `byori index` and its foreground watch mode analyze Python, Swift, JS/TS,
+> and Rust; transcript ingestion is not implemented. See [code indexing](code-index.md). Origin:
 > conversation on 2026-07-11 (file memory vs. graph memory → typed knowledge-graph vision).
 
 ---

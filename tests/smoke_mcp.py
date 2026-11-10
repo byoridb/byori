@@ -4,7 +4,7 @@
 Covers the MCP/engine surface used by Byori:
   remember (INSERT VERTEX/EDGE, non-negative VID) -> recall (MATCH/CONTAINS)
   -> graph projections (id/ORDER BY/LIMIT/OFFSET) -> typed wiki bootstrap
-  (schema v2 + structured upsert/read/link roundtrip) -> Manager typed graph
+  (schema v3 + structured upsert/read/link roundtrip) -> Manager typed graph
   projection (tag-only node MATCH, untyped-endpoint edge MATCH with a
   visible-ID WHERE filter, module summary lazy-load) -> read-only query
   (FETCH ... AS OF temporal read + mutation denial) -> safe and readonly profile filtering.
@@ -111,6 +111,7 @@ def main():
     structured_tools = {
         "memory_query_read", "memory_wiki_upsert", "memory_link",
         "memory_read", "memory_delete", "memory_export",
+        "code_status", "code_search", "code_relations", "code_impact",
     }
     assert legacy_tools | structured_tools <= tools, f"FAIL: legacy tools={tools}"
     print("ok tools/list (legacy compatibility + structured tools)")
@@ -173,14 +174,14 @@ def main():
     print("ok graph edge projection")
 
     # typed wiki bootstrap: _ensure_ready migrated the fresh space to schema
-    # v2 and stamped the version note.
+    # v3 and stamped the version note.
     ver_rows = query_rows(
         f"MATCH (n:note) WHERE id(n) == {expected_vid('byori:schema-version')} "
         "RETURN n.note.body AS body LIMIT 1",
         ["body"],
     )
-    assert ver_rows and ver_rows[0]["body"] == "2", f"FAIL: schema version: {ver_rows}"
-    print("ok schema version note (v2)")
+    assert ver_rows and ver_rows[0]["body"] == "3", f"FAIL: schema version: {ver_rows}"
+    print("ok schema version note (v3)")
 
     # Byori v0.2.0 taught clients to raw-insert typed nodes at a 60-bit VID.
     # The structured API must discover that node by canonical name and keep its
@@ -440,7 +441,7 @@ def main():
     proc.wait(timeout=5)
     print("ok safe profile filtering")
 
-    # The readonly profile advertises and dispatches only the four read tools.
+    # The readonly profile advertises and dispatches only read tools.
     proc = start_mcp("readonly")
     _id = 0
     call("initialize", {
@@ -452,6 +453,7 @@ def main():
         # Answering "why" reads and traverses; a worker needs it for the recall it
         # is supposed to do before working.
         "memory_why",
+        "code_status", "code_search", "code_relations", "code_impact",
     }
     discovered = {t["name"] for t in call("tools/list")["tools"]}
     assert discovered == readonly_tools, f"FAIL: readonly tools={discovered}"

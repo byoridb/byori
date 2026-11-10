@@ -156,6 +156,8 @@ fi
 [ -f "$PACKAGE_DIR/Package.swift" ] || die "Package.swift not found in $PACKAGE_DIR"
 [ -f "$REPO_ROOT/install.sh" ] || die "missing installer: install.sh"
 [ -f "$REPO_ROOT/mcp/byoridb_mcp.py" ] || die "missing MCP bridge: mcp/byoridb_mcp.py"
+[ -f "$REPO_ROOT/mcp/code_graph.py" ] || die "missing code graph bridge: mcp/code_graph.py"
+[ -f "$REPO_ROOT/indexer/Cargo.lock" ] || die "missing indexer Cargo.lock"
 [ -f "$REPO_ROOT/cli/byori.py" ] || die "missing multi-agent CLI: cli/byori.py"
 [ -f "$REPO_ROOT/cli/archaeology.py" ] || die "missing archaeology reader: cli/archaeology.py"
 [ -f "$REPO_ROOT/cli/doctor.py" ] || die "missing doctor checks: cli/doctor.py"
@@ -193,7 +195,7 @@ for asset in "${BULK_READ_ASSETS[@]}"; do
   [ -f "$REPO_ROOT/$asset" ] || die "missing bulk-read asset: $asset"
 done
 
-for tool in codesign ditto hdiutil install lipo plutil sed strip xattr xcrun; do
+for tool in cargo codesign ditto hdiutil install lipo plutil python3 sed strip xattr xcrun; do
   need "$tool"
 done
 SWIFT="$(xcrun --find swift)"
@@ -232,7 +234,7 @@ CONTENTS="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS/MacOS"
 RESOURCES_DIR="$CONTENTS/Resources"
 RUNTIME_DIR="$RESOURCES_DIR/runtime"
-mkdir -p "$MACOS_DIR" "$RUNTIME_DIR/mcp" "$RUNTIME_DIR/cli" \
+mkdir -p "$MACOS_DIR" "$RUNTIME_DIR/mcp" "$RUNTIME_DIR/cli" "$RUNTIME_DIR/bin" \
   "$RUNTIME_DIR/adapters/claude/skills/byoridb-memory" \
   "$RUNTIME_DIR/adapters/claude/skills/byori-design/agents"
 for asset in "${BULK_READ_ASSETS[@]}"; do
@@ -297,9 +299,44 @@ else
   build_arch "$ARCH" "$MACOS_DIR/$EXECUTABLE_NAME"
 fi
 
+build_indexer_arch() {
+  local target_arch="$1"
+  local destination="$2"
+  local rust_target
+  case "$target_arch" in
+    arm64) rust_target=aarch64-apple-darwin ;;
+    x86_64) rust_target=x86_64-apple-darwin ;;
+    *) die "unsupported code indexer architecture: $target_arch" ;;
+  esac
+  # Rust target components must be installed by the builder, not downloaded by
+  # an app user's runtime installer. rustup target add <target> prepares them.
+  MACOSX_DEPLOYMENT_TARGET=13.0 CARGO_TARGET_DIR="$WORK_DIR/rust-target" \
+    "$REPO_ROOT/scripts/build-indexer.sh" --target "$rust_target" --output "$destination"
+}
+
+log "Building code indexer for $ARCH"
+if [ "$ARCH" = universal ]; then
+  build_indexer_arch arm64 "$WORK_DIR/byori-indexer-arm64"
+  build_indexer_arch x86_64 "$WORK_DIR/byori-indexer-x86_64"
+  lipo -create "$WORK_DIR/byori-indexer-arm64" "$WORK_DIR/byori-indexer-x86_64" \
+    -output "$RUNTIME_DIR/bin/byori-indexer"
+  INDEXER_ARCHS="$(lipo -archs "$RUNTIME_DIR/bin/byori-indexer")"
+  [[ " $INDEXER_ARCHS " = *" arm64 "* && " $INDEXER_ARCHS " = *" x86_64 "* ]] || \
+    die "universal code indexer validation failed (found: $INDEXER_ARCHS)"
+else
+  build_indexer_arch "$ARCH" "$RUNTIME_DIR/bin/byori-indexer"
+fi
+if [ "$ARCH" = universal ]; then
+  install -m 644 "$WORK_DIR/THIRD_PARTY_LICENSES.txt" "$RUNTIME_DIR/INDEXER_LICENSES.txt"
+else
+  mv "$RUNTIME_DIR/bin/THIRD_PARTY_LICENSES.txt" "$RUNTIME_DIR/INDEXER_LICENSES.txt"
+fi
+chmod 755 "$RUNTIME_DIR/bin/byori-indexer"
+
 log "Copying installer, MCP, multi-agent CLI, templates, and agent resources"
 install -m 755 "$REPO_ROOT/install.sh" "$RUNTIME_DIR/install.sh"
 install -m 644 "$REPO_ROOT/mcp/byoridb_mcp.py" "$RUNTIME_DIR/mcp/byoridb_mcp.py"
+install -m 644 "$REPO_ROOT/mcp/code_graph.py" "$RUNTIME_DIR/mcp/code_graph.py"
 install -m 644 "$REPO_ROOT/cli/byori.py" "$RUNTIME_DIR/cli/byori.py"
 install -m 644 "$REPO_ROOT/cli/archaeology.py" "$RUNTIME_DIR/cli/archaeology.py"
 install -m 644 "$REPO_ROOT/cli/doctor.py" "$RUNTIME_DIR/cli/doctor.py"
@@ -354,8 +391,10 @@ log "Signing app with ${SIGN_IDENTITY:-- (ad hoc)}"
 chmod -R u+w "$APP_BUNDLE"
 xattr -cr "$APP_BUNDLE"
 if [ "$SIGN_IDENTITY" = "-" ]; then
+  codesign --force --sign - "$RUNTIME_DIR/bin/byori-indexer"
   codesign --force --sign - "$APP_BUNDLE"
 else
+  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$RUNTIME_DIR/bin/byori-indexer"
   codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
 fi
 codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"

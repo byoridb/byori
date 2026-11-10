@@ -60,6 +60,7 @@ project's ByoriDB knowledge graph through the Context inspector.
 ```sh
 install.sh [--no-hooks] [--with-bulk-read-hook] [--tag vX.Y.Z]
            [--engine-tag vX.Y.Z|latest] [--uninstall] [--binary PATH] [--assets DIR]
+           [--indexer-binary PATH]
            [--no-service] [--no-claude] [--no-codex]
 ```
 
@@ -98,6 +99,9 @@ install.sh [--no-hooks] [--with-bulk-read-hook] [--tag vX.Y.Z]
   Orchestration records and worktrees under `~/.byori` are preserved because they may contain
   unmerged user changes.
 - `--binary PATH` — uses a local `byoridb-server` binary instead of downloading one.
+- `--indexer-binary PATH` — uses a local `byori-indexer` executable. Online installs
+  download a matching prebuilt archive and verify its release SHA-256 file. Source
+  installs need `scripts/build-indexer.sh` first; bundled app assets include the binary.
 - `--assets DIR` — reads the CLI, mcp.py, templates, and the skills from a local repository
   checkout (`DIR`) instead of downloading them.
 - `--no-service` — runs a background process for the current session without
@@ -313,7 +317,7 @@ env BYORIDB_MCP_PROFILE=safe \
 No NaraeClaw hook is bundled. A space configured only in another host is not automatically
 discovered by the Byori macOS app; its Context inspector uses the selected registered project's
 ByoriDB space. When testing the source tree before a release contains these tools, first install
-it with `./install.sh --assets .`.
+it with `scripts/build-indexer.sh` followed by `./install.sh --assets .`.
 
 ## Limitations
 

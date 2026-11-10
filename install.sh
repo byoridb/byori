@@ -7,7 +7,8 @@
 #   curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh | bash
 #
 # Options: --no-hooks --with-bulk-read-hook --tag vX.Y.Z --engine-tag vX.Y.Z|latest
-#          --uninstall --binary PATH --assets DIR --no-service --no-claude --no-codex
+#          --uninstall --binary PATH --indexer-binary PATH --assets DIR
+#          --no-service --no-claude --no-codex
 #   --no-hooks   skip the Claude checkpoint hooks (installed by default: they are
 #                what makes the memory graph present in a session instead of
 #                something the agent has to remember to look for). Its own axis:
@@ -28,6 +29,10 @@
 #                replace an installed engine with an older one. Refused by default:
 #                the pinned tag is a floor, not an instruction to roll back a data
 #                directory a newer engine has already written.
+#   --indexer-binary PATH
+#                use a local byori-indexer executable. --assets first looks for
+#                bin/byori-indexer, then indexer/target/release/byori-indexer.
+#                Build source assets with scripts/build-indexer.sh before install.
 # Env:     BYORIDB_HOME (~/.byoridb) BYORIDB_HTTP_PORT (19669) BYORIDB_GRAPH_PORT (9669)
 #          BYORIDB_LABEL (com.byoridb.local)
 set -euo pipefail
@@ -54,7 +59,7 @@ CLAUDE_AGENTS_ROOT="${HOME}/.claude/agents"
 
 TAG=""; ENGINE_TAG="${BYORI_ENGINE_TAG:-$ENGINE_TAG_DEFAULT}"
 WITH_HOOKS=1; WITH_BULK_READ_HOOK=0; UNINSTALL=0; BINARY=""; ASSETS=""; NO_SERVICE=0; NO_CLAUDE=0; NO_CODEX=0
-ALLOW_ENGINE_DOWNGRADE=0; SKIP_ENGINE=0
+ALLOW_ENGINE_DOWNGRADE=0; SKIP_ENGINE=0; INDEXER_BINARY=""
 # Whether the engine binary on disk changed in this run. A service reload is only
 # needed when it did — the running server is executing the old one.
 engine_replaced=0
@@ -78,6 +83,7 @@ while [ $# -gt 0 ]; do
     --tag)        TAG="${2:-}"; shift ;;
     --engine-tag) ENGINE_TAG="${2:-}"; shift ;;
     --binary)     BINARY="${2:-}"; shift ;;
+    --indexer-binary) INDEXER_BINARY="${2:-}"; [ -n "$INDEXER_BINARY" ] || die "--indexer-binary requires a path"; shift ;;
     --assets)     ASSETS="${2:-}"; shift ;;
     -h|--help)    grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown option: $1" ;;
@@ -127,7 +133,7 @@ uninstall() {
   fi
   if [ -d "$BYORIDB_HOME/data" ]; then
     printf 'delete data at %s? [y/N] ' "$BYORIDB_HOME/data"; read -r ans </dev/tty || ans=n
-    case "$ans" in y|Y) rm -rf "$BYORIDB_HOME";; *) warn "kept data; removed only bin/scripts"; rm -rf "$BYORIDB_HOME/bin" "$BYORIDB_HOME/byoridb_mcp.py";; esac
+    case "$ans" in y|Y) rm -rf "$BYORIDB_HOME";; *) warn "kept data; removed only bin/scripts"; rm -rf "$BYORIDB_HOME/bin" "$BYORIDB_HOME/byoridb_mcp.py" "$BYORIDB_HOME/code_graph.py";; esac
   else
     rm -rf "$BYORIDB_HOME"
   fi
@@ -209,6 +215,7 @@ chmod 700 "$BYORIDB_HOME" "$BYORIDB_HOME/data" "$BYORIDB_HOME/logs" 2>/dev/null 
 # This keeps a failed download/render/compile from leaving mixed MCP/CLI versions.
 [ -z "$TAG" ] && [ -z "$ASSETS" ] && { TAG="$(resolve_tag)"; [ -n "$TAG" ] || die "could not resolve latest byori release tag"; }
 get "mcp/byoridb_mcp.py" "$WORK/byoridb_mcp.py"
+get "mcp/code_graph.py" "$WORK/code_graph.py"
 get "cli/byori.py" "$WORK/byori.py"
 # byori.py imports this from beside itself; `byori init` is broken without it.
 get "cli/archaeology.py" "$WORK/archaeology.py"
@@ -240,9 +247,60 @@ fi
 render "$WORK/run-server.sh" "$WORK/run-server.rendered.sh"
 render "$WORK/run-mcp.sh" "$WORK/run-mcp.rendered.sh"
 render "$WORK/run-byori.sh" "$WORK/run-byori.rendered.sh"
-"$PYTHON" -m py_compile "$WORK/byoridb_mcp.py" "$WORK/byori.py" "$WORK/archaeology.py" "$WORK/doctor.py"
+"$PYTHON" -m py_compile "$WORK/byoridb_mcp.py" "$WORK/code_graph.py" "$WORK/byori.py" "$WORK/archaeology.py" "$WORK/doctor.py"
 bash -n "$WORK/run-server.rendered.sh" "$WORK/run-mcp.rendered.sh" \
   "$WORK/run-byori.rendered.sh"
+
+# Stage the matching code indexer before replacing any runtime. Source installs
+# deliberately require an explicit build; end users receive a prebuilt binary.
+if [ -n "$INDEXER_BINARY" ]; then
+  [ -f "$INDEXER_BINARY" ] && [ -x "$INDEXER_BINARY" ] || die "indexer is not executable: $INDEXER_BINARY"
+  cp "$INDEXER_BINARY" "$WORK/byori-indexer"
+elif [ -n "$ASSETS" ]; then
+  if [ -x "$ASSETS/bin/byori-indexer" ]; then
+    cp "$ASSETS/bin/byori-indexer" "$WORK/byori-indexer"
+  elif [ -x "$ASSETS/indexer/target/release/byori-indexer" ]; then
+    cp "$ASSETS/indexer/target/release/byori-indexer" "$WORK/byori-indexer"
+  else
+    die "source assets have no byori-indexer; run scripts/build-indexer.sh or pass --indexer-binary PATH"
+  fi
+else
+  indexer_asset="byori-indexer-${TARGET}.tar.gz"
+  indexer_url="https://github.com/${ASSET_REPO}/releases/download/${TAG}/${indexer_asset}"
+  log "downloading code indexer $TAG ($TARGET)"
+  curl -fsSL "$indexer_url" -o "$WORK/indexer.tar.gz" || die "code indexer download failed: $indexer_url"
+  curl -fsSL "${indexer_url}.sha256" -o "$WORK/indexer.sha256" || die "code indexer checksum download failed"
+  "$PYTHON" - "$WORK" <<'PY'
+import hashlib, pathlib, re, sys, tarfile
+work = pathlib.Path(sys.argv[1])
+archive = work / "indexer.tar.gz"
+expected = (work / "indexer.sha256").read_text().split()[0]
+if not re.fullmatch(r"[a-fA-F0-9]{64}", expected):
+    raise SystemExit("invalid code indexer checksum")
+actual = hashlib.sha256(archive.read_bytes()).hexdigest()
+if actual != expected.lower():
+    raise SystemExit("code indexer checksum mismatch")
+with tarfile.open(archive, "r:gz") as bundle:
+    matches = [m for m in bundle.getmembers() if m.name == "byori-indexer"]
+    if len(matches) != 1 or not matches[0].isfile() or matches[0].size > 300_000_000:
+        raise SystemExit("invalid code indexer archive")
+    # Copy one regular member; never extract archive-controlled paths or links.
+    with bundle.extractfile(matches[0]) as source:
+        (work / "byori-indexer").write_bytes(source.read())
+    notices = [m for m in bundle.getmembers() if m.name == "THIRD_PARTY_LICENSES.txt"]
+    if len(notices) != 1 or not notices[0].isfile() or notices[0].size > 10_000_000:
+        raise SystemExit("code indexer archive lacks third-party licenses")
+    with bundle.extractfile(notices[0]) as source:
+        (work / "INDEXER_LICENSES.txt").write_bytes(source.read())
+PY
+fi
+chmod 755 "$WORK/byori-indexer"
+"$WORK/byori-indexer" --help >/dev/null || die "code indexer cannot run on this platform"
+if [ -n "$ASSETS" ] && [ -f "$ASSETS/INDEXER_LICENSES.txt" ]; then
+  cp "$ASSETS/INDEXER_LICENSES.txt" "$WORK/INDEXER_LICENSES.txt"
+elif [ -n "$ASSETS" ] && [ -f "$ASSETS/indexer/target/release/THIRD_PARTY_LICENSES.txt" ]; then
+  cp "$ASSETS/indexer/target/release/THIRD_PARTY_LICENSES.txt" "$WORK/INDEXER_LICENSES.txt"
+fi
 
 # 0) refuse to roll an installed engine backwards.
 #
@@ -426,6 +484,12 @@ fi
 # 2) MCP server + multi-agent CLI + rendered wrappers
 log "installing MCP server + multi-agent CLI + service wrappers"
 cp "$WORK/byoridb_mcp.py" "$BYORIDB_HOME/byoridb_mcp.py"
+cp "$WORK/code_graph.py" "$BYORIDB_HOME/code_graph.py"
+install -m 755 "$WORK/byori-indexer" "$BYORIDB_HOME/bin/.byori-indexer.new"
+mv -f "$BYORIDB_HOME/bin/.byori-indexer.new" "$BYORIDB_HOME/bin/byori-indexer"
+if [ -f "$WORK/INDEXER_LICENSES.txt" ]; then
+  cp "$WORK/INDEXER_LICENSES.txt" "$BYORIDB_HOME/INDEXER_LICENSES.txt"
+fi
 cp "$WORK/byori.py" "$BYORIDB_HOME/bin/byori.py"
 cp "$WORK/archaeology.py" "$BYORIDB_HOME/bin/archaeology.py"
 cp "$WORK/doctor.py" "$BYORIDB_HOME/bin/doctor.py"
