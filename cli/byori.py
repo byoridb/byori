@@ -1163,9 +1163,10 @@ class MemoryWriter:
     canonical name updates its node instead of adding another.
     """
 
-    def __init__(self, space: str, byoridb_home: pathlib.Path):
+    def __init__(self, space: str, byoridb_home: pathlib.Path, profile: str = "safe"):
         self.space = validate_space(space)
         self.byoridb_home = byoridb_home.expanduser().resolve()
+        self.profile = profile
         self.module = self._load_module()
 
     def _load_module(self):
@@ -1188,7 +1189,7 @@ class MemoryWriter:
             ("BYORIDB_MEMORY_SPACE", self.space),
             # Writing needs the full tool surface; `safe` still hides the
             # unrestricted raw-query escape hatch, which init never needs.
-            ("BYORIDB_MCP_PROFILE", "safe"),
+            ("BYORIDB_MCP_PROFILE", self.profile),
         ):
             previous[key] = os.environ.get(key)
             os.environ[key] = value
@@ -1562,6 +1563,57 @@ def command_index(args: argparse.Namespace) -> int:
     finally:
         if writer is not None:
             writer.module._logout()
+
+
+def bounded_code_response(result: Dict[str, Any], action: str, offset: int = 0) -> str:
+    """Stay below the app command runner's 256 KiB output cap, even for long IDs.
+
+    Limits constrain rows, not bytes. A deeply qualified symbol can be many KiB;
+    an explicit shorter page is usable where silently cutting JSON is not.
+    """
+    while True:
+        encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded.encode("utf-8")) <= 192 * 1024:
+            return encoded
+        keys = ("symbols", "relations", "impacted") if action in ("relations", "impact") else (action,)
+        key = next((key for key in keys if result.get(key)), None)
+        if key is None:
+            raise ByoriError("code index response exceeds the display limit")
+        result[key].pop()
+        result["truncated"] = True
+        if action in ("files", "symbols"):
+            result["next_offset"] = offset + len(result[action])
+
+
+def command_code(args: argparse.Namespace) -> int:
+    """Read the persisted index without running an indexer or writing a graph."""
+    root = repository_root(pathlib.Path(args.path))
+    checkout = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
+    space = code_index_space(root, args.space, default_byori_home())
+    query = {"checkout_id": checkout}
+    for key in ("query", "language", "file", "symbol_id", "direction", "kind", "depth", "limit", "offset"):
+        value = getattr(args, key, None)
+        if value is not None:
+            query[key] = value
+    client = None
+    # MCP startup/auth diagnostics belong to its stderr stream. The app's
+    # command runner combines stdout/stderr, so this JSON command deliberately
+    # emits only the result or one explicit failure, never startup chatter.
+    try:
+        with open(os.devnull, "w") as quiet, contextlib.redirect_stderr(quiet):
+            client = MemoryWriter(space, default_byoridb_home(), profile="readonly")
+            if not hasattr(client.module, "read_code_index"):
+                raise ByoriError("installed MCP runtime lacks code browsing; update Byori")
+            result = client.module.read_code_index(args.code_action, query)
+    except ByoriError:
+        raise
+    except Exception as exc:
+        raise ByoriError("could not read code index: %s" % exc) from exc
+    finally:
+        if client is not None:
+            client.module._logout()
+    print(bounded_code_response(result, args.code_action, getattr(args, "offset", 0)))
+    return 0
 
 
 def command_doctor(args: argparse.Namespace) -> int:
@@ -1978,6 +2030,31 @@ def build_parser() -> argparse.ArgumentParser:
     index.add_argument("--watch", action="store_true", help="keep indexing changes until interrupted")
     index.add_argument("--interval", type=float, default=2, help="watch polling interval in seconds (1..3600)")
     index.set_defaults(handler=command_index)
+
+    code = commands.add_parser("code", help="browse the saved code index without re-indexing")
+    code_commands = code.add_subparsers(dest="code_action", required=True)
+    for action in ("status", "files", "symbols", "relations", "impact"):
+        command = code_commands.add_parser(action)
+        command.add_argument("path", nargs="?", default=".")
+        command.add_argument("--space", help="project memory space")
+        command.add_argument("--json", action="store_true", help="emit one JSON response")
+        if action in ("files", "symbols"):
+            command.add_argument("--query", default="")
+            command.add_argument("--language", choices=("python", "swift", "javascript", "typescript", "rust"))
+            command.add_argument("--offset", type=int, default=0)
+        if action != "status":
+            command.add_argument("--limit", type=int, default=50)
+        if action == "symbols":
+            command.add_argument("--file")
+            command.add_argument("--symbol-id")
+        if action in ("relations", "impact"):
+            command.add_argument("--symbol-id", required=True)
+        if action == "relations":
+            command.add_argument("--direction", choices=("incoming", "outgoing"), default="outgoing")
+            command.add_argument("--kind", choices=("calls", "imports"), default="calls")
+        if action == "impact":
+            command.add_argument("--depth", type=int, default=3)
+        command.set_defaults(handler=command_code)
 
     open_command = commands.add_parser(
         "open",

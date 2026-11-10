@@ -328,6 +328,12 @@ class CodeGraph:
             "diagnostics": displayed_diagnostics, "diagnostics_count": len(diagnostics),
             "diagnostics_truncated": displayed_diagnostics != diagnostics,
             "languages": sorted({f["language"] for f in payload["files"]}),
+            "language_stats": {
+                language: {
+                    "files": sum(f["language"] == language for f in payload["files"]),
+                    "symbols": sum(by_path[s["file"]]["language"] == language for s in payload["symbols"]),
+                } for language in sorted({f["language"] for f in payload["files"]})
+            },
         }
         packed = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
         # Escaping can expand a message several times (JSON inside an nGQL
@@ -374,6 +380,40 @@ class CodeGraph:
         checkout, active = self._context(args)
         return {"indexed": active is not None, "checkout_id": checkout, "index": active,
                 "hint": "Run byori index in this checkout to refresh source analysis."}
+
+    def files(self, args):
+        """Page repository files, including files with no indexed definitions."""
+        _args(args, ("checkout_id", "query", "language", "limit", "offset"))
+        limit = _integer(args.get("limit", 30), "limit", 1, MAX_LIMIT)
+        offset = _integer(args.get("offset", 0), "offset", 0, 100_000)
+        filters = []
+        if "query" in args:
+            filters.append("n.code_file.path CONTAINS " +
+                           _literal(_string(args["query"], "query", 1024, empty=True)))
+        if "language" in args:
+            if args["language"] not in LANGUAGES:
+                raise ValueError("unsupported language")
+            filters.append("n.code_file.language == " + _literal(args["language"]))
+        checkout, active = self._context(args)
+        rows = []
+        if active:
+            rows = self._select("code_file", [("key", "id"), ("path", "path"),
+                ("language", "language"), ("content_hash", "content_hash")],
+                " AND ".join([self._scope("code_file", active)] + filters), limit + 1, offset)
+        return {"checkout_id": checkout, "index": active, "files": rows[:limit],
+                "truncated": len(rows) > limit, "next_offset": offset + limit if len(rows) > limit else None}
+
+    def _symbols_for_keys(self, active, keys):
+        """Bounded relation labels from the exact snapshot, without N+1 reads."""
+        found = []
+        for chunk in _key_chunks(sorted(set(key for key in keys if key and not key.startswith("file:")))):
+            where = self._scope("code_symbol", active) + " AND (" + " OR ".join(
+                "n.code_symbol.key == " + _literal(key) for key in chunk) + ")"
+            found.extend(self._select("code_symbol", [("key", "id"), ("name", "name"),
+                ("qualified", "qualified_name"), ("kind", "kind"), ("path", "file"),
+                ("line", "start_line"), ("end_line", "end_line"), ("language", "language")],
+                where, len(chunk)))
+        return found
 
     def search(self, args):
         _args(args, ("checkout_id", "query", "file", "language", "symbol_id", "limit", "offset"))
@@ -451,6 +491,8 @@ class CodeGraph:
         checkout, active = self._context(args)
         rows = self._references(active, [key], direction, kind, limit + 1) if active else []
         return {"checkout_id": checkout, "index": active, "relations": rows[:limit],
+                "symbols": self._symbols_for_keys(active, [key] + [k for r in rows[:limit]
+                    for k in (r["source"], r["target"])]) if active else [],
                 "truncated": len(rows) > limit, "direction": direction, "kind": kind}
 
     def impact(self, args):
@@ -490,6 +532,7 @@ class CodeGraph:
                 # no additional callers exist beyond it.
                 truncated = True
         return {"checkout_id": checkout, "index": active, "seed": seed, "impacted": impacted,
+                "symbols": self._symbols_for_keys(active, [seed] + [item["id"] for item in impacted]) if active else [],
                 "relations": evidence, "depth": depth, "truncated": truncated,
                 "coverage": "Resolved static calls/imports only; dynamic references are excluded."}
 

@@ -42,6 +42,10 @@ protocol WorkspaceDataSource: AnyObject {
     /// Builds this project's starting memory from its own Git history, returning
     /// what was written.
     func buildProjectMemory(projectID: String) async throws -> String
+    func buildProjectMemory(projectID: String, sourceTreeID: String) async throws -> String
+    func readCodeIndex(
+        _ request: CodeIndexRequest, projectID: String, sourceTreeID: String
+    ) async throws -> CodeIndexResponse
 }
 
 extension WorkspaceDataSource {
@@ -133,6 +137,16 @@ extension WorkspaceDataSource {
 
     func buildProjectMemory(projectID: String) async throws -> String {
         throw WorkspaceAdapterError.unsupported("Building project memory is not connected yet.")
+    }
+
+    func buildProjectMemory(projectID: String, sourceTreeID: String) async throws -> String {
+        throw WorkspaceAdapterError.unsupported("이 작업 트리의 분석이 연결되지 않았습니다.")
+    }
+
+    func readCodeIndex(
+        _ request: CodeIndexRequest, projectID: String, sourceTreeID: String
+    ) async throws -> CodeIndexResponse {
+        throw WorkspaceAdapterError.unsupported("코드 인덱스 조회가 연결되지 않았습니다.")
     }
 
 
@@ -849,6 +863,7 @@ final class WorkspaceViewModel: ObservableObject {
     @Published var fileEditor: WorkspaceFileEditor?
 
     @Published var history: WorkspaceHistoryPresentation?
+    @Published private(set) var codeIndexScope: WorkspaceCodeIndexScope?
 
     @Published var isPresentingNewSession = false
     @Published var newSessionDraft = WorkspaceNewSessionDraft()
@@ -1108,6 +1123,47 @@ final class WorkspaceViewModel: ObservableObject {
 
     func refreshInspector() async {
         await loadInspector()
+    }
+
+    // MARK: - Persistent code index
+
+    func showCodeIndex(projectID: String? = nil) {
+        let lineage: WorkspaceLineage?
+        if let projectID {
+            lineage = self.lineage(for: .project(projectID))
+        } else {
+            lineage = selectedLineage
+        }
+        guard let lineage, let sourceTree = contextSourceTree(for: lineage) else { return }
+        codeIndexScope = WorkspaceCodeIndexScope(project: lineage.project, sourceTree: sourceTree)
+    }
+
+    func dismissCodeIndex() { codeIndexScope = nil }
+
+    func codeIndexProvider(for scope: WorkspaceCodeIndexScope) -> any CodeIndexProviding {
+        WorkspaceCodeIndexProvider(dataSource: dataSource, scope: scope)
+    }
+
+    func readIndexedSource(
+        _ relativePath: String, scope: WorkspaceCodeIndexScope
+    ) async throws -> WorkspaceFileDocument {
+        try await dataSource.readFile(WorkspaceFileReadRequest(
+            projectID: scope.projectID, sourceTreeID: scope.sourceTreeID, relativePath: relativePath
+        ))
+    }
+
+    func analyzeCodeIndex(scope: WorkspaceCodeIndexScope) async throws {
+        guard !isBuildingProjectMemory else {
+            throw WorkspaceAdapterError.invalidState("진행 중인 프로젝트 분석이 끝난 뒤 다시 실행해 주세요.")
+        }
+        isBuildingProjectMemory = true
+        defer { isBuildingProjectMemory = false }
+        let summary = try await dataSource.buildProjectMemory(
+            projectID: scope.projectID, sourceTreeID: scope.sourceTreeID
+        )
+        lastProjectMemorySummary = summary
+        lastProjectMemoryProjectID = scope.projectID
+        await loadContext()
     }
 
     // MARK: - History and checkout

@@ -109,6 +109,19 @@ def main():
                          cwd=repo, env=env)
             return json.loads(result)
 
+        def browse(action, *arguments, path=repo):
+            # The app runner merges output streams; success must be precisely
+            # one JSON value with no authentication/startup log contamination.
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "cli" / "byori.py"), "code", action,
+                 str(path), "--json", *arguments], cwd=repo, env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60,
+            )
+            assert result.returncode == 0, result.stdout
+            return json.loads(result.stdout)
+
+        assert browse("status")["index"] is None
+
         # Project analysis (the app's command) must run the Rust indexer itself,
         # including a repository with no decision/issue history to import.
         initialized = run(
@@ -121,6 +134,22 @@ def main():
         cached = index()
         assert cached["snapshot_id"] == first["snapshot_id"], (cached, first)
         assert cached["stats"]["cached_files"] == 5, cached
+        status = browse("status")
+        assert status["index"]["files"] == 5, status
+        assert status["index"]["language_stats"]["swift"]["files"] == 1, status
+        seen_files, offset = [], 0
+        while True:
+            page = browse("files", "--limit", "2", "--offset", str(offset))
+            seen_files.extend(item["path"] for item in page["files"])
+            if page["next_offset"] is None:
+                break
+            offset = page["next_offset"]
+        assert set(seen_files) == set(FIXTURES), seen_files
+        helper = browse("symbols", "--query", "py_helper")["symbols"][0]
+        calls = browse("relations", "--symbol-id", helper["id"], "--direction", "incoming")
+        assert any(s["name"] == "py_entry" for s in calls["symbols"]), calls
+        assert browse("impact", "--symbol-id", helper["id"])["impacted"]
+        print("ok persistent viewer CLI status, paged files, symbol search, relation labels and impact")
         client = MCPClient(repo, env)
         try:
             available = {tool["name"] for tool in client.call("tools/list", {})["tools"]}
@@ -142,6 +171,9 @@ def main():
             (linked / "demo.py").write_text("def branch_only(): pass\n")
             other = index(linked)
             assert other["checkout_id"] != first["checkout_id"]
+            assert browse("status", path=linked)["checkout_id"] == other["checkout_id"]
+            assert browse("symbols", "--query", "branch_only", path=linked)["symbols"]
+            assert not browse("symbols", "--query", "branch_only")["symbols"]
             assert not client.tool("code_search", query="branch_only")["symbols"]
             assert client.tool("code_search", query="branch_only", checkout_id=other["checkout_id"])["symbols"]
             # Exercise the actual foreground watcher, not only its polling loop

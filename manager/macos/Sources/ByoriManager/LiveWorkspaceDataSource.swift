@@ -873,6 +873,28 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         }
     }
 
+    func buildProjectMemory(projectID: String, sourceTreeID: String) async throws -> String {
+        try await operationGate.perform { [self] in
+            let root = try checkoutURL(projectID: projectID, sourceTreeID: sourceTreeID)
+            guard let project = coreProjects[projectID] else {
+                throw WorkspaceAdapterError.invalidState("프로젝트를 다시 불러와 주세요.")
+            }
+            return try await managerService.buildProjectMemory(
+                projectRoot: root, space: project.memorySpace
+            ).detail
+        }
+    }
+
+    func readCodeIndex(
+        _ request: CodeIndexRequest, projectID: String, sourceTreeID: String
+    ) async throws -> CodeIndexResponse {
+        let root = try checkoutURL(projectID: projectID, sourceTreeID: sourceTreeID)
+        guard let project = coreProjects[projectID] else {
+            throw WorkspaceAdapterError.invalidState("프로젝트를 다시 불러와 주세요.")
+        }
+        return try await managerService.queryCodeIndex(request, projectRoot: root, space: project.memorySpace)
+    }
+
     func reattachSession(id: String) async throws -> WorkspaceSessionLaunchResult {
         try await operationGate.perform { [self] in
             try await reattachSessionLocked(id: id)

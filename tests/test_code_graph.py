@@ -138,6 +138,43 @@ class CodeGraphTests(unittest.TestCase):
         self.assertEqual(len(self.engine.edges), 3)  # two defines, one resolved call
         self.assertTrue(all(read for text, read in self.engine.queries if text.startswith("MATCH")))
 
+    def test_file_pages_include_empty_files_and_stay_within_checkout_snapshot(self):
+        data = payload(self.root)
+        data["files"].append({"id": "file:empty.swift", "path": "empty.swift", "language": "swift",
+                              "hash": "0" * 64})
+        self.graph.store(data)
+        other = self.root / "worktree"
+        self.graph.store(payload(other, snapshot="b"))
+        first = self.graph.files({"limit": 1})
+        self.assertEqual(first["files"][0]["path"], "empty.swift")
+        self.assertEqual(first["next_offset"], 1)
+        second = self.graph.files({"limit": 1, "offset": first["next_offset"]})
+        self.assertEqual(second["files"][0]["path"], "src/main.py")
+        self.assertFalse(second["truncated"])
+        self.assertEqual(self.graph.files({"query": "empty", "language": "swift"})["files"], first["files"])
+        self.assertEqual(self.graph.status({})["index"]["language_stats"], {
+            "python": {"files": 1, "symbols": 2}, "swift": {"files": 1, "symbols": 0},
+        })
+        newer = payload(self.root, snapshot="c")
+        self.graph.store(newer)
+        self.assertEqual(len(self.graph.files({})["files"]), 1)
+
+    def test_relation_labels_come_from_the_same_snapshot(self):
+        self.graph.store(payload(self.root))
+        other = payload(self.root / "worktree", snapshot="b", name="foreign")
+        self.graph.store(other)
+        relation = self.graph.relations({"symbol_id": "callee", "direction": "incoming"})
+        self.assertEqual({s["name"] for s in relation["symbols"]}, {"caller", "callee"})
+        impact = self.graph.impact({"symbol_id": "callee"})
+        self.assertEqual({s["name"] for s in impact["symbols"]}, {"caller", "callee"})
+
+    def test_file_query_bounds_are_validated_before_reading(self):
+        for args in ({"limit": 101}, {"offset": -1}, {"query": "a" * 1025},
+                     {"language": "shell"}, {"unknown": True}):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                self.graph.files(args)
+        self.assertEqual(self.engine.queries, [])
+
     def test_repeat_snapshot_ignores_cache_counters_and_does_not_write(self):
         first = payload(self.root)
         self.graph.store(first)

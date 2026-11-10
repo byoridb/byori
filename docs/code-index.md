@@ -57,6 +57,35 @@ and non-ignored untracked files in a Git checkout, skips symlinks and excluded
 build/vendor directories, and reports unsupported or invalid source as applicable.
 It never installs or executes a project's dependencies.
 
+## Browse in the app
+
+Select a project or source tree, then open **Context → 코드 인덱스 보기**. The project row
+menu offers the same browser for its primary checkout. The wide browser reads the saved
+ByoriDB snapshot, so results remain available after restarting the app; the local engine
+must be running. Opening the browser does not run the indexer.
+
+The header shows the exact checkout, analysis date, revision, file/symbol totals, resolved
+and unresolved references, languages, and diagnostics. Language counts appear when the
+snapshot contains them; older snapshots still show their language coverage. Search the
+file or symbol list, filter by language, and load additional pages as needed. Select a
+symbol for callers/callees, or a file for imports/dependents. Change impact follows only
+resolved static relations within the displayed limits.
+
+**Refresh** reloads the saved snapshot. **Analyze** runs history and source analysis for
+the checkout displayed in this browser, including linked worktrees. Source previews read
+the current file at the indexed line, without editing it. The index does not automatically
+verify that the working tree is unchanged, and old line positions can differ from current
+source. If another process publishes a snapshot while browsing, the browser clears stale
+selection/detail instead of combining snapshots.
+
+The same saved data can be read without starting an MCP session:
+
+```bash
+byori code status . --json
+byori code files . --language rust --json
+byori code symbols . --query parse --json
+```
+
 ## Query from an agent
 
 The existing `byoridb` MCP registration exposes four additional read tools:
@@ -102,8 +131,8 @@ writes a complete snapshot. Plan disk capacity accordingly for large repositorie
 
 The code schema is additive and separate from notes and the typed memory wiki.
 Existing decisions and causal memory remain available through `memory_*` tools.
-This version does not infer decision-to-symbol links or add a code-explorer screen
-to the native app.
+This version does not infer decision-to-symbol links. The native code browser keeps
+source structure separate from the existing decision/history Context records.
 
 ## Distribution
 

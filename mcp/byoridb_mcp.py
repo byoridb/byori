@@ -2070,6 +2070,36 @@ def store_code_index(payload):
     return _code_graph.store(payload)
 
 
+def read_code_index(action, args):
+    """Local viewer/CLI reads; never bootstrap or migrate a space as a side effect.
+
+    An unanalysed project may not even have a space yet. Return an empty index
+    for absent spaces/schema; connection/authentication errors remain errors.
+    Existing MCP tools retain their usual lifecycle and startup migration.
+    """
+    handlers = {"status": "status", "files": "files", "symbols": "search",
+                "relations": "relations", "impact": "impact"}
+    if action not in handlers:
+        raise ValueError("unsupported code index query")
+    # Validate arguments before authenticating or querying any project.
+    empty_query = lambda text, read_only=False: {"results": []}
+    getattr(_code_module.CodeGraph(empty_query, lambda: None), handlers[action])(args)
+    _validate_space_name(SPACE)
+    # This client is loaded fresh for each CLI request. SHOW SPACES is global
+    # and does not require selecting a namespace which may not exist yet.
+    spaces = _raw_query("SHOW SPACES", read_only=True).get("results") or []
+    available = any(SPACE == value for row in spaces for value in row.values())
+    if available:
+        _raw_query(f"USE {SPACE}")
+        tags = _raw_query("SHOW TAGS", read_only=True).get("results") or []
+        available = any("code_index" == value for row in tags for value in row.values())
+        # Subsequent session recovery must re-pin before reading project data.
+        _session["ready"] = True
+    query = (lambda text, read_only=False: _raw_query(text, read_only=read_only)) if available else empty_query
+    graph = _code_module.CodeGraph(query, lambda: None)
+    return getattr(graph, handlers[action])(args)
+
+
 TOOLS.update(_code_module.tool_definitions(_code_graph))
 
 

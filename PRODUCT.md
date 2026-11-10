@@ -117,7 +117,11 @@ Existing repository capabilities that the workspace can build on:
   app and installer;
 - optionally route newly launched Claude Code sessions through an Anthropic-compatible gateway,
   with Keychain-backed credentials and a reversible default-Claude state; and
-- inspect a bounded, read-only view of the knowledge graph.
+- inspect a bounded, read-only view of the knowledge graph;
+- analyze Git history and Python, Swift, JavaScript/TypeScript, and Rust source with a local Rust
+  indexer, saving checkout-specific source snapshots in ByoriDB; and
+- browse persisted code indexes from project Context, search files/symbols, inspect static
+  calls/imports and change-impact candidates, and open indexed locations in current source.
 
 Current implementation constraints:
 
@@ -134,7 +138,8 @@ Current implementation constraints:
   explicitly enables Byori's Claude gateway override for new sessions;
 - memory is historical reference and must be checked against the current repository;
 - ByoriDB stores durable knowledge, not raw reasoning traces or complete provider logs;
-- automatic repository ingestion and semantic-ranked recall are not implemented; and
+- project analysis and `byori init` explicitly ingest history and source; continuous updates
+  require a foreground `byori index --watch` process, and semantic-ranked recall is not implemented; and
 - important data must not rely on the current experimental local installation as its only copy.
 
 Open product decisions:
