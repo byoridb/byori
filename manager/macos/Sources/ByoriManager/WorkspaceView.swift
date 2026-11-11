@@ -151,6 +151,12 @@ struct WorkspaceView<TerminalHost: View>: View {
                 .disabled(model.projects.isEmpty || model.phase != .ready)
                 .accessibilityHint("Creates one session with a recorded launch provider and model")
 
+                Button { model.showTaskWork() } label: {
+                    Label("작업 절차·검증", systemImage: "checklist")
+                }
+                .disabled(model.selectedTask == nil)
+                .help("선택한 작업의 절차와 실제 검증 이력 보기")
+
                 Button {
                     Task { await model.load(force: true) }
                 } label: {
@@ -181,6 +187,9 @@ struct WorkspaceView<TerminalHost: View>: View {
         }
         .sheet(item: memoryPresentation) { scope in
             WorkspaceMemorySheet(workspace: model, scope: scope)
+        }
+        .sheet(item: taskWorkPresentation) { scope in
+            WorkspaceTaskWorkView(scope: scope, provider: model.taskWorkProvider(for: scope), onClose: model.dismissTaskWork)
         }
         .alert(item: $model.alert) { alert in
             Alert(
@@ -302,6 +311,7 @@ struct WorkspaceView<TerminalHost: View>: View {
                 stop: { Task { await model.stopSession(session) } },
                 reattach: { Task { await model.reattachSession(session) } },
                 newSession: { Task { await model.prepareNewSession(after: session) } },
+                showTaskWork: { model.showTaskWork(taskID: task.id) },
                 newTerminal: {
                     Task {
                         await model.startShellSession(target: WorkspaceNewSessionTarget(
@@ -332,7 +342,9 @@ struct WorkspaceView<TerminalHost: View>: View {
                 title: model.selectedTask == nil ? "No task selected" : "No session selected",
                 detail: sessionEmptyDetail(for: sourceTree),
                 primaryTitle: "New Session",
-                primaryAction: { Task { await model.prepareNewSession() } }
+                primaryAction: { Task { await model.prepareNewSession() } },
+                secondaryTitle: model.selectedTask == nil ? nil : "작업 절차·검증",
+                secondaryAction: { model.showTaskWork() }
             )
         } else if let project = model.selectedProject, project.sourceTrees.isEmpty {
             WorkspaceUnavailableView(
@@ -390,6 +402,10 @@ struct WorkspaceView<TerminalHost: View>: View {
 
     private var memoryPresentation: Binding<WorkspaceMemoryScope?> {
         Binding(get: { model.memoryScope }, set: { if $0 == nil { model.dismissMemory() } })
+    }
+
+    private var taskWorkPresentation: Binding<WorkspaceTaskWorkScope?> {
+        Binding(get: { model.taskWorkScope }, set: { if $0 == nil { model.dismissTaskWork() } })
     }
 
     private var fileEditorPresentation: Binding<Bool> {
@@ -1230,6 +1246,7 @@ private struct WorkspaceSessionPane<TerminalHost: View>: View {
     let stop: () -> Void
     let reattach: () -> Void
     let newSession: () -> Void
+    let showTaskWork: () -> Void
     let newTerminal: () -> Void
     let commandGroups: [AgentCommandGroup]
     let insertTerminalText: (String) -> Void
@@ -1245,6 +1262,11 @@ private struct WorkspaceSessionPane<TerminalHost: View>: View {
                     .lineLimit(1)
                 Spacer(minLength: 12)
                 sessionStatus
+                Button(action: showTaskWork) {
+                    Label("작업 절차·검증", systemImage: "checklist")
+                }
+                .labelStyle(.iconOnly)
+                .help("이 작업의 절차와 검증 이력")
                 if session.isDetached {
                     Divider().frame(height: 18)
                     Button(action: reattach) {
@@ -2030,6 +2052,15 @@ private struct NewWorkspaceSessionSheet: View {
                         if case .newTask = model.newSessionDraft.taskChoice {
                             TextField("Task Title", text: $model.newSessionDraft.newTaskTitle)
                                 .accessibilityHint("Names the work represented by this session")
+                            Picker("작업 절차", selection: $model.newSessionDraft.workflowPreset) {
+                                Text("선택 안 함").tag(TaskWorkflowPreset?.none)
+                                ForEach(TaskWorkflowPreset.allCases) { preset in
+                                    Text(preset.title).tag(Optional(preset))
+                                }
+                            }
+                            if let preset = model.newSessionDraft.workflowPreset {
+                                Text(preset.summary).font(.caption).foregroundStyle(.secondary)
+                            }
                         }
 
                         if let warning = sourceTreeWarning {

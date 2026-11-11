@@ -128,6 +128,10 @@ Existing repository capabilities that the workspace can build on:
   and pin policies; superseded decisions stay outside default recall;
 - save and reopen a compact explicit checkpoint per checkout/task, with a copy action and
   recorded Git revision, without capturing raw sessions or hidden reasoning; and
+- choose bug-fix, feature, or code-review task procedures, edit their completion criteria and
+  handoff notes, and run explicitly configured project verification commands in the selected
+  checkout; retain bounded task-local receipts and compare source contents before, after, and
+  when reviewing a run;
 - diagnose and attempt bounded recovery of an installed local managed service, preserving
   retry history and manual-stop intent across app relaunches.
 
@@ -147,6 +151,11 @@ Current implementation constraints:
 - memory is historical reference and must be checked against the current repository; a current
   lifecycle or matching source hash does not establish that a remembered claim remains true;
 - ByoriDB stores durable knowledge, not raw reasoning traces or complete provider logs;
+- verification is user-triggered and scoped to native tasks. Manual procedure checks do not
+  establish test success or complete tasks automatically. A successful receipt is current only
+  for the configured command and a complete matching Git/source fingerprint; ignored files,
+  dependencies and external environment are outside that claim. Raw command output stays in
+  bounded local task storage, not ByoriDB;
 - project analysis and `byori init` explicitly ingest history and source; continuous updates
   require a foreground `byori index --watch` process, and semantic-ranked recall is not implemented; and
 - recovery offers one opportunity at app launch and explicit Settings actions, with at most

@@ -203,19 +203,28 @@ public struct CommandSpec: Sendable {
     public let environment: [String: String]
     public let workingDirectory: String?
     public let timeout: TimeInterval
+    public let preserveOutputWhitespace: Bool
+    public let environmentRemovals: Set<String>
+    public let terminateProcessGroupOnExit: Bool
 
     public init(
         executable: String,
         arguments: [String] = [],
         environment: [String: String] = [:],
         workingDirectory: String? = nil,
-        timeout: TimeInterval = 30
+        timeout: TimeInterval = 30,
+        preserveOutputWhitespace: Bool = false,
+        environmentRemovals: Set<String> = [],
+        terminateProcessGroupOnExit: Bool = false
     ) {
         self.executable = executable
         self.arguments = arguments
         self.environment = environment
         self.workingDirectory = workingDirectory
         self.timeout = timeout
+        self.preserveOutputWhitespace = preserveOutputWhitespace
+        self.environmentRemovals = environmentRemovals
+        self.terminateProcessGroupOnExit = terminateProcessGroupOnExit
     }
 }
 
@@ -223,13 +232,20 @@ public struct CommandResult: Equatable, Sendable {
     public let exitCode: Int32
     public let output: String
     public let timedOut: Bool
+    public let cancelled: Bool
+    public let outputTruncated: Bool
+    public let outputEncodingValid: Bool
 
-    public var succeeded: Bool { exitCode == 0 && !timedOut }
+    public var succeeded: Bool { exitCode == 0 && !timedOut && !cancelled }
 
-    public init(exitCode: Int32, output: String, timedOut: Bool = false) {
+    public init(exitCode: Int32, output: String, timedOut: Bool = false,
+                cancelled: Bool = false, outputTruncated: Bool = false, outputEncodingValid: Bool = true) {
         self.exitCode = exitCode
         self.output = output
         self.timedOut = timedOut
+        self.cancelled = cancelled
+        self.outputTruncated = outputTruncated
+        self.outputEncodingValid = outputEncodingValid
     }
 }
 

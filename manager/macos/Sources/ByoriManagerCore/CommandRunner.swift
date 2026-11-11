@@ -26,6 +26,7 @@ private final class BoundedOutput: @unchecked Sendable {
     private let lock = NSLock()
     private let limit: Int
     private var data = Data()
+    private var truncated = false
 
     init(limit: Int = 256 * 1_024) {
         self.limit = limit
@@ -36,15 +37,16 @@ private final class BoundedOutput: @unchecked Sendable {
         lock.lock()
         data.append(chunk.bindMemory(to: UInt8.self))
         if data.count > limit {
+            truncated = true
             data.removeFirst(data.count - limit)
         }
         lock.unlock()
     }
 
-    func string() -> String {
+    func snapshot() -> (text: String, truncated: Bool, encodingValid: Bool) {
         lock.lock()
         defer { lock.unlock() }
-        return String(decoding: data, as: UTF8.self)
+        return (String(decoding: data, as: UTF8.self), truncated, String(data: data, encoding: .utf8) != nil)
     }
 }
 
@@ -149,6 +151,7 @@ public struct ProcessCommandRunner: CommandRunning {
         }
 
         var environment = ProcessInfo.processInfo.environment
+        command.environmentRemovals.forEach { environment.removeValue(forKey: $0) }
         command.environment.forEach { environment[$0.key] = $0.value }
         var arguments: [UnsafeMutablePointer<CChar>?] =
             ([command.executable] + command.arguments).map { value in
@@ -237,10 +240,17 @@ public struct ProcessCommandRunner: CommandRunning {
                 _ = kill(-spawnedPID, SIGTERM)
                 terminationStartedAt = now
             } else if leaderExitObserved {
-                // Natural completion has no reason to terminate a deliberately
-                // backgrounded descendant. Reap immediately and bound the pipe
-                // drain below.
-                break
+                if command.terminateProcessGroupOnExit {
+                    // Verification must finish ordinary background writers
+                    // before observing the resulting source state. Keep the
+                    // leader unreaped until every group signal is complete.
+                    _ = kill(-spawnedPID, SIGTERM)
+                    terminationStartedAt = now
+                } else {
+                    // Existing callers may deliberately launch background
+                    // services; only opt-in commands clean up on success.
+                    break
+                }
             } else if now >= timeoutAt {
                 didTimeOut = true
                 _ = kill(-spawnedPID, SIGTERM)
@@ -280,17 +290,24 @@ public struct ProcessCommandRunner: CommandRunning {
             }
         }
 
+        let capturedOutput = output.snapshot()
+        let captured = command.preserveOutputWhitespace ? capturedOutput.text
+            : capturedOutput.text.trimmingCharacters(in: .whitespacesAndNewlines)
         if let waitError {
             let detail = String(cString: strerror(waitError))
-            let captured = output.string().trimmingCharacters(in: .whitespacesAndNewlines)
             let message = captured.isEmpty ? detail : "\(captured)\nwaitpid: \(detail)"
-            return CommandResult(exitCode: 127, output: message, timedOut: didTimeOut)
+            return CommandResult(exitCode: 127, output: message, timedOut: didTimeOut,
+                                 cancelled: cancellation.isRequested(), outputTruncated: capturedOutput.truncated,
+                                 outputEncodingValid: capturedOutput.encodingValid)
         }
 
         return CommandResult(
             exitCode: exitCode(from: waitStatus),
-            output: output.string().trimmingCharacters(in: .whitespacesAndNewlines),
-            timedOut: didTimeOut
+            output: captured,
+            timedOut: didTimeOut,
+            cancelled: cancellation.isRequested(),
+            outputTruncated: capturedOutput.truncated,
+            outputEncodingValid: capturedOutput.encodingValid
         )
     }
 

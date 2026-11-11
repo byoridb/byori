@@ -47,6 +47,7 @@ struct ByoriManagerApp: App {
         appDelegate.openWorkspaceWindow = windowCoordinator.showWindow
         appDelegate.openSettingsWindow = settingsCoordinator.showWindow
         appDelegate.managerModel = managerModel
+        appDelegate.workspaceDataSource = dataSource
         // `byori open` in a checkout ends here: bring the workspace forward, then let
         // it select that project and offer to read its history.
         appDelegate.openProject = { [weak workspaceModel] root in
@@ -117,6 +118,7 @@ private final class ByoriApplicationDelegate: NSObject, NSApplicationDelegate {
     var openSettingsWindow: (@MainActor () -> Void)?
     var openProject: (@MainActor (URL) -> Void)?
     weak var managerModel: ManagerViewModel?
+    weak var workspaceDataSource: LiveWorkspaceDataSource?
     private var terminationTask: Task<Void, Never>?
     private var hasDrainedForTermination = false
 
@@ -155,7 +157,8 @@ private final class ByoriApplicationDelegate: NSObject, NSApplicationDelegate {
         }
         let terminalController = TerminalSessionController.shared
         let needsManagerDrain = managerModel?.hasActiveOperation == true
-        guard needsManagerDrain || terminalController.needsTerminationDrain else {
+        guard needsManagerDrain || terminalController.needsTerminationDrain
+                || workspaceDataSource?.hasActiveVerification == true else {
             return .terminateNow
         }
         guard terminationTask == nil else {
@@ -170,6 +173,7 @@ private final class ByoriApplicationDelegate: NSObject, NSApplicationDelegate {
                 terminationTask = nil
                 return
             }
+            await workspaceDataSource?.cancelVerificationAndWait()
             await terminalController.stopAllAndWaitForApplicationTermination()
             terminationTask = nil
             // Latched so a process that survives even SIGKILL cannot keep

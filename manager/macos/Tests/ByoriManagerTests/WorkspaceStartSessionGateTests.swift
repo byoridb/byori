@@ -11,6 +11,37 @@ import XCTest
 /// complete and the button simply did not work.
 @MainActor
 final class WorkspaceStartSessionGateTests: XCTestCase {
+    func testNewTaskPresetIsExplicitAndFlowsIntoLaunchRequest() async {
+        let source = GateDataSource()
+        let model = WorkspaceViewModel(dataSource: source)
+        await model.load()
+        await model.prepareNewSession()
+        XCTAssertNil(model.newSessionDraft.workflowPreset)
+        model.newSessionDraft.newTaskTitle = "Repair parser"
+        model.newSessionDraft.workflowPreset = .bugFix
+        model.chooseProvider("claude")
+        model.chooseModel("default")
+        await model.startSession()
+        XCTAssertEqual(source.startedRequests.last?.workflowPreset, .bugFix)
+        XCTAssertNil(source.startedRequests.last?.existingTaskID)
+    }
+
+    func testExistingTaskNeverReceivesAReplacementPresetFromTheDraft() async {
+        let source = GateDataSource()
+        source.taskItems = [.init(id: "existing-task", sourceTreeID: "primary123", title: "Existing",
+                                 status: .open, createdAt: Date(), sessions: [])]
+        let model = WorkspaceViewModel(dataSource: source)
+        await model.load()
+        model.select(.task("existing-task"))
+        await model.prepareNewSession()
+        model.newSessionDraft.workflowPreset = .codeReview
+        model.chooseProvider("claude")
+        model.chooseModel("default")
+        await model.startSession()
+        XCTAssertEqual(source.startedRequests.last?.existingTaskID, "existing-task")
+        XCTAssertNil(source.startedRequests.last?.workflowPreset)
+    }
+
     /// The whole ladder, in the order the sheet reads. Every rung has to name the
     /// next thing to do, and the button stays locked in lockstep with the reason.
     func testEachMissingRequirementIsNamedUntilTheButtonUnlocks() async {
@@ -175,6 +206,7 @@ final class WorkspaceStartSessionGateTests: XCTestCase {
 @MainActor
 private final class GateDataSource: WorkspaceDataSource {
     var startedRequests: [WorkspaceSessionLaunchRequest] = []
+    var taskItems: [WorkspaceTaskItem] = []
 
     private let providers: [WorkspaceProviderOption]
     private let optionsFailure: String?
@@ -222,7 +254,7 @@ private final class GateDataSource: WorkspaceDataSource {
             branch: "main",
             headRevision: String(repeating: "a", count: 40),
             workingState: .clean,
-            tasks: []
+            tasks: taskItems
         )
         let project = WorkspaceProjectItem(
             id: "project123",

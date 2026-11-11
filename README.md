@@ -109,6 +109,11 @@ is archived and can be restored by adding the same canonical repository again; a
 is hidden until restored. Neither action deletes repository files, Git worktrees or branches,
 task/session metadata, or ByoriDB data.
 
+Tasks also offer **작업 절차·검증**: optional bug-fix, feature, and code-review procedures,
+plus user-triggered verification commands with local execution history. A passing command is
+shown as current only when the saved command and checked source contents still match.
+See [task procedures and verification](docs/task-verification.md).
+
 ## Architecture
 
 ```text
