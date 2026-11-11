@@ -1677,6 +1677,7 @@ private struct ByoriDatabaseView: View {
                 )
 
                 statusSection
+                RuntimeRecoveryView()
                 serviceSection
                 engineSection
                 filesSection
@@ -1721,7 +1722,7 @@ private struct ByoriDatabaseView: View {
                         state: byori.isHealthy ? "정상" : "응답 없음",
                         detail: byori.isHealthy
                             ? "설정된 클라이언트로 인증까지 확인했습니다."
-                            : "포트가 응답하지 않거나 인증이 확인되지 않습니다. 재시작으로 대부분 해결됩니다.",
+                            : "포트 응답 또는 인증이 확인되지 않습니다. 진단·복구에서 원인과 가능한 조치를 확인하세요.",
                         isSatisfied: byori.isHealthy,
                         action: nil
                     )
@@ -2232,8 +2233,9 @@ private struct ActivityView: View {
         VStack(alignment: .leading, spacing: 16) {
             PageHeader(
                 title: "진단",
-                subtitle: "설치와 설정 변경 작업의 기록입니다. 인증정보는 기록하지 않습니다."
+                subtitle: "서비스 원인 진단과 복구 결과, 설치·설정 변경 기록입니다."
             )
+            RuntimeRecoveryView()
             if model.activities.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "list.bullet.rectangle")

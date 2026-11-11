@@ -79,7 +79,8 @@ See [source code indexing](docs/code-index.md) for setup and resolution limits.
 
 > [!WARNING]
 > Byori is currently an early experiment. The native macOS workspace MVP, real interactive PTY,
-> local single-node ByoriDB setup, MCP surface, schema v3 (notes, typed wiki, code indexes), and a
+> local single-node ByoriDB setup, MCP surface, schema v4 (notes, typed wiki, code indexes,
+> recall policies and explicit task checkpoints), and a
 > separate foreground multi-CLI prototype are implemented. Retained terminal sessions require
 > tmux 3.2 or later; without it they end with the app. Code indexing is explicit and static;
 > unresolved references remain visible rather than being presented as known relationships.
@@ -177,13 +178,32 @@ added in the app, and every project row keeps it in the context menu.
 ```bash
 byori index .                       # Python, Swift, JS/TS (including JSX/TSX), Rust
 byori index . --watch --interval 5  # refresh while this foreground command runs
+byori code verify . --json          # bounded source-byte freshness check, no indexing
 ```
 
 The Rust Tree-sitter indexer stores source locations, symbols, imports, and resolved
-calls in ByoriDB without an LLM. Agents use `code_status`, `code_search`,
+calls in ByoriDB without an LLM. Agents use `code_status`, `code_verify`, `code_search`,
 `code_relations`, and `code_impact` through the existing MCP connection. Each
 worktree has its own snapshot; unchanged files reuse the parse cache. See the
 [code-index guide](docs/code-index.md) for source builds, limits, and examples.
+
+Open **Context → 코드 인덱스 보기** to browse saved files, symbols, calls, imports, and change
+impact. The browser checks source freshness once on opening/refresh and labels current,
+changed, or incomplete results with the check time. Byte freshness does not validate code
+behavior or remembered decisions.
+
+Context also offers **현재 / 재검토 / 보관함 / 전체** memory views, reversible archive actions,
+and an importance marker (`pinned`). Superseded or review-required memories stay outside default
+recall even when marked important; the marker does not change ordering.
+**작업 체크포인트** saves explicit progress per checkout/task and lets the user copy it into
+their next workflow; it does not capture raw sessions or execute the saved text. See the
+[memory policy and checkpoint contract](docs/memory-ontology.md#45-recall-lifecycle-and-explicit-task-checkpoints-schema-v4).
+
+After updating the app, update the installed runtime through **Settings → ByoriDB** and sync
+**byoridb-memory** in **Agents & Skill**, then restart/reconnect existing agent sessions. The
+ByoriDB **이미 최신 엔진** action can reinstall/verify the same version if needed. The app uses
+its bundled bridge; an already-running agent retains its old MCP process and skill until updated.
+App launch does not install runtime updates automatically.
 
 ### Byori macOS app
 
@@ -192,6 +212,20 @@ source tree or an existing linked worktree, create a task, and open a session wi
 Codex. You can use the provider's CLI-default model or enter an exact launch model identifier.
 Byori records that launch selection; provider-side model changes made inside the interactive CLI
 remain outside Byori's observation.
+
+#### Local service diagnosis and recovery
+
+**Settings → ByoriDB** and **Settings → 진단** show **진단·복구**: the observed cause,
+eligible start/restart action, last verified outcome, and retry time. Recovery is restricted to
+the installed, validated local launchd job. A foreign port owner, credential mismatch, missing
+configuration, less than 256 MiB free space, or an authenticated query failure requires the
+displayed manual remedy.
+
+There is one eligible recovery opportunity at app launch and explicit Settings actions, not a
+background retry loop. Attempts share a persistent budget of three in ten minutes, at least one
+minute apart; cancelled/interrupted attempts count. Manual Stop survives app relaunch and blocks
+automatic restart. Recovery verifies process ownership, login and a read-only query afterward;
+it never resets credentials, deletes database files, or reinstalls the engine.
 
 #### Install the app
 
@@ -384,10 +418,13 @@ code even after recall provides an answer.
 | Tool | Purpose |
 |---|---|
 | `memory_remember(name, kind?, body, relates_to?)` | Store or update a note under a stable name |
-| `memory_recall(text?, kind?, limit?)` | Retrieve previous memories by note name and body |
+| `memory_recall(text?, kind?, view?, limit?, offset?)` | Retrieve notes by name/body with current/review/archived/all views |
 | `memory_wiki_upsert(type, name, body, state?, resolved?)` | Create or update a validated typed-wiki node; the server resolves its VID |
 | `memory_link(action?, relation, source, target)` | Create/update or delete a validated relationship between existing nodes |
-| `memory_read(type?, name?, text?, limit?, include_links?)` | Read normalized notes and typed-wiki nodes; VIDs are decimal strings |
+| `memory_read(type?, name?, text?, view?, limit?, offset?, include_links?)` | Read normalized notes/wiki; current by default, with review/archived/all views |
+| `memory_policy(type, name, ...)` | Explicit archive, pin, review-date and source-reference policy updates |
+| `memory_checkpoint(goal, task_id?, ...)` | Save bounded explicit task state for this checkout |
+| `memory_resume(task_id?)` | Read that checkout/task checkpoint with revision provenance |
 | `memory_delete(type, name, cascade?)` | Delete one exact node, requiring explicit cascade when links exist |
 | `memory_export(limit?, offset?, include_links?)` | Export a bounded best-effort inspection page; deep pagination is not a backup |
 | `memory_query_read(ngql)` | Run one validated read-only `MATCH`/`FETCH`/`GO`/`LOOKUP`/`SHOW`/`WHY` statement |
@@ -397,7 +434,8 @@ The default `safe` MCP profile removes `memory_query` from discovery and dispatc
 who explicitly require the unrestricted compatibility escape hatch can opt into
 `BYORIDB_MCP_PROFILE=legacy`; note writes and validated structured CRUD remain available in both
 profiles.
-The `readonly` profile used by orchestrated workers exposes only the four read tools. It is a tool
+The `readonly` profile used by orchestrated workers exposes only read tools, including code
+inspection/verification and checkpoint resume. It is a tool
 filter rather than an authorization sandbox: it keeps the configured engine credential, performs
 only login/`USE`/schema-version reads at startup, and fails if a writer has not prepared the current
 schema.
@@ -406,7 +444,7 @@ mixing between clients or projects. A space is a logical namespace, not an autho
 separate trust domains require separate instances and credentials. See the
 [engine contract](docs/engine-contract.md) for input limits and the exact profile boundary.
 
-At startup, writer profiles automatically migrate the space to the current memory schema (v3);
+At startup, writer profiles automatically migrate the space to the current memory schema (v4);
 `readonly` only checks that version. The writer bootstrap creates both the `note`/`rel` layer for
 standalone facts and the typed-wiki layer made up
 of `module`/`decision`/`bug`/`incident`/`concept`/`entity`/`task` plus causal edges. See the

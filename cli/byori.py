@@ -19,6 +19,7 @@ import pathlib
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -582,10 +583,14 @@ class MemoryBridge:
         except Exception as exc:
             raise ByoriError("ByoriDB is not ready: %s" % exc)
 
-    def recall(self) -> Dict[str, Any]:
+    def recall(self, project_root: pathlib.Path) -> Dict[str, Any]:
         try:
-            result = self.module.tool_read(
-                {"limit": 20, "include_links": True}
+            read_project = getattr(self.module, "memory_read_project", None)
+            if not callable(read_project):
+                raise ByoriError("installed MCP runtime lacks checkout-scoped memory reads; update Byori")
+            result = read_project(
+                {"limit": 20, "include_links": True},
+                str(project_root.expanduser().resolve()),
             )
         except Exception as exc:
             raise ByoriError("ByoriDB recall failed: %s" % exc)
@@ -757,6 +762,10 @@ def worker_prompt(prompt: str, graph_context: Optional[str]) -> str:
 def child_environment(space: str, use_memory: bool) -> Dict[str, str]:
     environment = dict(os.environ)
     for key in SECRET_ENV_KEYS:
+        environment.pop(key, None)
+    # A parent coding session may belong to another repository/task. Each
+    # worker receives its own binding at spawn time after worktrees exist.
+    for key in ("CLAUDE_PROJECT_DIR", "BYORI_TASK_ID"):
         environment.pop(key, None)
     # A globally registered MCP may still be loaded when coordinator memory is
     # disabled.  Pin every worker to readonly so --no-memory can never fall back
@@ -973,7 +982,10 @@ async def execute_agent(
     state: Dict[str, Any],
     quiet: bool,
 ) -> None:
-    worktree = pathlib.Path(agent["worktree"])
+    worktree = pathlib.Path(agent["worktree"]).expanduser().resolve()
+    worker_environment = dict(environment)
+    worker_environment["CLAUDE_PROJECT_DIR"] = str(worktree)
+    worker_environment["BYORI_TASK_ID"] = "%s:%s" % (state["run_id"], agent["label"])
     session_id = agent.get("native_session_id") or str(uuid.uuid4())
     argv = adapter.build_argv(probe.path or adapter.executable, session_id, allow_shell)
     agent.update(
@@ -994,7 +1006,7 @@ async def execute_agent(
         process = await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(worktree),
-            env=environment,
+            env=worker_environment,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -1604,7 +1616,10 @@ def command_code(args: argparse.Namespace) -> int:
             client = MemoryWriter(space, default_byoridb_home(), profile="readonly")
             if not hasattr(client.module, "read_code_index"):
                 raise ByoriError("installed MCP runtime lacks code browsing; update Byori")
-            result = client.module.read_code_index(args.code_action, query)
+            if args.code_action == "verify":
+                result = client.module.read_code_index(args.code_action, query, project_root=str(root))
+            else:
+                result = client.module.read_code_index(args.code_action, query)
     except ByoriError:
         raise
     except Exception as exc:
@@ -1613,6 +1628,78 @@ def command_code(args: argparse.Namespace) -> int:
         if client is not None:
             client.module._logout()
     print(bounded_code_response(result, args.code_action, getattr(args, "offset", 0)))
+    return 0
+
+
+def command_memory(args: argparse.Namespace) -> int:
+    """Project-scoped lifecycle and explicit checkpoint bridge for the native app."""
+    root = repository_root(pathlib.Path(args.path))
+    space = code_index_space(root, args.space, default_byori_home())
+    payload = args.payload
+    if args.payload_file:
+        path = pathlib.Path(args.payload_file)
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size > 64 * 1024:
+                    raise ByoriError("memory payload must be a regular file of at most 64 KiB")
+                contents = stream.read(64 * 1024 + 1)
+            payload = contents.decode("utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ByoriError("memory payload must be a readable regular UTF-8 file") from exc
+    if len(payload.encode("utf-8")) > 64 * 1024:
+        raise ByoriError("memory payload exceeds 64 KiB")
+    try:
+        request = json.loads(payload)
+    except (ValueError, TypeError) as exc:
+        raise ByoriError("memory payload must be a JSON object") from exc
+    if not isinstance(request, dict):
+        raise ByoriError("memory payload must be a JSON object")
+    client = None
+    previous_root = os.environ.get("CLAUDE_PROJECT_DIR")
+    previous_cwd = pathlib.Path.cwd()
+    try:
+        os.chdir(root)
+        os.environ["CLAUDE_PROJECT_DIR"] = str(root)
+        with open(os.devnull, "w") as quiet, contextlib.redirect_stderr(quiet):
+            client = MemoryWriter(space, default_byoridb_home(),
+                                  profile="readonly" if args.memory_action in ("read", "resume") else "safe")
+            if not hasattr(client.module, "memory_cli_action"):
+                raise ByoriError("installed MCP runtime lacks memory lifecycle tools; update Byori")
+            result = client.module.memory_cli_action(args.memory_action, request)
+    except ByoriError:
+        raise
+    except Exception as exc:
+        raise ByoriError("could not access project memory: %s" % exc) from exc
+    finally:
+        try:
+            if client is not None:
+                client.module._logout()
+        finally:
+            os.chdir(previous_cwd)
+            if previous_root is None:
+                os.environ.pop("CLAUDE_PROJECT_DIR", None)
+            else:
+                os.environ["CLAUDE_PROJECT_DIR"] = previous_root
+    if args.memory_action == "read":
+        for item in result.get("items", []):
+            if len(item.get("body", "")) > 4000:
+                item["body"] = item["body"][:4000] + "…"
+                item["body_truncated"] = True
+        while len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 192 * 1024:
+            if not result.get("items"):
+                raise ByoriError("memory response exceeds display limit")
+            result["items"].pop()
+            result["truncated"] = True
+            result["next_offset"] = request.get("offset", 0) + len(result["items"])
+            ids = {item["vid"] for item in result["items"]}
+            result["links"] = [link for link in result.get("links", [])
+                               if str(link.get("source_vid")) in ids or str(link.get("target_vid")) in ids]
+    encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > 192 * 1024:
+        raise ByoriError("memory response exceeds display limit")
+    print(encoded)
     return 0
 
 
@@ -1886,7 +1973,7 @@ def command_run(args: argparse.Namespace) -> int:
             memory = MemoryBridge(project["space"], default_byoridb_home())
             with graph_lock(home, project["space"]):
                 memory.prepare()
-                graph_context = format_context(select_context(memory.recall(), prompt))
+                graph_context = format_context(select_context(memory.recall(root), prompt))
                 checkpoint_attempted = True
                 memory.checkpoint_start(project, state)
             checkpoint_started = True
@@ -2033,7 +2120,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     code = commands.add_parser("code", help="browse the saved code index without re-indexing")
     code_commands = code.add_subparsers(dest="code_action", required=True)
-    for action in ("status", "files", "symbols", "relations", "impact"):
+    for action in ("status", "verify", "files", "symbols", "relations", "impact"):
         command = code_commands.add_parser(action)
         command.add_argument("path", nargs="?", default=".")
         command.add_argument("--space", help="project memory space")
@@ -2042,7 +2129,7 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--query", default="")
             command.add_argument("--language", choices=("python", "swift", "javascript", "typescript", "rust"))
             command.add_argument("--offset", type=int, default=0)
-        if action != "status":
+        if action not in ("status", "verify"):
             command.add_argument("--limit", type=int, default=50)
         if action == "symbols":
             command.add_argument("--file")
@@ -2055,6 +2142,18 @@ def build_parser() -> argparse.ArgumentParser:
         if action == "impact":
             command.add_argument("--depth", type=int, default=3)
         command.set_defaults(handler=command_code)
+
+    memory = commands.add_parser("memory", help="read active memory, manage lifecycle, and restore task checkpoints")
+    memory_commands = memory.add_subparsers(dest="memory_action", required=True)
+    for action in ("read", "policy", "checkpoint", "resume"):
+        command = memory_commands.add_parser(action)
+        command.add_argument("path", nargs="?", default=".")
+        command.add_argument("--space")
+        command.add_argument("--json", action="store_true")
+        payload = command.add_mutually_exclusive_group()
+        payload.add_argument("--payload", default="{}", help="validated tool arguments as a JSON object")
+        payload.add_argument("--payload-file", help="private UTF-8 JSON file, up to 64 KiB")
+        command.set_defaults(handler=command_memory)
 
     open_command = commands.add_parser(
         "open",

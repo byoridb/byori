@@ -7,7 +7,50 @@ public protocol CodeIndexProviding: Sendable {
 }
 
 public enum CodeIndexAction: String, Sendable, CaseIterable {
-    case status, files, symbols, relations, impact
+    case status, verify, files, symbols, relations, impact
+}
+
+public struct CodeIndexChangedFile: Decodable, Sendable, Equatable, Identifiable {
+    public let path: String
+    public let change: String
+    public var id: String { change + ":" + path }
+    public init(path: String, change: String) { self.path = path; self.change = change }
+}
+
+/// A bounded source-byte observation, never an assertion of semantic validity.
+public struct CodeIndexVerification: Decodable, Sendable, Equatable {
+    public let state: String
+    public let complete: Bool
+    public let checkedAt: Int64
+    public let snapshotID: String?
+    public let checkedFiles: Int
+    public let skippedFiles: Int
+    public let added: Int
+    public let modified: Int
+    public let deleted: Int
+    public let samples: [CodeIndexChangedFile]
+    public let reason: String?
+    public let currentRevision: String?
+    public let revisionChanged: Bool?
+    public let coverage: String
+
+    enum CodingKeys: String, CodingKey {
+        case state, complete, added, modified, deleted, samples, reason, coverage
+        case checkedAt = "checked_at", snapshotID = "snapshot_id", checkedFiles = "checked_files"
+        case skippedFiles = "skipped_files", currentRevision = "current_revision", revisionChanged = "revision_changed"
+    }
+
+    public init(state: String = "not_checked", complete: Bool = false, checkedAt: Int64 = 0,
+                snapshotID: String? = nil, checkedFiles: Int = 0, skippedFiles: Int = 0,
+                added: Int = 0, modified: Int = 0, deleted: Int = 0,
+                samples: [CodeIndexChangedFile] = [], reason: String? = nil,
+                currentRevision: String? = nil, revisionChanged: Bool? = nil, coverage: String = "") {
+        self.state = state; self.complete = complete; self.checkedAt = checkedAt; self.snapshotID = snapshotID
+        self.checkedFiles = checkedFiles; self.skippedFiles = skippedFiles
+        self.added = added; self.modified = modified; self.deleted = deleted; self.samples = samples
+        self.reason = reason; self.currentRevision = currentRevision; self.revisionChanged = revisionChanged
+        self.coverage = coverage
+    }
 }
 
 public struct CodeIndexRequest: Sendable, Equatable {
@@ -151,19 +194,22 @@ public struct CodeIndexResponse: Decodable, Sendable, Equatable {
     public let truncated: Bool
     public let nextOffset: Int?
     public let depth: Int?
+    public let verification: CodeIndexVerification?
 
     enum CodingKeys: String, CodingKey {
-        case index, files, symbols, relations, impacted, truncated, depth
+        case index, files, symbols, relations, impacted, truncated, depth, verification
         case checkoutID = "checkout_id", nextOffset = "next_offset"
     }
 
     public init(checkoutID: String = "", index: CodeIndexSnapshot? = nil,
                 files: [CodeIndexFile] = [], symbols: [CodeIndexSymbol] = [],
                 relations: [CodeIndexRelation] = [], impacted: [CodeIndexImpact] = [],
-                truncated: Bool = false, nextOffset: Int? = nil, depth: Int? = nil) {
+                truncated: Bool = false, nextOffset: Int? = nil, depth: Int? = nil,
+                verification: CodeIndexVerification? = nil) {
         self.checkoutID = checkoutID; self.index = index; self.files = files; self.symbols = symbols
         self.relations = relations; self.impacted = impacted; self.truncated = truncated
         self.nextOffset = nextOffset; self.depth = depth
+        self.verification = verification
     }
 
     public init(from decoder: Decoder) throws {
@@ -177,5 +223,6 @@ public struct CodeIndexResponse: Decodable, Sendable, Equatable {
         truncated = try c.decodeIfPresent(Bool.self, forKey: .truncated) ?? false
         nextOffset = try c.decodeIfPresent(Int.self, forKey: .nextOffset)
         depth = try c.decodeIfPresent(Int.self, forKey: .depth)
+        verification = try c.decodeIfPresent(CodeIndexVerification.self, forKey: .verification)
     }
 }

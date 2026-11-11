@@ -41,6 +41,9 @@ final class CodeIndexViewModel: ObservableObject {
     let projectRoot: URL
     let space: String
     @Published private(set) var snapshot: CodeIndexSnapshot?
+    @Published private(set) var verification: CodeIndexVerification?
+    @Published private(set) var isVerifying = false
+    @Published private(set) var verificationError: String?
     @Published private(set) var hasLoaded = false
     @Published private(set) var isLoading = false
     @Published private(set) var isLoadingList = false
@@ -67,6 +70,7 @@ final class CodeIndexViewModel: ObservableObject {
     private var generation = UUID()
     private var listGeneration = UUID()
     private var detailGeneration = UUID()
+    private var verificationGeneration = UUID()
     private var searchTask: Task<Void, Never>?
     private var detailTask: Task<Void, Never>?
 
@@ -88,6 +92,8 @@ final class CodeIndexViewModel: ObservableObject {
         errorMessage = nil
         listErrorMessage = nil
         snapshotNotice = nil
+        verification = nil
+        verificationError = nil
         clearSelection()
         files = []; symbols = []; nextOffset = nil
         do {
@@ -96,13 +102,51 @@ final class CodeIndexViewModel: ObservableObject {
             snapshot = response.index
             hasLoaded = true
             isLoading = false
-            if response.index != nil { await reloadResults() }
+            if response.index != nil {
+                await reloadResults()
+                guard generation == token, !Task.isCancelled else { return }
+                await verifyFreshness()
+            }
         } catch {
             guard generation == token, !Task.isCancelled else { return }
             snapshot = nil
             errorMessage = error.localizedDescription
             isLoading = false
             hasLoaded = true
+        }
+    }
+
+    func verifyFreshness() async {
+        guard let expectedSnapshot = snapshot else { return }
+        let epoch = generation
+        let token = UUID()
+        verificationGeneration = token
+        isVerifying = true
+        verificationError = nil
+        verification = nil
+        do {
+            let response = try await query(.init(action: .verify))
+            guard generation == epoch, verificationGeneration == token, !Task.isCancelled else { return }
+            guard sameSnapshot(snapshot, expectedSnapshot) else {
+                isVerifying = false
+                return
+            }
+            if !sameSnapshot(response.index, snapshot) {
+                snapshot = response.index
+                snapshotNotice = "확인 중 새 분석 결과가 저장되어 목록을 다시 불러왔습니다."
+                await reloadResults()
+                guard generation == epoch, verificationGeneration == token, !Task.isCancelled else { return }
+            }
+            // Even a valid check cannot attest to a different snapshot's files.
+            if let checked = response.verification,
+               sameSnapshot(response.index, snapshot), checked.snapshotID == snapshot?.snapshotID {
+                verification = checked
+            }
+            isVerifying = false
+        } catch {
+            guard generation == epoch, verificationGeneration == token, !Task.isCancelled else { return }
+            verificationError = error.localizedDescription
+            isVerifying = false
         }
     }
 
@@ -152,6 +196,7 @@ final class CodeIndexViewModel: ObservableObject {
             guard generation == epoch, listGeneration == token, !Task.isCancelled else { return }
             if !sameSnapshot(response.index, snapshot) {
                 snapshot = response.index
+                verification = nil
                 clearSelection()
                 files = []; symbols = []; nextOffset = nil
                 snapshotNotice = "새 분석 결과가 저장되어 목록을 다시 불러왔습니다."
@@ -265,6 +310,7 @@ final class CodeIndexViewModel: ObservableObject {
         isLoading = false
         isLoadingList = false
         isLoadingDetail = false
+        isVerifying = false
     }
 
     private func clearSelection() {
@@ -281,6 +327,8 @@ final class CodeIndexViewModel: ObservableObject {
         generation = UUID()
         listGeneration = UUID()
         detailGeneration = UUID()
+        verificationGeneration = UUID()
+        isVerifying = false
         searchTask?.cancel()
         detailTask?.cancel()
     }

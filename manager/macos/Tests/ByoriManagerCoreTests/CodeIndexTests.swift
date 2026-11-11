@@ -8,8 +8,18 @@ final class CodeIndexTests: XCTestCase {
         XCTAssertTrue(response.indexed)
         XCTAssertEqual(response.index?.indexedAt, 1_794_297_601_451)
         XCTAssertNil(response.index?.languageStats)
+        XCTAssertNil(response.verification)
         XCTAssertEqual(response.symbols, [])
         XCTAssertFalse(response.truncated)
+    }
+
+    func testBoundedSourceVerificationDecodesSeparatelyFromSnapshot() throws {
+        let json = #"{"checkout_id":"aaaaaaaaaaaaaaaa","index":null,"verification":{"state":"not_checked","complete":false,"checked_at":1234,"snapshot_id":"a","checked_files":0,"skipped_files":0,"added":0,"modified":0,"deleted":0,"samples":[],"reason":"byte_limit","current_revision":null,"revision_changed":null,"coverage":"source bytes only"}}"#
+        let response = try JSONDecoder().decode(CodeIndexResponse.self, from: Data(json.utf8))
+        XCTAssertEqual(response.verification?.state, "not_checked")
+        XCTAssertEqual(response.verification?.reason, "byte_limit")
+        XCTAssertFalse(response.verification?.complete ?? true)
+        XCTAssertEqual(response.verification?.checkedAt, 1234)
     }
 
     func testUnindexedResponseAndUnresolvedReferencesDecode() throws {

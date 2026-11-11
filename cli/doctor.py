@@ -356,6 +356,7 @@ def _authenticated_probe(http, env_values, space):
     """Log in and count the space's memories. The secret is never printed."""
     import urllib.error
     import urllib.request
+    from urllib.parse import quote
 
     password = env_values.get("BYORIDB_ROOT_PASSWORD") or env_values.get("BYORIDB_PASSWORD")
     if not password:
@@ -390,18 +391,34 @@ def _authenticated_probe(http, env_values, space):
         except Exception:  # noqa: BLE001
             return None
 
-    count = None
-    if query("USE %s" % space) is not None:
-        body = query("MATCH (n) RETURN count(n) AS total")
-        rows = (body or {}).get("results") or []
-        if rows:
-            try:
-                count = int(rows[0].get("total", 0))
-            except (TypeError, ValueError):
-                count = None
-        else:
-            count = 0
-    return "ok", count
+    try:
+        count = None
+        if query("USE %s" % space) is not None:
+            body = query("MATCH (n) RETURN count(n) AS total")
+            # A failed query is unknown, not an empty project.
+            if body is not None:
+                rows = body.get("results") or []
+                if rows:
+                    try:
+                        count = int(rows[0].get("total", 0))
+                    except (TypeError, ValueError):
+                        count = None
+                else:
+                    count = 0
+        return "ok", count
+    finally:
+        # Diagnostics must not fill the engine's session table. Close the one
+        # login on every query path, without replacing the diagnosis if logout
+        # itself fails or exposing the session identifier in output.
+        try:
+            request = urllib.request.Request(
+                http + "/api/v1/session/" + quote(str(session), safe=""),
+                method="DELETE",
+            )
+            with urllib.request.urlopen(request, timeout=5):
+                pass
+        except Exception:  # noqa: BLE001 - best effort cleanup preserves result
+            pass
 
 
 def _mcp_registered():
