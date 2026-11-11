@@ -157,6 +157,7 @@ public struct TerminalLaunchDescriptorFactory {
             defaultName: descriptor.executableName
         )
         let environment = try makeEnvironment(
+            workingDirectory: directory,
             overrides: environmentOverrides,
             removing: environmentRemovals
         )
@@ -205,7 +206,7 @@ public struct TerminalLaunchDescriptorFactory {
     ) throws -> TerminalLaunchDescriptor {
         let directory = try validateDirectory(workingDirectory)
         let executable = try validateExecutable(provider.executableURL)
-        let environment = try makeEnvironment(overrides: environmentOverrides)
+        let environment = try makeEnvironment(workingDirectory: directory, overrides: environmentOverrides)
         let arguments = try (provider.defaultArguments + additionalArguments).map(validateArgument)
 
         return TerminalLaunchDescriptor(
@@ -233,7 +234,7 @@ public struct TerminalLaunchDescriptorFactory {
     ) throws -> TerminalLaunchDescriptor {
         let directory = try validateDirectory(workingDirectory)
         let shell = try validateExecutable(executable ?? resolvedDefaultShell())
-        let environment = try makeEnvironment(overrides: environmentOverrides)
+        let environment = try makeEnvironment(workingDirectory: directory, overrides: environmentOverrides)
 
         return TerminalLaunchDescriptor(
             id: sessionID,
@@ -352,10 +353,15 @@ public struct TerminalLaunchDescriptorFactory {
     }
 
     private func makeEnvironment(
+        workingDirectory: URL,
         overrides: [String: String],
         removing keysToRemove: Set<String> = []
     ) throws -> [String: String] {
         var environment = baseEnvironment
+        // A new session belongs to its selected checkout and explicitly named
+        // task. The app may itself have been launched by a different agent.
+        environment.removeValue(forKey: "CLAUDE_PROJECT_DIR")
+        environment.removeValue(forKey: "BYORI_TASK_ID")
         for key in keysToRemove {
             guard key.range(of: #"^[A-Za-z_][A-Za-z0-9_]*$"#, options: .regularExpression) != nil else {
                 throw TerminalLaunchDescriptorError.invalidEnvironmentKey(key)
@@ -366,6 +372,7 @@ public struct TerminalLaunchDescriptorFactory {
             try validateEnvironment(key: key, value: value)
             environment[key] = value
         }
+        environment["CLAUDE_PROJECT_DIR"] = workingDirectory.path
         for (key, value) in environment {
             try validateEnvironment(key: key, value: value)
         }
