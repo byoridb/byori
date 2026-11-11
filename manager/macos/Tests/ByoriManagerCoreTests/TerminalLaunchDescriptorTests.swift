@@ -53,6 +53,27 @@ final class TerminalLaunchDescriptorTests: XCTestCase {
         XCTAssertEqual(descriptor.environment["COLORTERM"], "truecolor")
     }
 
+    func testEveryLaunchBindsCheckoutAndOnlyExplicitTaskInsteadOfParentScope() throws {
+        let executable = try makeExecutable(named: "scope-agent")
+        let parent = ["CLAUDE_PROJECT_DIR": "/another/project", "BYORI_TASK_ID": "parent-task"]
+        let factory = TerminalLaunchDescriptorFactory(paths: paths, environment: parent)
+        let overrides = ["CLAUDE_PROJECT_DIR": "/stale/override", "BYORI_TASK_ID": "selected-task"]
+        let provider = CustomAgentProvider(id: "custom", displayName: "Custom", executablePath: executable.path, defaultArguments: [])
+        let descriptors = [
+            try factory.codingAgent(.claude, workingDirectory: workingDirectory, executableOverride: executable, environmentOverrides: overrides),
+            try factory.codingAgent(.codex, workingDirectory: workingDirectory, executableOverride: executable, environmentOverrides: overrides),
+            try factory.customAgent(provider, workingDirectory: workingDirectory, environmentOverrides: overrides),
+            try factory.systemShell(workingDirectory: workingDirectory, executable: executable, environmentOverrides: overrides),
+        ]
+        for descriptor in descriptors {
+            XCTAssertEqual(descriptor.environment["CLAUDE_PROJECT_DIR"], workingDirectory.resolvingSymlinksInPath().path)
+            XCTAssertEqual(descriptor.environment["BYORI_TASK_ID"], "selected-task")
+        }
+        let shell = try factory.systemShell(workingDirectory: workingDirectory, executable: executable)
+        XCTAssertNil(shell.environment["BYORI_TASK_ID"])
+        XCTAssertEqual(parent["CLAUDE_PROJECT_DIR"], "/another/project")
+    }
+
     func testCodexDescriptorUsesInteractiveTUIAndFixedWorkingDirectory() throws {
         let executable = try makeExecutable(named: "codex")
         let factory = TerminalLaunchDescriptorFactory(paths: paths, environment: [:])
