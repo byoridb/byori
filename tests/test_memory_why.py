@@ -128,6 +128,11 @@ class MemoryWhyTests(unittest.TestCase):
         )
         self.assertNotIn("stale", answers["decision:retry-limit-three"])
 
+    def test_superseded_state_without_an_edge_is_still_stale(self):
+        self.edges = [edge for edge in self.edges if edge["relation"] != "supersedes"]
+        answers = {a["name"]: a for a in self.why("retry", limit=5)["answers"]}
+        self.assertTrue(answers["decision:retry-limit-five"]["stale"])
+
     def test_an_incident_reports_what_caused_it(self):
         answer = {a["name"]: a for a in self.why("duplicate charges", limit=5)["answers"]}
         incident = answer["incident:duplicate-charges"]

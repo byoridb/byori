@@ -2,6 +2,7 @@
 """Dependency-free tests for the Byori multi-agent CLI."""
 
 import contextlib
+import asyncio
 import importlib.util
 import io
 import json
@@ -565,6 +566,76 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(calls[-1]["state"], "done")
         self.assertNotIn("stdout", calls[-1]["body"])
         module.tool_link.assert_called_once()
+
+
+class MemoryScopeTests(unittest.TestCase):
+    def test_recall_binds_explicit_project_without_changing_parent_environment(self):
+        bridge = object.__new__(CLI.MemoryBridge)
+        bridge.module = mock.Mock(spec=["memory_read_project"])
+        expected = pathlib.Path("/tmp/byori-project-b").resolve()
+
+        def read_project(request, root):
+            self.assertEqual(root, str(expected))
+            self.assertEqual(request, {"limit": 20, "include_links": True})
+            self.assertEqual(os.environ["CLAUDE_PROJECT_DIR"], "/parent/project-a")
+            return {"items": [], "links": []}
+
+        bridge.module.memory_read_project.side_effect = read_project
+        with mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": "/parent/project-a"}):
+            self.assertEqual(bridge.recall(expected), {"items": [], "links": []})
+            self.assertEqual(os.environ["CLAUDE_PROJECT_DIR"], "/parent/project-a")
+
+    def test_old_bridge_cannot_silently_read_using_inherited_checkout(self):
+        bridge = object.__new__(CLI.MemoryBridge)
+        bridge.module = mock.Mock(spec=["tool_read"])
+        with self.assertRaisesRegex(CLI.ByoriError, "checkout-scoped"):
+            bridge.recall(pathlib.Path("/tmp/project-b"))
+        bridge.module.tool_read.assert_not_called()
+
+    def test_base_worker_environment_discards_inherited_project_and_task(self):
+        with mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": "/parent", "BYORI_TASK_ID": "parent-task"}):
+            environment = CLI.child_environment("project_b", True)
+            self.assertNotIn("CLAUDE_PROJECT_DIR", environment)
+            self.assertNotIn("BYORI_TASK_ID", environment)
+            self.assertEqual(os.environ["BYORI_TASK_ID"], "parent-task")
+
+    def test_parallel_workers_get_distinct_copied_checkout_and_task_bindings(self):
+        # Spawn and Git collection are strict fakes: no provider or service runs.
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            agents = []
+            for label in ("codex-1", "codex-2"):
+                worktree = base / label
+                worktree.mkdir()
+                agents.append({"label": label, "provider": "codex", "worktree": str(worktree)})
+            state = {"run_id": "run-123", "agents": agents}
+            environment = {
+                "CLAUDE_PROJECT_DIR": "/parent/project-a", "BYORI_TASK_ID": "parent-task",
+                "BYORIDB_MEMORY_SPACE": "project_b", "BYORIDB_MCP_PROFILE": "readonly",
+            }
+            original = dict(environment)
+            captured = []
+
+            async def spawn_fake(*argv, **kwargs):
+                captured.append(kwargs)
+                await asyncio.sleep(0)  # Make mutation of a shared env observable.
+                raise OSError("fake process boundary")
+
+            probe = CLI.ProviderProbe("codex", True, "/fake/codex", "fixture", ())
+            with (mock.patch.object(CLI.asyncio, "create_subprocess_exec", side_effect=spawn_fake),
+                  mock.patch.object(CLI, "current_git_state", return_value={})):
+                asyncio.run(CLI.run_agents(state, {"codex": probe}, "fixture", environment,
+                                          5, False, mock.Mock(), True))
+            self.assertEqual(environment, original)
+            self.assertEqual(len(captured), 2)
+            self.assertIsNot(captured[0]["env"], captured[1]["env"])
+            self.assertEqual({item["env"]["BYORI_TASK_ID"] for item in captured},
+                             {"run-123:codex-1", "run-123:codex-2"})
+            for item in captured:
+                self.assertEqual(item["env"]["CLAUDE_PROJECT_DIR"], item["cwd"])
+                self.assertEqual(str(pathlib.Path(item["cwd"]).resolve()), item["cwd"])
+                self.assertEqual(item["env"]["BYORIDB_MCP_PROFILE"], "readonly")
+                self.assertEqual(item["env"]["BYORIDB_MEMORY_SPACE"], "project_b")
 
 
 if __name__ == "__main__":

@@ -68,6 +68,7 @@ struct CodeIndexView: View {
 
     private func summary(_ snapshot: CodeIndexSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 8) {
+            freshnessSummary
             HStack(spacing: 16) {
                 Text("파일 \(snapshot.files.formatted())")
                 Text("심볼 \(snapshot.symbols.formatted())")
@@ -131,6 +132,98 @@ struct CodeIndexView: View {
         .padding(.vertical, 12)
         .background(Color(nsColor: .controlBackgroundColor))
         .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private var freshnessSummary: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                if model.isVerifying {
+                    ProgressView().controlSize(.small)
+                    Text("현재 소스와 비교 중…").font(.callout)
+                } else {
+                    Label(freshnessTitle, systemImage: freshnessIcon)
+                        .font(.callout.weight(.medium)).foregroundStyle(freshnessColor)
+                    if let check = model.verification {
+                        Text(Date(timeIntervalSince1970: Double(check.checkedAt) / 1000), format: .dateTime.month().day().hour().minute())
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Button("최신 상태 확인") { Task { await model.verifyFreshness() } }
+                    .disabled(model.isVerifying || isAnalyzing)
+            }
+            if let check = model.verification {
+                if check.complete {
+                    Text("\(check.checkedFiles)개 파일 확인 · 추가 \(check.added) · 수정 \(check.modified) · 삭제 \(check.deleted)")
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    if check.revisionChanged == true {
+                        Text("Git revision은 분석 당시와 다릅니다. 위 상태는 소스 파일 내용을 비교한 결과입니다.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if check.currentRevision == nil {
+                        Text("현재 Git revision은 확인하지 못했습니다. 파일 내용 비교와는 별도입니다.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text(verificationReason(check.reason)).font(.caption).foregroundStyle(.secondary)
+                }
+                if !check.samples.isEmpty {
+                    DisclosureGroup("변경 파일 \(check.added + check.modified + check.deleted)개") {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 4) {
+                                ForEach(check.samples) { sample in
+                                    Text("\(changeName(sample.change)) · \(sample.path)").font(.caption.monospaced())
+                                }
+                                if check.samples.count < check.added + check.modified + check.deleted {
+                                    Text("변경 파일 중 \(check.samples.count)개만 표시합니다.")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                        }
+                        .frame(maxHeight: 90)
+                    }
+                    .font(.caption)
+                }
+            } else if let error = model.verificationError {
+                Text(error).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var freshnessTitle: String {
+        guard let check = model.verification, check.complete else { return "확인하지 못함" }
+        switch check.state {
+        case "current": return "최신 · 확인 시점의 소스와 일치"
+        case "changed": return "변경됨 · 다시 분석이 필요합니다"
+        default: return "확인하지 못함"
+        }
+    }
+
+    private var freshnessIcon: String {
+        guard let check = model.verification, check.complete else { return "questionmark.circle" }
+        return check.state == "current" ? "checkmark.circle" : "exclamationmark.circle"
+    }
+
+    private var freshnessColor: Color {
+        guard let check = model.verification, check.complete else { return .secondary }
+        return check.state == "current" ? .green : .orange
+    }
+
+    private func verificationReason(_ reason: String?) -> String {
+        switch reason {
+        case "file_limit", "inventory_limit", "byte_limit", "time_limit":
+            return "확인 가능한 파일 수·용량·시간 한도에 도달해 전체 비교를 완료하지 못했습니다."
+        case "checkout_mismatch": return "현재 작업 트리와 저장된 분석의 위치가 일치하지 않습니다."
+        case "snapshot_changed": return "확인 중 분석 결과가 갱신되었습니다. 다시 확인해 주세요."
+        case "working_tree_changed": return "확인 중 파일이 바뀌었습니다. 편집이 끝난 뒤 다시 확인해 주세요."
+        case "no_index": return "이 작업 트리에 저장된 분석 결과가 없습니다."
+        case "manifest_incomplete": return "저장된 파일 목록을 모두 읽지 못했습니다. 다시 분석해 주세요."
+        default: return "파일이나 Git 정보를 읽지 못해 비교를 완료하지 못했습니다."
+        }
+    }
+
+    private func changeName(_ change: String) -> String {
+        switch change { case "added": return "추가"; case "deleted": return "삭제"; default: return "수정" }
     }
 
     @ViewBuilder
@@ -373,7 +466,7 @@ struct CodeIndexView: View {
                 Text("이 작업 트리를 분석하고 있습니다. 큰 저장소는 몇 분 걸립니다.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-                Text("저장된 정적 분석 결과입니다. 현재 파일과의 일치는 아직 확인하지 않았습니다.")
+                Text("최신 상태는 지원 소스 파일의 내용 기준이며, 코드의 동작이나 설계 판단의 유효성을 검증하지 않습니다.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()

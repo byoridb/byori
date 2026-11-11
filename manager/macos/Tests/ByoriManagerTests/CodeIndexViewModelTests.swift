@@ -14,10 +14,11 @@ final class CodeIndexViewModelTests: XCTestCase {
         XCTAssertEqual(model.snapshot?.snapshotID, "snapshot-a")
         XCTAssertEqual(model.files.map(\.path), ["a.swift"])
         let calls = await provider.calls
-        XCTAssertEqual(calls.map(\.request.action), [.status, .files])
+        XCTAssertEqual(calls.map(\.request.action), [.status, .files, .verify])
         XCTAssertTrue(calls.allSatisfy { $0.root == root && $0.space == "project_space" })
         XCTAssertFalse(model.isLoading)
         XCTAssertFalse(model.isLoadingList)
+        XCTAssertEqual(model.verification?.state, "current")
     }
 
     func testMissingIndexDoesNotQueryFilesOrStartAnalysis() async {
@@ -137,6 +138,54 @@ final class CodeIndexViewModelTests: XCTestCase {
         XCTAssertEqual(model.snapshot?.snapshotID, "snapshot-a")
     }
 
+    func testVerificationForAnotherSnapshotCannotClaimCurrent() async {
+        let provider = CodeIndexFixtureProvider()
+        await provider.set(.init(index: snapshot(), verification: .init(
+            state: "current", complete: true, snapshotID: "different-snapshot")), for: "verify::0:")
+        let model = makeModel(provider)
+        await model.load()
+        XCTAssertNil(model.verification)
+        XCTAssertFalse(model.isVerifying)
+    }
+
+    func testLateVerificationCannotRollBackNewerSearchSnapshot() async {
+        let provider = CodeIndexFixtureProvider()
+        let model = makeModel(provider)
+        await model.load()
+        await provider.set(.init(index: snapshot(), verification: .init(
+            state: "current", complete: true, snapshotID: "snapshot-a")), for: "verify::0:", held: true)
+        let verifying = Task { await model.verifyFreshness() }
+        await provider.waitFor("verify::0:", after: 1)
+
+        await provider.set(.init(index: snapshot("snapshot-b"), files: [file("new.swift")]), for: "files:new:0:")
+        model.searchText = "new"
+        await model.reloadResults()
+        await provider.release("verify::0:")
+        await verifying.value
+
+        XCTAssertEqual(model.snapshot?.snapshotID, "snapshot-b")
+        XCTAssertEqual(model.files.map(\.path), ["new.swift"])
+        XCTAssertNil(model.verification)
+        XCTAssertFalse(model.isVerifying)
+    }
+
+    func testSnapshotPublishedDuringVerificationReloadsWithoutMixingFreshness() async {
+        let provider = CodeIndexFixtureProvider()
+        let model = makeModel(provider)
+        await model.load()
+        await provider.set(.init(index: snapshot("snapshot-b"), files: [file("new.swift")]), for: "files::0:")
+        await provider.set(.init(index: snapshot("snapshot-b"), verification: .init(
+            state: "not_checked", complete: false, snapshotID: "snapshot-b", reason: "snapshot_changed")), for: "verify::0:")
+
+        await model.verifyFreshness()
+
+        XCTAssertEqual(model.snapshot?.snapshotID, "snapshot-b")
+        XCTAssertEqual(model.files.map(\.path), ["new.swift"])
+        XCTAssertEqual(model.verification?.state, "not_checked")
+        XCTAssertFalse(model.verification?.complete ?? true)
+        XCTAssertFalse(model.isVerifying)
+    }
+
     private func makeModel(_ provider: CodeIndexFixtureProvider) -> CodeIndexViewModel {
         CodeIndexViewModel(provider: provider, projectRoot: root, space: "project_space")
     }
@@ -161,16 +210,16 @@ private actor CodeIndexFixtureProvider: CodeIndexProviding {
     private var replies: [String: CodeIndexResponse] = [:]
     private var held: Set<String> = []
     private var pending: [String: CheckedContinuation<CodeIndexResponse, Never>] = [:]
-    private var waiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+    private var waiters: [String: [(Int, CheckedContinuation<Void, Never>)]] = [:]
 
     func set(_ response: CodeIndexResponse, for key: String, held: Bool = false) {
         replies[key] = response
         if held { self.held.insert(key) }
     }
 
-    func waitFor(_ key: String) async {
-        if calls.contains(where: { Self.key($0.request) == key }) { return }
-        await withCheckedContinuation { waiters[key, default: []].append($0) }
+    func waitFor(_ key: String, after count: Int = 0) async {
+        if calls.filter({ Self.key($0.request) == key }).count > count { return }
+        await withCheckedContinuation { waiters[key, default: []].append((count, $0)) }
     }
 
     func release(_ key: String) {
@@ -181,8 +230,12 @@ private actor CodeIndexFixtureProvider: CodeIndexProviding {
     func queryCodeIndex(_ request: CodeIndexRequest, projectRoot: URL, space: String) async throws -> CodeIndexResponse {
         calls.append(Call(request: request, root: projectRoot, space: space))
         let key = Self.key(request)
+        let count = calls.filter { Self.key($0.request) == key }.count
         let waiters = self.waiters.removeValue(forKey: key) ?? []
-        waiters.forEach { $0.resume() }
+        for (after, waiter) in waiters {
+            if count > after { waiter.resume() }
+            else { self.waiters[key, default: []].append((after, waiter)) }
+        }
         if held.contains(key) {
             return await withCheckedContinuation { pending[key] = $0 }
         }
@@ -190,6 +243,10 @@ private actor CodeIndexFixtureProvider: CodeIndexProviding {
         let snapshot = CodeIndexSnapshot(root: projectRoot.path, checkoutID: "checkout", snapshotID: "snapshot-a", files: 1, languages: ["swift"])
         if request.action == .files {
             return .init(index: snapshot, files: [CodeIndexFile(id: "file:a.swift", path: "a.swift", language: "swift")])
+        }
+        if request.action == .verify {
+            let active = replies["status::0:"]?.index ?? snapshot
+            return .init(index: active, verification: .init(state: "current", complete: true, snapshotID: active.snapshotID))
         }
         return .init(index: snapshot)
     }

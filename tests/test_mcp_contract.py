@@ -78,7 +78,7 @@ class ConfigurationContractTests(unittest.TestCase):
             # Answering "why" reads and traverses; an orchestrated worker needs it
             # for exactly the recall it is supposed to do before working.
             "memory_why",
-            "code_status", "code_search", "code_relations", "code_impact",
+            "memory_resume", "code_status", "code_search", "code_relations", "code_impact", "code_verify",
         }
         with mock.patch.object(MCP, "PROFILE", "readonly"):
             self.assertEqual(set(MCP._active_tools()), expected)
@@ -370,7 +370,7 @@ class StructuredToolContractTests(unittest.TestCase):
             mock.patch.object(
                 MCP,
                 "_raw_query",
-                side_effect=lambda query: statements.append(query) or {},
+                side_effect=lambda query, **kwargs: statements.append(query) or {},
             ),
             mock.patch.object(MCP.time, "time", return_value=1_720_000_000.0),
         ):
@@ -408,7 +408,7 @@ class StructuredToolContractTests(unittest.TestCase):
             mock.patch.object(
                 MCP,
                 "_raw_query",
-                side_effect=lambda query: statements.append(query) or {},
+                side_effect=lambda query, **kwargs: statements.append(query) or {},
             ),
         ):
             result = MCP.tool_wiki_upsert(
@@ -444,7 +444,7 @@ class StructuredToolContractTests(unittest.TestCase):
                 mock.patch.object(
                     MCP,
                     "_raw_query",
-                    side_effect=lambda query: statements.append(query) or {},
+                    side_effect=lambda query, **kwargs: statements.append(query) or {},
                 ),
             ):
                 result = MCP.tool_wiki_upsert(
@@ -524,7 +524,7 @@ class StructuredToolContractTests(unittest.TestCase):
             mock.patch.object(
                 MCP,
                 "_raw_query",
-                side_effect=lambda query: statements.append(query) or {},
+                side_effect=lambda query, **kwargs: statements.append(query) or {},
             ),
         ):
             linked = MCP.tool_link(
@@ -576,7 +576,7 @@ class StructuredToolContractTests(unittest.TestCase):
             mock.patch.object(
                 MCP,
                 "_raw_query",
-                side_effect=lambda query: statements.append(query) or {},
+                side_effect=lambda query, **kwargs: statements.append(query) or {},
             ),
         ):
             result = MCP.tool_delete(
@@ -584,7 +584,7 @@ class StructuredToolContractTests(unittest.TestCase):
             )
 
         self.assertEqual(
-            statements,
+            [statement for statement in statements if statement.startswith("DELETE")],
             [
                 "DELETE EDGE about 303->202",
                 "DELETE EDGE fixed_by 101->303",

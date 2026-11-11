@@ -176,6 +176,19 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 - Use one 12pt tonal group with 12pt internal padding.
 - Present kind, date, title, bounded body summary, provenance, and relation tags in that order.
 - System teal may identify the record kind; body and provenance remain semantic primary/secondary text.
+- Keep Current, Review, Archived, and All reachable even when the selected view is empty.
+  Explain the reason for review or archival. These are recall policies, not proof of semantic truth.
+- Offer explicit reversible archive/unarchive and pin actions in the record's management sheet.
+  A pin never overrides a superseded, archived, or review-required state.
+
+### Task Checkpoint
+
+- Open a native sheet from the selected project's Context with the captured checkout and task
+  visible. Save an explicit goal, decisions, attempts/results, verification status, and next steps.
+- Show saved time and Git revision, including changed/unverified states; matching HEAD does not
+  attest to uncommitted files. Copy the saved checkpoint only on an explicit action. Do not execute
+  it, inject it into a terminal, or imply that hidden reasoning or a raw session was restored.
+- Keep memory/checkpoint failures independent of terminal launch, Files, and Git inspection.
 
 ### Code Index Browser
 
@@ -186,8 +199,10 @@ Status dots stay small and circular. Pills are reserved for compact system contr
   checkout. Display that identity and path. Queries, analysis, and source reads keep this same
   scope even if the outline selection changes behind the sheet.
 - Read the published ByoriDB snapshot when opening or refreshing, including after app restart.
-  Show its date, revision, language coverage, counts, diagnostics, and unverified working-tree
-  freshness. Analysis is a separate explicit action and targets the displayed checkout.
+  Show its date, revision, language coverage, counts, and diagnostics. Compare source bytes once
+  on opening/refresh and offer an explicit repeat. Distinguish current, changed, and unverified
+  with check time, counts/samples, and incomplete reasons; never equate byte freshness with
+  semantic validity. Analysis is a separate explicit action and targets the displayed checkout.
 - Offer bounded file/symbol search, language filters, and additional result pages. On selection,
   show calls or imports in both directions and bounded change-impact evidence. Name unresolved
   references and truncated results; an empty result never proves runtime independence.
@@ -225,6 +240,10 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 - Keep long-running operations responsive with persistent progress, safe cancellation, and a durable Activity result.
 - Closing the Settings window must not interrupt an operation. Quitting the app cancels only rollback-safe runtime work; otherwise it waits for the exact operation. It must wait for cleanup or rollback and keep the app open on recovery failure.
 - Settings manages services and integrations; project knowledge remains in the workspace Context inspector.
+- Keep diagnosis and recovery next to ByoriDB service controls. Show the diagnosis, eligible
+  start/restart action, verified outcome, retry budget, and next permitted time. An ambiguous
+  owner, authentication problem, missing configuration, or low disk space requires a named
+  manual remedy, not an automatic reinstall. Manual Stop remains respected after app relaunch.
 
 ## Do's and Don'ts
 

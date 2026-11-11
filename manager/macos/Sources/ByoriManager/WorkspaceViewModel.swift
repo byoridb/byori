@@ -46,9 +46,21 @@ protocol WorkspaceDataSource: AnyObject {
     func readCodeIndex(
         _ request: CodeIndexRequest, projectID: String, sourceTreeID: String
     ) async throws -> CodeIndexResponse
+    func resumeCheckpoint(projectID: String, sourceTreeID: String, taskID: String) async throws -> TaskResume
+    func saveCheckpoint(projectID: String, sourceTreeID: String, taskID: String, draft: TaskCheckpointDraft) async throws
+    func updateMemoryPolicy(scope: WorkspaceMemoryScope, change: WorkspaceMemoryChange) async throws
 }
 
 extension WorkspaceDataSource {
+    func resumeCheckpoint(projectID: String, sourceTreeID: String, taskID: String) async throws -> TaskResume {
+        throw WorkspaceAdapterError.unsupported("체크포인트 조회가 연결되지 않았습니다.")
+    }
+    func saveCheckpoint(projectID: String, sourceTreeID: String, taskID: String, draft: TaskCheckpointDraft) async throws {
+        throw WorkspaceAdapterError.unsupported("체크포인트 저장이 연결되지 않았습니다.")
+    }
+    func updateMemoryPolicy(scope: WorkspaceMemoryScope, change: WorkspaceMemoryChange) async throws {
+        throw WorkspaceAdapterError.unsupported("기억 관리가 연결되지 않았습니다.")
+    }
     func loadInspector(_ request: WorkspaceInspectorRequest) async throws -> WorkspaceInspectorSnapshot {
         throw WorkspaceAdapterError.unsupported("Files and Git are not connected yet.")
     }
@@ -500,6 +512,7 @@ struct WorkspaceInspectorRequest: Hashable {
     let taskID: String?
     let sessionID: String?
     let contextDepth: WorkspaceContextDepth
+    var memoryView: MemoryView = .current
 }
 
 struct WorkspaceInspectorSnapshot: Hashable {
@@ -584,6 +597,7 @@ struct WorkspaceContextItem: Identifiable, Hashable {
     var provenance: String
     var updatedAt: Date?
     var tags: [String]
+    var memoryRecord: MemoryRecord? = nil
 }
 
 struct WorkspaceSessionLaunchRequest: Hashable {
@@ -821,6 +835,8 @@ final class WorkspaceViewModel: ObservableObject {
     @Published private(set) var selection: WorkspaceSelection?
     @Published var inspectorTab: WorkspaceInspectorTab = .files
     @Published private(set) var contextDepth: WorkspaceContextDepth = .related
+    @Published private(set) var memoryView: MemoryView = .current
+    @Published private(set) var memoryScope: WorkspaceMemoryScope?
     @Published private(set) var inspectorPhase: WorkspaceInspectorPhase = .idle
     @Published private(set) var inspectorSnapshot: WorkspaceInspectorSnapshot?
     @Published private(set) var contextPhase: WorkspaceInspectorPhase = .idle
@@ -1119,6 +1135,28 @@ final class WorkspaceViewModel: ObservableObject {
         guard contextDepth != depth else { return }
         contextDepth = depth
         Task { await loadContext() }
+    }
+
+    func setMemoryView(_ view: MemoryView) {
+        guard memoryView != view else { return }
+        memoryView = view
+        Task { await loadContext() }
+    }
+
+    func showMemory(_ record: MemoryRecord? = nil) {
+        guard let lineage = selectedLineage, let tree = contextSourceTree(for: lineage) else { return }
+        memoryScope = WorkspaceMemoryScope(project: lineage.project, tree: tree, task: lineage.task, record: record)
+    }
+    func dismissMemory() { memoryScope = nil }
+    func resumeCheckpoint(scope: WorkspaceMemoryScope) async throws -> TaskResume {
+        try await dataSource.resumeCheckpoint(projectID: scope.projectID, sourceTreeID: scope.sourceTreeID, taskID: scope.taskID)
+    }
+    func saveCheckpoint(scope: WorkspaceMemoryScope, draft: TaskCheckpointDraft) async throws {
+        try await dataSource.saveCheckpoint(projectID: scope.projectID, sourceTreeID: scope.sourceTreeID, taskID: scope.taskID, draft: draft)
+    }
+    func updateMemoryPolicy(scope: WorkspaceMemoryScope, change: WorkspaceMemoryChange) async throws {
+        try await dataSource.updateMemoryPolicy(scope: scope, change: change)
+        await loadContext()
     }
 
     func refreshInspector() async {
@@ -2247,7 +2285,8 @@ final class WorkspaceViewModel: ObservableObject {
             sourceTreeID: sourceTree.id,
             taskID: lineage.task?.id,
             sessionID: lineage.session?.id,
-            contextDepth: contextDepth
+            contextDepth: contextDepth,
+            memoryView: memoryView
         )
     }
 

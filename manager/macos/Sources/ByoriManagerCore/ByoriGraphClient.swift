@@ -224,6 +224,7 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
 
     private struct QueryResponse: Decodable {
         let rows: [[String: JSONValue]]
+        let hasResultRows: Bool
 
         enum CodingKeys: String, CodingKey {
             case results
@@ -239,13 +240,16 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
                 forKey: .results
             ) {
                 rows = results
+                hasResultRows = true
                 return
             }
 
             let columns = try container.decodeIfPresent([String].self, forKey: .columnNames)
                 ?? container.decodeIfPresent([String].self, forKey: .columns)
                 ?? []
-            let values = try container.decodeIfPresent([[JSONValue]].self, forKey: .rows) ?? []
+            let decodedRows = try container.decodeIfPresent([[JSONValue]].self, forKey: .rows)
+            hasResultRows = decodedRows != nil
+            let values = decodedRows ?? []
             rows = values.map { row in
                 Dictionary(uniqueKeysWithValues: zip(columns, row).map { ($0.0, $0.1) })
             }
@@ -280,9 +284,21 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
     }
 
     public func verifyConnection(paths: ManagerPaths) async throws {
+        guard await serviceVerifier.verify(paths: paths) else {
+            throw KnowledgeGraphClientError.untrustedService
+        }
         let credentials = try credentials(at: paths.byoriHome.appendingPathComponent("env"))
         let baseURL = try localBaseURL(port: paths.httpPort)
         let sessionID = try await createSession(baseURL: baseURL, password: credentials.password)
+        do {
+            // Login alone cannot verify a working graph engine. SHOW SPACES is
+            // read-only and does not assume that any project space exists yet.
+            let response = try await query(baseURL: baseURL, sessionID: sessionID, statement: "SHOW SPACES")
+            guard response.hasResultRows else { throw KnowledgeGraphClientError.invalidResponse }
+        } catch {
+            await deleteSession(baseURL: baseURL, sessionID: sessionID)
+            throw error
+        }
         await deleteSession(baseURL: baseURL, sessionID: sessionID)
     }
 

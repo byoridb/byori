@@ -15,6 +15,8 @@ public actor ManagerService: CodeIndexProviding {
     private let graphProvider: any KnowledgeGraphProviding
     private let fileManager: FileManager
     private let serviceVerifier: LocalServiceVerifier
+    private let recovery: RuntimeRecoveryController
+    private let recoveryDiskFreeBytes: @Sendable (URL) throws -> Int64
     /// Reads release metadata for the engine. The app's own updater keeps its
     /// fetcher, because that one also downloads and verifies a disk image; this
     /// one never downloads anything.
@@ -34,7 +36,16 @@ public actor ManagerService: CodeIndexProviding {
         files: ManagedFileInstaller = ManagedFileInstaller(),
         graphProvider: any KnowledgeGraphProviding = ByoriGraphClient(),
         fileManager: FileManager = .default,
-        releaseFetcher: any ReleaseFetching = URLSessionReleaseFetcher()
+        releaseFetcher: any ReleaseFetching = URLSessionReleaseFetcher(),
+        recoveryStore: (any RuntimeRecoveryStoring)? = nil,
+        recoveryClock: @escaping @Sendable () -> Date = { Date() },
+        recoveryDiskFreeBytes: @escaping @Sendable (URL) throws -> Int64 = { url in
+            let attributes = try FileManager.default.attributesOfFileSystem(forPath: url.path)
+            guard let bytes = attributes[.systemFreeSize] as? NSNumber else {
+                throw RuntimeRecoveryError.refused(.inspectionFailed)
+            }
+            return bytes.int64Value
+        }
     ) {
         self.paths = paths
         self.runner = runner
@@ -42,6 +53,12 @@ public actor ManagerService: CodeIndexProviding {
         self.graphProvider = graphProvider
         self.fileManager = fileManager
         self.releaseFetcher = releaseFetcher
+        self.recoveryDiskFreeBytes = recoveryDiskFreeBytes
+        recovery = RuntimeRecoveryController(
+            store: recoveryStore ?? RuntimeRecoveryFileStore(
+                url: paths.managerHome.appendingPathComponent("runtime-recovery.json")
+            ), now: recoveryClock
+        )
         serviceVerifier = LocalServiceVerifier(runner: runner)
         // Takes the default FileManager rather than this service's: the status
         // and install paths only run `tmux -V`, and handing a non-Sendable
@@ -178,7 +195,7 @@ public actor ManagerService: CodeIndexProviding {
         }
         var arguments = ["code", request.action.rawValue, projectRoot.path, "--space", space, "--json"]
         switch request.action {
-        case .status: break
+        case .status, .verify: break
         case .files, .symbols:
             arguments += ["--query=\(request.query)", "--limit", String(request.limit), "--offset", String(request.offset)]
             if let language = request.language { arguments += ["--language", language] }
@@ -824,6 +841,125 @@ public actor ManagerService: CodeIndexProviding {
         return try scanner.validatedDirectory(for: skill).appendingPathComponent("SKILL.md")
     }
 
+    public func runtimeRecoveryStatus() async -> RuntimeRecoveryReport {
+        let diagnosis = await recoveryDiagnosis()
+        return await recovery.status(diagnosis: diagnosis)
+    }
+
+    public func recoverRuntime(automatic: Bool = false) async throws -> OperationResult {
+        let report = try await recovery.recover(
+            automatic: automatic,
+            observe: { await self.recoveryDiagnosis() },
+            repair: { try await self.performRecoveryAction($0) }
+        )
+        return OperationResult(
+            summary: "ByoriDB 진단·복구 확인 완료",
+            detail: report.diagnosis.detail
+        )
+    }
+
+    /// Read-only, fail-closed checks. A failed launchctl/lsof probe is not proof
+    /// that a port is free, and a foreign listener never receives credentials.
+    private func recoveryDiagnosis() async -> RuntimeDiagnosis {
+        guard !Task.isCancelled else { return .inspectionFailed }
+        guard fileManager.isExecutableFile(atPath: paths.serverBinary.path) else { return .notInstalled }
+        let script = paths.byoriHome.appendingPathComponent("bin/run-server.sh")
+        guard fileManager.isExecutableFile(atPath: script.path), recoveryConfigurationIsValid(script: script) else {
+            return .missingConfiguration
+        }
+        guard let available = try? recoveryDiskFreeBytes(paths.byoriHome) else { return .inspectionFailed }
+        guard available >= 256 * 1_024 * 1_024 else { return .diskLow }
+        let launchd = await runner.run(CommandSpec(
+            executable: "/bin/launchctl", arguments: ["print", serviceTarget], timeout: 5
+        ))
+        guard !Task.isCancelled, !launchd.timedOut else { return .inspectionFailed }
+        // launchctl uses this diagnostic for a job that is not loaded. Other
+        // failures (permissions, missing domain, command errors) are ambiguous.
+        let absent = !launchd.succeeded && launchd.output.contains("Could not find service")
+        guard launchd.succeeded || absent else { return .inspectionFailed }
+        if launchd.succeeded && !launchd.output.contains(script.path) { return .inspectionFailed }
+        let listeners = await runner.run(CommandSpec(
+            executable: "/usr/sbin/lsof",
+            arguments: ["-nP", "-iTCP:\(paths.httpPort)", "-sTCP:LISTEN", "-Fp"], timeout: 5
+        ))
+        guard !Task.isCancelled, !listeners.timedOut else { return .inspectionFailed }
+        let portIsFree = listeners.exitCode == 1 && listeners.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let owners = Set(listeners.output.components(separatedBy: .newlines).compactMap { line -> Int32? in
+            guard line.hasPrefix("p"), let pid = Int32(line.dropFirst()), pid > 0 else { return nil }
+            return pid
+        })
+        guard portIsFree || (listeners.succeeded && !owners.isEmpty) else { return .inspectionFailed }
+        if portIsFree { return absent ? .stopped : .unresponsive }
+        guard launchd.succeeded,
+              let pid = LocalServiceVerifier.pid(fromLaunchctlOutput: launchd.output),
+              owners == [pid] else { return .foreignListener }
+        // Recheck ownership at the authentication boundary, not just the first
+        // observation. The graph client's real implementation does so as well.
+        guard await serviceVerifier.verify(paths: paths) else { return .inspectionFailed }
+        do {
+            try await graphProvider.verifyConnection(paths: paths)
+            return .healthy
+        } catch let error as KnowledgeGraphClientError {
+            switch error {
+            case .authenticationFailed: return .authenticationFailed
+            case .missingConfiguration, .invalidConfiguration: return .missingConfiguration
+            case .untrustedService: return .foreignListener
+            case .unavailable: return .unresponsive
+            case .queryFailed, .invalidResponse: return .queryFailed
+            }
+        } catch { return .inspectionFailed }
+    }
+
+    private func recoveryConfigurationIsValid(script: URL) -> Bool {
+        guard (1...65_535).contains(paths.httpPort),
+              let plistData = try? Data(contentsOf: paths.launchAgent), plistData.count <= 64 * 1_024,
+              let plist = try? PropertyListSerialization.propertyList(from: plistData, format: nil) as? [String: Any],
+              plist["Label"] as? String == paths.serviceLabel,
+              plist["ProgramArguments"] as? [String] == ["/bin/sh", script.path],
+              plist["WorkingDirectory"] as? String == paths.byoriHome.path,
+              let envData = try? Data(contentsOf: paths.byoriHome.appendingPathComponent("env")),
+              envData.count <= 64 * 1_024, let env = String(data: envData, encoding: .utf8) else { return false }
+        // Match the graph client's env dialect without executing shell content.
+        var values: [String: String] = [:]
+        for raw in env.components(separatedBy: .newlines) {
+            var line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.hasPrefix("export ") { line.removeFirst(7) }
+            guard !line.hasPrefix("#"), let equal = line.firstIndex(of: "=") else { continue }
+            let key = String(line[..<equal]).trimmingCharacters(in: .whitespaces)
+            var value = String(line[line.index(after: equal)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if value.count >= 2,
+               (value.hasPrefix("\"") && value.hasSuffix("\"") || value.hasPrefix("'") && value.hasSuffix("'")) {
+                value.removeFirst(); value.removeLast()
+            }
+            values[key] = value
+        }
+        return !(values["BYORIDB_ROOT_PASSWORD"] ?? values["BYORIDB_PASSWORD"] ?? "").isEmpty
+    }
+
+    private func performRecoveryAction(_ action: RuntimeRecoveryAction) async throws {
+        // Revalidate immediately before mutating. A changed diagnosis never
+        // falls back to a force restart of an unknown service.
+        let current = await recoveryDiagnosis()
+        if current == .healthy { return }
+        guard current.action == action else { throw RuntimeRecoveryError.refused(current) }
+        try Task.checkCancellation()
+        let arguments = action == .start
+            ? ["bootstrap", "gui/\(getuid())", paths.launchAgent.path]
+            : ["kickstart", "-k", serviceTarget]
+        let result = await runner.run(CommandSpec(executable: "/bin/launchctl", arguments: arguments, timeout: 15))
+        try require(result, label: action.title)
+        // Bounded startup grace period. Only a transport/startup failure waits;
+        // credentials, disk, foreign ownership and invalid config stop now.
+        for _ in 0..<5 {
+            try Task.checkCancellation()
+            let diagnosis = await recoveryDiagnosis()
+            if diagnosis == .healthy { return }
+            guard diagnosis == .unresponsive else { throw RuntimeRecoveryError.verificationFailed(diagnosis) }
+            try await Task.sleep(for: .seconds(1))
+        }
+        throw RuntimeRecoveryError.verificationFailed(.unresponsive)
+    }
+
     public func startService() async throws -> OperationResult {
         guard fileManager.fileExists(atPath: paths.launchAgent.path) else {
             throw ManagerError.prerequisite("ByoriDB를 먼저 설치해 주세요.")
@@ -845,10 +981,13 @@ public actor ManagerService: CodeIndexProviding {
             detail = "launchd에 서비스를 등록하고 상태 확인을 완료했습니다."
         }
         try await verifyByori()
+        try await recovery.setUserStopped(false)
         return OperationResult(summary: "ByoriDB 서비스 시작 완료", detail: detail)
     }
 
     public func stopService() async throws -> OperationResult {
+        // Persist intent before bootout, so relaunch cannot undo an explicit stop.
+        try await recovery.setUserStopped(true)
         let result = await runner.run(CommandSpec(
             executable: "/bin/launchctl",
             arguments: ["bootout", serviceTarget]
@@ -866,6 +1005,7 @@ public actor ManagerService: CodeIndexProviding {
         ))
         try require(result, label: "ByoriDB 서비스 재시작")
         try await verifyByori()
+        try await recovery.setUserStopped(false)
         return OperationResult(summary: "ByoriDB 서비스 재시작 완료", detail: result.output)
     }
 

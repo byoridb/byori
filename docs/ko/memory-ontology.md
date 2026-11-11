@@ -5,7 +5,7 @@
 > 상태: **설계 + dogfood PoC 검증 완료**. 이 문서는 Byori 멀티 에이전트 워크스페이스
 > 하단의 지속 가능한 지식 계층을 정의한다. 선별된 프로젝트 사실을 명시적 체크포인트에서
 > 축적하고 연결된 위키처럼 읽는다. §4의 typed wiki schema는 v0.2.0부터 MCP 시작 시
-> schema v2에 추가됐으며 현재 MCP는 코드 그래프용 v3 migration도 적용한다.
+> schema v2에 추가됐으며 현재 MCP는 코드 그래프용 v3와 기억 정책·작업 체크포인트용 v4 migration도 적용한다.
 > `byori index`와 foreground watch로 Python·Swift·JS/TS·Rust를 분석한다.
 > terminal transcript 수집은 미구현이다. [코드 인덱스](code-index.md) 참고.
 > 작성 계기: 2026-07-11 대화 (파일 메모리 vs 그래프 메모리 → 타입드 지식그래프 비전).
@@ -132,6 +132,61 @@ lifecycle 값은 `decision: active|superseded`, `bug: open|fixed|known`,
 새 decision, bug, task의 default는 각각 `active`, `open`, `open`이고, 새 incident는
 `resolved=false`를 default로 사용한다.
 
+### 4.5 기억 표시 범위와 명시적 작업 체크포인트 (schema v4)
+
+`memory_read`와 `memory_recall`의 기본값은 `view="current"`이다. 앱 Context의
+**현재 / 재검토 / 보관함 / 전체**로 전환하며 MCP·CLI에서는 `review`, `archived`, `all`을
+명시한다. 제한된 스캔 안에서 분류한 뒤 표시 페이지를 적용한다. `truncated`와
+`scan_incomplete`를 보고하므로, 제한된 빈 결과가 기록의 부재를 뜻하지는 않는다.
+
+| 범위 | 의미 |
+|---|---|
+| `current` | 보관·대체·재검토 기한·근거 파일 검증 문제가 기록되지 않은 기억. 내용의 정확성이나 유효성을 보증하지 않는다. |
+| `review` | 검토 시점이 지났거나, 연결한 파일이 변경·누락·읽기 불가·다른 checkout에 있거나 한도 안에서 검증되지 않음. |
+| `archived` | 명시적으로 보관했거나 `superseded` 상태 또는 들어오는 `supersedes` 관계가 있는 결정. |
+| `all` | 모든 분류를 함께 조회. 쓰기 전 정확한 canonical name 확인에도 사용. |
+
+`memory_policy`는 별도 정책 기록에서 기존 노드 VID·type·name을 참조하며 본문이나 도메인 `state`를 대체하지 않는다.
+명시적으로 `archived`, `pinned`, `review_after`(epoch 밀리초 또는 `null`),
+`source: {"path":"상대/경로"}` 또는 `null`, `verify_source`를 갱신할 수 있다.
+보관·보관 해제는 되돌릴 수 있다. `pinned`는 중요 표시이며 검색 순위를 올리지 않고,
+보관·대체·재검토 상태를 무시해 기억을 되살리지 않는다. 수정된 버그도 별도 제외 사유가
+없으면 현재 참고할 수 있는 이력이다. 시간 경과에 따른 삭제나 자동 GC는 하지 않는다.
+
+파일을 근거로 연결하거나 다시 확인하면 해당 checkout의 실제 파일 해시와 확인 시각을
+기록한다. 조회 시 심볼릭 링크를 따라가지 않고 일반 파일을 파일당 최대 2 MiB, 요청별
+제한 안에서 비교한다. 해시 일치는 파일 내용의 일치이며 기억 자체의 타당성 판단은 별개다.
+쓰기의 canonical 조회는 표시 범위와 무관하다. 기존 v3 기록은 정책 없이 조회할 수 있고,
+새 쓰기 도구는 writer profile이 v4로 마이그레이션한 뒤 사용한다.
+
+`memory_checkpoint`는 정규화한 checkout·task별 최신 작업 상태 한 건을 저장한다.
+필수 `goal`과 선택 `decisions`, `attempts`, `verification`, `next_steps` 문자열을 받고,
+서버가 checkout·Git revision·저장 시각을 더한다. `task_id` 기본값은 `BYORI_TASK_ID`,
+없으면 `project`다. 필드와 인코딩된 전체 크기에 제한이 있다. `memory_resume`은 같은
+범위만 읽어 revision의 `match`·`changed`·`unverified`를 표시한다. 커밋이 같아도 미커밋
+파일이 같은지는 보증하지 않는다. 터미널 대화·숨은 추론·매 턴 자동 추출은 수집하지 않는다.
+
+앱의 **작업 체크포인트**에서 목표·결정·시도와 결과·검증 상태·다음 작업을 저장하고,
+**저장된 내용 복사**로 다음 세션에서 검토해 사용할 수 있다. 복원 텍스트를 실행하거나
+터미널에 주입하지 않는다. 기억 조회 실패도 코딩 세션 시작이나 로컬 Files/Git 조회를 막지 않는다.
+
+앱은 번들 메모리 브리지를 쓰지만 기존 에이전트 연결은 별도 설치된 런타임을 쓴다.
+앱 갱신 후 **Settings → ByoriDB**에서 엔진 설치·업데이트 작업을 실행하고
+(**이미 최신 엔진**도 같은 버전을 다시 설치·검증한다), **Agents & Skill**에서
+`byoridb-memory`를 **설치/업데이트** 또는 **다시 동기화**한 뒤 에이전트 세션을
+재시작·재연결한다. 이전 MCP·스킬에는 새 조회 정책이나 체크포인트 도구가 적용되지 않을 수
+있다. 앱 시작만으로 런타임을 설치하거나 교체하지는 않는다.
+
+```bash
+byori memory read . --payload '{"view":"review","limit":20}' --json
+byori memory policy . --payload '{"type":"decision","name":"decision:old-choice","archived":true}' --json
+byori memory checkpoint . --payload '{"task_id":"task-123","goal":"소스 최신성 추가","verification":"단위 테스트 통과","next_steps":"동시 변경 사례 검토"}' --json
+byori memory resume . --payload '{"task_id":"task-123"}' --json
+```
+
+긴 내용은 크기가 제한된 UTF-8 JSON 파일과 `--payload-file`을 사용한다. 인증 정보나
+provider 원본 출력을 넣지 않는다. read/resume은 읽기 전용이고 policy/checkpoint는 명시적 쓰기다.
+
 ## 5. 추출 규칙 (언제 / 무엇을 / 어떻게)
 
 **언제 (체크포인트에서만):**
@@ -148,7 +203,7 @@ lifecycle 값은 `decision: active|superseded`, `bug: open|fixed|known`,
 
 **어떻게 (조각남 방지):**
 
-1. canonical name 후보를 생성한 뒤 typed create를 시도하기 전에 `memory_read`를 정확한
+1. canonical name 후보를 생성한 뒤 typed create를 시도하기 전에 `memory_read(view="all")`를 정확한
    `type`과 `name`으로 호출한다. exact name이 없으면 집중된 text read로 다른 canonical
    name의 기존 entity가 있는지 확인한다.
 2. 같은 canonical name으로 `memory_wiki_upsert`를 호출해 기존 node를 갱신하거나 신규

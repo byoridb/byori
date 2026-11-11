@@ -5,8 +5,8 @@
 > Status: **design and dogfood PoC validation complete**. This document defines the durable
 > knowledge layer beneath the Byori multi-agent workspace: selected project facts accumulate at
 > explicit checkpoints and can be read as a connected wiki. Since v0.2.0, the typed wiki schema
-> in §4 was introduced as schema v2. The current MCP also applies the additive v3 source-code
-> graph migration. `byori index` and its foreground watch mode analyze Python, Swift, JS/TS,
+> in §4 was introduced as schema v2. The current MCP also applies additive v3 source-code and
+> v4 memory-policy/task-checkpoint migrations. `byori index` and its foreground watch mode analyze Python, Swift, JS/TS,
 > and Rust; transcript ingestion is not implemented. See [code indexing](code-index.md). Origin:
 > conversation on 2026-07-11 (file memory vs. graph memory → typed knowledge-graph vision).
 
@@ -142,6 +142,64 @@ Lifecycle values are restricted to `decision: active|superseded`, `bug: open|fix
 decisions, bugs, and tasks default to `active`, `open`, and `open`, respectively, while new
 incidents default to `resolved=false`.
 
+### 4.5 Recall lifecycle and explicit task checkpoints (schema v4)
+
+`memory_read` and `memory_recall` default to `view="current"`. The app's Context picker exposes
+**현재 / 재검토 / 보관함 / 전체**; use `review`, `archived`, or `all` explicitly through MCP/CLI.
+Classification precedes displayed pagination within a bounded scan. `truncated` and
+`scan_incomplete` are explicit; a bounded empty result does not prove there are no matching records.
+
+| View | Meaning |
+|---|---|
+| `current` | No recorded archival, supersession, due-review, or source-verification problem. This is not a truth or semantic-validity guarantee. |
+| `review` | The review date is due, or a bound source changed, is missing/unreadable, belongs to another checkout, or could not be checked within the budget. |
+| `archived` | Explicitly archived, or a decision marked `superseded` or targeted by an incoming `supersedes` edge. |
+| `all` | Inspection across all lifecycle groups. Use this for exact canonical-name lookup before writing. |
+
+`memory_policy` stores a separate policy record referencing the existing node's VID/type/name;
+it does not replace the memory body or its domain `state`. Supported explicit updates are `archived`, `pinned`, `review_after`
+(epoch milliseconds or `null`), `source: {"path":"relative/path"}` or `null`, and `verify_source`.
+Archive/unarchive is reversible. A pin is a visible importance marker, not a ranking boost,
+and cannot revive an archived/superseded/review-required record. A fixed bug remains useful
+current history unless another policy excludes it. No time-based deletion or garbage collection
+is performed.
+
+Binding or re-verifying a source records the actual file hash and check time for the current
+checkout. Reads compare the bound file safely with bounded byte reads (regular UTF-8 paths,
+no symlink traversal, at most 2 MiB per source). A matching hash says the source bytes match;
+the author still has to judge whether the memory's claim is valid. Writes find canonical nodes
+independently of read-view filters. Old v3 records have no policy and remain readable through
+the read bridge; writer profiles migrate to v4 before using the new write tools.
+
+`memory_checkpoint` stores the latest explicit task state for one canonical checkout and task:
+required `goal`, and optional `decisions`, `attempts`, `verification`, and `next_steps` strings.
+The server adds the checkout identity, revision and save time. `task_id` defaults to
+`BYORI_TASK_ID`, then `project`. Fields and encoded payload size are bounded. `memory_resume`
+reads that exact scope and reports revision `match`, `changed`, or `unverified`; matching HEAD
+does not verify uncommitted files. It does not collect terminal transcripts, hidden reasoning,
+or automatically extracted per-turn content.
+
+The app's **작업 체크포인트** sheet saves these fields and explicitly copies the saved text for
+review in a subsequent session. It neither executes nor inserts the text into a terminal.
+Memory outages do not block launching a coding session or browsing local Files/Git.
+
+The app uses its bundled memory bridge; existing agent registrations use the installed runtime.
+After an app upgrade, run the engine install/update action in **Settings → ByoriDB** (the
+**이미 최신 엔진** action also reinstalls/verifies the same version), sync **byoridb-memory** in
+**Agents & Skill**, and restart/reconnect agent sessions. Otherwise older MCP/skill versions
+may not apply the new recall policies or expose checkpoint tools. App launch does not install
+or replace that runtime automatically.
+
+```bash
+byori memory read . --payload '{"view":"review","limit":20}' --json
+byori memory policy . --payload '{"type":"decision","name":"decision:old-choice","archived":true}' --json
+byori memory checkpoint . --payload '{"task_id":"task-123","goal":"Add source freshness","verification":"Unit tests pass","next_steps":"Review the working-tree race cases"}' --json
+byori memory resume . --payload '{"task_id":"task-123"}' --json
+```
+
+Use `--payload-file` for a bounded UTF-8 JSON file when text is long. Do not include credentials
+or raw provider output. Read/resume are read-only; policy/checkpoint are explicit writes.
+
 ## 5. Extraction Rules (When / What / How)
 
 **When (only at checkpoints):**
@@ -159,7 +217,7 @@ incidents default to `resolved=false`.
 
 **How (prevent fragmentation):**
 
-1. Generate a candidate canonical name, then call `memory_read` with its exact `type` and `name`
+1. Generate a candidate canonical name, then call `memory_read(view="all")` with its exact `type` and `name`
    before attempting a typed create. If the exact name is absent, use a focused text read to look
    for an existing entity under another canonical name.
 2. Call `memory_wiki_upsert` with the same canonical name to update an existing node or create a

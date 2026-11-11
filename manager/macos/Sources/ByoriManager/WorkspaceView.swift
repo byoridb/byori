@@ -179,6 +179,9 @@ struct WorkspaceView<TerminalHost: View>: View {
         .sheet(item: codeIndexPresentation) { scope in
             WorkspaceCodeIndexSheet(workspace: model, scope: scope)
         }
+        .sheet(item: memoryPresentation) { scope in
+            WorkspaceMemorySheet(workspace: model, scope: scope)
+        }
         .alert(item: $model.alert) { alert in
             Alert(
                 title: Text(alert.title),
@@ -383,6 +386,10 @@ struct WorkspaceView<TerminalHost: View>: View {
             get: { model.codeIndexScope },
             set: { if $0 == nil { model.dismissCodeIndex() } }
         )
+    }
+
+    private var memoryPresentation: Binding<WorkspaceMemoryScope?> {
+        Binding(get: { model.memoryScope }, set: { if $0 == nil { model.dismissMemory() } })
     }
 
     private var fileEditorPresentation: Binding<Bool> {
@@ -1584,6 +1591,22 @@ private struct WorkspaceInspector: View {
             .disabled(model.selectedProject?.sourceTrees.isEmpty != false)
             .help("선택한 작업 트리의 파일·심볼·호출 관계를 봅니다.")
             Divider()
+            Button { model.showMemory() } label: {
+                Label("작업 체크포인트", systemImage: "bookmark")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(14)
+            .disabled(model.selectedProject?.sourceTrees.isEmpty != false)
+            Divider()
+            Picker("기억 보기", selection: Binding(get: { model.memoryView }, set: { model.setMemoryView($0) })) {
+                ForEach(MemoryView.allCases) { view in Text(view.title).tag(view) }
+            }
+            .pickerStyle(.segmented)
+            .padding(12)
+            Text("현재: 보관·대체·재검토 사유가 없는 기억입니다. 내용의 정확성을 보증하지는 않습니다.")
+                .font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 12).padding(.bottom, 8)
             if let summary = model.selectedProjectMemorySummary {
                 DisclosureGroup("최근 프로젝트 분석 결과") {
                     ScrollView {
@@ -1632,7 +1655,20 @@ private struct WorkspaceInspector: View {
                     records: snapshot.items,
                     isTruncated: snapshot.isTruncated,
                     depth: model.contextDepth,
-                    setDepth: model.setContextDepth
+                    setDepth: model.setContextDepth,
+                    manageMemory: { model.showMemory($0) }
+                )
+            } else if model.contextSnapshot?.isTruncated == true {
+                WorkspaceUnavailableView(
+                    icon: "info.circle",
+                    title: "조회 범위 안에서 기억을 찾지 못했습니다",
+                    detail: "이 조회는 일부 기록만 확인했습니다. 전체 기록이 비어 있다는 뜻은 아닙니다. MCP에서 이름이나 유형을 지정해 범위를 좁혀 조회할 수 있습니다."
+                )
+            } else if model.memoryView != .current {
+                WorkspaceUnavailableView(
+                    icon: "archivebox",
+                    title: "\(model.memoryView.title)에 표시할 기억이 없습니다",
+                    detail: "현재 탭에서 기존 기억을 확인하거나, 기억 관리에서 보관·재검토 상태를 변경할 수 있습니다."
                 )
             } else if model.selectedLineage?.project != nil {
                 WorkspaceUnavailableView(
@@ -1797,6 +1833,7 @@ private struct WorkspaceContextInspector: View {
     let isTruncated: Bool
     let depth: WorkspaceContextDepth
     let setDepth: (WorkspaceContextDepth) -> Void
+    let manageMemory: (MemoryRecord) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1833,7 +1870,7 @@ private struct WorkspaceContextInspector: View {
                 ScrollView {
                     LazyVStack(spacing: 10) {
                         ForEach(records) { record in
-                            WorkspaceContextRecordRow(record: record)
+                            WorkspaceContextRecordRow(record: record, manageMemory: manageMemory)
                         }
                     }
                     .padding(12)
@@ -1850,6 +1887,7 @@ private struct WorkspaceContextInspector: View {
 
 private struct WorkspaceContextRecordRow: View {
     let record: WorkspaceContextItem
+    let manageMemory: (MemoryRecord) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -1888,11 +1926,21 @@ private struct WorkspaceContextRecordRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
+            if let memory = record.memoryRecord {
+                HStack {
+                    if memory.policy.pinned { Image(systemName: "pin.fill").accessibilityLabel("중요 기억") }
+                    Text(MemoryView(rawValue: memory.lifecycle)?.title ?? memory.lifecycle)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("기억 관리") { manageMemory(memory) }
+                }
+                .font(.caption)
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("\(record.kind), \(record.title), \(record.summary), source \(record.provenance)")
     }
 

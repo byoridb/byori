@@ -4,7 +4,7 @@
 Covers the MCP/engine surface used by Byori:
   remember (INSERT VERTEX/EDGE, non-negative VID) -> recall (MATCH/CONTAINS)
   -> graph projections (id/ORDER BY/LIMIT/OFFSET) -> typed wiki bootstrap
-  (schema v3 + structured upsert/read/link roundtrip) -> Manager typed graph
+  (schema v4 + structured upsert/read/link/policy roundtrip) -> Manager typed graph
   projection (tag-only node MATCH, untyped-endpoint edge MATCH with a
   visible-ID WHERE filter, module summary lazy-load) -> read-only query
   (FETCH ... AS OF temporal read + mutation denial) -> safe and readonly profile filtering.
@@ -111,7 +111,8 @@ def main():
     structured_tools = {
         "memory_query_read", "memory_wiki_upsert", "memory_link",
         "memory_read", "memory_delete", "memory_export",
-        "code_status", "code_search", "code_relations", "code_impact",
+        "memory_policy", "memory_checkpoint", "memory_resume",
+        "code_status", "code_search", "code_relations", "code_impact", "code_verify",
     }
     assert legacy_tools | structured_tools <= tools, f"FAIL: legacy tools={tools}"
     print("ok tools/list (legacy compatibility + structured tools)")
@@ -174,14 +175,14 @@ def main():
     print("ok graph edge projection")
 
     # typed wiki bootstrap: _ensure_ready migrated the fresh space to schema
-    # v3 and stamped the version note.
+    # v4 and stamped the version note.
     ver_rows = query_rows(
         f"MATCH (n:note) WHERE id(n) == {expected_vid('byori:schema-version')} "
         "RETURN n.note.body AS body LIMIT 1",
         ["body"],
     )
-    assert ver_rows and ver_rows[0]["body"] == "3", f"FAIL: schema version: {ver_rows}"
-    print("ok schema version note (v3)")
+    assert ver_rows and ver_rows[0]["body"] == "4", f"FAIL: schema version: {ver_rows}"
+    print("ok schema version note (v4)")
 
     # Byori v0.2.0 taught clients to raw-insert typed nodes at a 60-bit VID.
     # The structured API must discover that node by canonical name and keep its
@@ -277,6 +278,48 @@ def main():
         "relation": "affects", "source_vid": str(d_vid), "target_vid": str(m_vid)
     } in structured["links"], f"FAIL: structured links: {structured}"
     print("ok structured typed upsert/read/link")
+
+    # Policy has its own VID. The supported engine replaces a vertex's tag set
+    # on INSERT, so writing policy on d_vid would silently erase this decision.
+    tool("memory_policy", {"type": "decision", "name": "decision:smoke-typed", "archived": True, "pinned": True})
+    assert not json.loads(tool("memory_read", {"type": "decision", "name": "decision:smoke-typed"}))["items"]
+    archived = json.loads(tool("memory_read", {"type": "decision", "name": "decision:smoke-typed", "view": "archived"}))["items"]
+    assert len(archived) == 1 and archived[0]["vid"] == str(d_vid), archived
+    original = query_rows(f"MATCH (n:decision) WHERE id(n) == {d_vid} RETURN n.decision.body AS body LIMIT 1", ["body"])
+    assert original and original[0]["body"] == archived[0]["body"], original
+    tool("memory_policy", {"type": "decision", "name": "decision:smoke-typed", "archived": False})
+    assert json.loads(tool("memory_read", {"type": "decision", "name": "decision:smoke-typed"}))["items"]
+    print("ok reversible policy preserves original typed node")
+
+    tool("memory_policy", {"type": "note", "name": NEG_NAME, "archived": True})
+    note_read = json.loads(tool("memory_read", {"type": "note", "name": NEG_NAME, "view": "archived"}))
+    assert note_read["items"][0]["body"] == f"{marker} neg-hash body", note_read
+    assert not json.loads(tool("memory_read", {"type": "note", "name": NEG_NAME}))["items"]
+    tool("memory_policy", {"type": "note", "name": NEG_NAME, "archived": False})
+    assert json.loads(tool("memory_read", {"type": "note", "name": NEG_NAME}))["items"]
+    print("ok reversible note policy retains source body")
+
+    checkpoint = json.loads(tool("memory_checkpoint", {
+        "task_id": marker + "-task", "goal": "Verify memory lifecycle",
+        "decisions": "Keep original records", "attempts": "Archive and restore",
+        "verification": "Original node body retained", "next_steps": "Review the smoke output",
+    }))["checkpoint"]
+    resumed = json.loads(tool("memory_resume", {"task_id": marker + "-task"}))
+    assert resumed["checkpoint"] == checkpoint, resumed
+    assert resumed["revision_state"] in {"match", "unverified"}, resumed
+    assert not resumed["working_tree_verified"], resumed
+    assert not json.loads(tool("memory_resume", {"task_id": marker + "-other-task"}))["found"]
+    print("ok explicit checkpoint roundtrip and task isolation")
+
+    tool("memory_wiki_upsert", {"type": "task", "name": "task:smoke-policy-recreate", "body": "old task"})
+    tool("memory_policy", {"type": "task", "name": "task:smoke-policy-recreate", "archived": True, "review_after": 1})
+    tool("memory_delete", {"type": "task", "name": "task:smoke-policy-recreate"})
+    tool("memory_wiki_upsert", {"type": "task", "name": "task:smoke-policy-recreate", "body": "new task"})
+    recreated = json.loads(tool("memory_read", {"type": "task", "name": "task:smoke-policy-recreate"}))["items"]
+    assert len(recreated) == 1 and recreated[0]["body"] == "new task", recreated
+    assert not recreated[0]["policy"]["archived"] and recreated[0]["policy"]["review_after"] is None, recreated
+    tool("memory_delete", {"type": "task", "name": "task:smoke-policy-recreate"})
+    print("ok explicit deletion removes policy before canonical-name reuse")
 
     exported = json.loads(tool("memory_export", {"limit": 100, "include_links": True}))
     exported_names = {row["name"] for row in exported["items"]}
@@ -452,8 +495,8 @@ def main():
         "memory_recall", "memory_query_read", "memory_read", "memory_export",
         # Answering "why" reads and traverses; a worker needs it for the recall it
         # is supposed to do before working.
-        "memory_why",
-        "code_status", "code_search", "code_relations", "code_impact",
+        "memory_why", "memory_resume",
+        "code_status", "code_search", "code_relations", "code_impact", "code_verify",
     }
     discovered = {t["name"] for t in call("tools/list")["tools"]}
     assert discovered == readonly_tools, f"FAIL: readonly tools={discovered}"

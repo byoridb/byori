@@ -10,6 +10,8 @@ import json
 import os
 import pathlib
 import re
+import selectors
+import stat
 import subprocess
 import time
 
@@ -18,6 +20,15 @@ LANGUAGES = ("python", "swift", "javascript", "typescript", "rust")
 MAX_LIMIT = 100
 MAX_BATCH_BYTES = 64 * 1024
 MAX_KEY = 8192
+# Verification reads bytes, never parses or executes source. These bounds cover
+# the Git inventory, DB manifest, and two filesystem observations as one pass.
+MAX_VERIFY_FILES = 10_000
+MAX_VERIFY_BYTES = 64 * 1024 * 1024
+MAX_VERIFY_SECONDS = 8
+MAX_VERIFY_PATH_BYTES = 4 * 1024 * 1024
+MAX_SOURCE_BYTES = 2 * 1024 * 1024
+VERIFY_EXTENSIONS = frozenset(("py", "pyi", "swift", "js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts", "rs"))
+VERIFY_EXCLUDED = frozenset((".git", "node_modules", "target", "vendor", "third_party", "dist", "build", ".build", ".venv", "venv", "__pycache__", ".byori"))
 MIGRATION = (
     "CREATE TAG IF NOT EXISTS code_index(checkout STRING, root STRING, snapshot STRING, revision STRING, summary STRING, ts INT64)",
     "CREATE TAG IF NOT EXISTS code_snapshot(checkout STRING, snapshot STRING, digest STRING, summary STRING, ts INT64)",
@@ -116,8 +127,13 @@ def checkout_for_root(root):
     return hashlib.sha256(str(root).encode()).hexdigest()[:16]
 
 
+def default_root():
+    """Trusted process context, never a root supplied through an MCP argument."""
+    return pathlib.Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
+
+
 def default_checkout():
-    start = pathlib.Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
+    start = default_root()
     try:
         result = subprocess.run(["git", "-C", str(start), "rev-parse", "--show-toplevel"],
                                 capture_output=True, text=True, timeout=10, check=False)
@@ -126,6 +142,172 @@ def default_checkout():
     except (OSError, subprocess.SubprocessError):
         pass
     return checkout_for_root(start)
+
+
+class _VerificationUnavailable(Exception):
+    pass
+
+
+def _verify_budget(deadline):
+    if time.monotonic() >= deadline:
+        raise _VerificationUnavailable("time_limit")
+
+
+def _verify_git(root, args, deadline, max_bytes=MAX_VERIFY_PATH_BYTES, allow_unborn=False):
+    """Bound stdout as it arrives, disabling repository-configured fsmonitor hooks."""
+    _verify_budget(deadline)
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    command = ["git", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-C", str(root)] + args
+    chunks, size = [], 0
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env) as process:
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                while True:
+                    _verify_budget(deadline)
+                    if not selector.select(max(0, deadline - time.monotonic())):
+                        raise _VerificationUnavailable("time_limit")
+                    chunk = os.read(process.stdout.fileno(), 64 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > max_bytes:
+                        raise _VerificationUnavailable("inventory_limit")
+                    chunks.append(chunk)
+            code = process.wait(timeout=max(0.01, deadline - time.monotonic()))
+            if code and not allow_unborn:
+                raise _VerificationUnavailable("git_unavailable")
+            return b"" if code else b"".join(chunks)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+
+
+def _verify_paths(root, deadline):
+    output = _verify_git(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+                         deadline, max_bytes=MAX_VERIFY_PATH_BYTES)
+    result = set()
+    for raw in output.split(b"\0"):
+        if not raw:
+            continue
+        try:
+            path = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            # The Rust indexer skips non-UTF-8 names as well.
+            continue
+        parts = pathlib.PurePosixPath(path).parts
+        if any(part in VERIFY_EXCLUDED for part in parts):
+            continue
+        if pathlib.PurePosixPath(path).suffix.lstrip(".") not in VERIFY_EXTENSIONS:
+            continue
+        _path(path)
+        result.add(path)
+        if len(result) > MAX_VERIFY_FILES:
+            raise _VerificationUnavailable("file_limit")
+    return sorted(result)
+
+
+def _verify_open(root_fd, path):
+    """Walk directory descriptors with NOFOLLOW, including intermediate dirs.
+
+    A final FIFO/device is never read. Missing, symlinked and non-regular paths
+    are outside the indexer's eligible set; return a stable observation instead.
+    """
+    current = os.dup(root_fd)
+    try:
+        parts = pathlib.PurePosixPath(_path(path)).parts
+        for part in parts[:-1]:
+            try:
+                metadata = os.stat(part, dir_fd=current, follow_symlinks=False)
+            except FileNotFoundError:
+                return None, ("missing",)
+            if not stat.S_ISDIR(metadata.st_mode):
+                return None, ("non_directory", metadata.st_dev, metadata.st_ino, metadata.st_mtime_ns, metadata.st_ctime_ns)
+            next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current)
+            os.close(current)
+            current = next_fd
+        try:
+            metadata = os.stat(parts[-1], dir_fd=current, follow_symlinks=False)
+        except FileNotFoundError:
+            return None, ("missing",)
+        observation = (metadata.st_dev, metadata.st_ino, metadata.st_mode,
+                       metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns)
+        if not stat.S_ISREG(metadata.st_mode):
+            return None, observation
+        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=current)
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+            os.close(fd)
+            raise _VerificationUnavailable("working_tree_changed")
+        return fd, observation
+    finally:
+        os.close(current)
+
+
+def _verify_signature(metadata):
+    return (metadata.st_dev, metadata.st_ino, metadata.st_mode,
+            metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns)
+
+
+def _verify_sources(root, deadline):
+    paths = _verify_paths(root, deadline)
+    hashes, observations, total_bytes, skipped = {}, {}, 0, 0
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    root_identity = os.fstat(root_fd)
+    try:
+        for path in paths:
+            _verify_budget(deadline)
+            fd, observation = _verify_open(root_fd, path)
+            observations[path] = observation
+            if fd is None:
+                skipped += 1
+                continue
+            try:
+                if os.fstat(fd).st_size > MAX_SOURCE_BYTES:
+                    skipped += 1
+                    continue
+                pieces, size = [], 0
+                while True:
+                    _verify_budget(deadline)
+                    data = os.read(fd, 64 * 1024)
+                    if not data:
+                        break
+                    size += len(data)
+                    total_bytes += len(data)
+                    if total_bytes > MAX_VERIFY_BYTES:
+                        raise _VerificationUnavailable("byte_limit")
+                    if size > MAX_SOURCE_BYTES:
+                        raise _VerificationUnavailable("working_tree_changed")
+                    pieces.append(data)
+                if _verify_signature(os.fstat(fd)) != observation:
+                    raise _VerificationUnavailable("working_tree_changed")
+                content = b"".join(pieces)
+                try:
+                    content.decode("utf-8")
+                except UnicodeDecodeError:
+                    skipped += 1
+                    continue
+                hashes[path] = hashlib.sha256(content).hexdigest()
+            finally:
+                os.close(fd)
+        # Re-enumerate and re-stat to detect edits/additions during the scan.
+        if paths != _verify_paths(root, deadline):
+            raise _VerificationUnavailable("working_tree_changed")
+        for path, before in observations.items():
+            _verify_budget(deadline)
+            fd, after = _verify_open(root_fd, path)
+            if fd is not None:
+                os.close(fd)
+            if before != after:
+                raise _VerificationUnavailable("working_tree_changed")
+        current_root = os.stat(root, follow_symlinks=False)
+        if (current_root.st_dev, current_root.st_ino) != (root_identity.st_dev, root_identity.st_ino):
+            raise _VerificationUnavailable("working_tree_changed")
+        return hashes, skipped
+    finally:
+        os.close(root_fd)
 
 
 def validate_payload(payload):
@@ -217,10 +399,11 @@ def validate_payload(payload):
 
 
 class CodeGraph:
-    def __init__(self, query, ensure_ready, checkout=default_checkout):
+    def __init__(self, query, ensure_ready, checkout=default_checkout, root=default_root):
         self.query = query
         self.ensure_ready = ensure_ready
         self.checkout = checkout
+        self.root = root
 
     def _rows(self, query):
         return self.query(query, read_only=True).get("results") or []
@@ -380,6 +563,83 @@ class CodeGraph:
         checkout, active = self._context(args)
         return {"indexed": active is not None, "checkout_id": checkout, "index": active,
                 "hint": "Run byori index in this checkout to refresh source analysis."}
+
+    def verify(self, args):
+        """Check byte freshness within one trusted checkout, without graph writes.
+
+        `current` describes supported, eligible source bytes at checked_at. It
+        says nothing about semantic correctness, dependencies outside the repo,
+        unsupported files, or edits that occur after the bounded observation.
+        """
+        _args(args, ("checkout_id",))
+        checkout, active = self._context(args)
+        verification = {"state": "not_checked", "complete": False,
+            "checked_at": int(time.time() * 1000), "snapshot_id": active["snapshot_id"] if active else None,
+            "checked_files": 0, "skipped_files": 0, "added": 0, "modified": 0, "deleted": 0,
+            "samples": [], "reason": "no_index", "current_revision": None, "revision_changed": None,
+            "coverage": "Eligible Python, Swift, JS/TS and Rust source bytes only; not semantic validity."}
+        response = {"indexed": active is not None, "checkout_id": checkout, "index": active,
+                    "verification": verification}
+        if active is None:
+            return response
+        deadline = time.monotonic() + MAX_VERIFY_SECONDS
+        try:
+            start = pathlib.Path(self.root()).resolve(strict=True)
+            raw_root = _verify_git(start, ["rev-parse", "--show-toplevel"], deadline, max_bytes=8192)
+            root = pathlib.Path(raw_root.decode("utf-8").rstrip("\n")).resolve(strict=True)
+            if checkout != checkout_for_root(root) or str(root) != active["root"]:
+                raise _VerificationUnavailable("checkout_mismatch")
+            if active["files"] > MAX_VERIFY_FILES:
+                raise _VerificationUnavailable("file_limit")
+            expected, offset, manifest_bytes = {}, 0, 0
+            while True:
+                _verify_budget(deadline)
+                rows = self._select("code_file", [("path", "path"), ("content_hash", "content_hash")],
+                                    self._scope("code_file", active), 1000, offset)
+                for row in rows:
+                    path = _path(row["path"])
+                    content_hash = _hex(row["content_hash"], "file hash", 64)
+                    if path in expected:
+                        raise _VerificationUnavailable("manifest_incomplete")
+                    expected[path] = content_hash
+                    manifest_bytes += len(path.encode("utf-8"))
+                    if len(expected) > MAX_VERIFY_FILES or manifest_bytes > MAX_VERIFY_PATH_BYTES:
+                        raise _VerificationUnavailable("file_limit")
+                if len(rows) < 1000:
+                    break
+                offset += len(rows)
+            if len(expected) != active["files"]:
+                raise _VerificationUnavailable("manifest_incomplete")
+            revision = _verify_git(root, ["rev-parse", "--verify", "HEAD"], deadline, 256, allow_unborn=True).decode("ascii").strip()
+            actual, skipped = _verify_sources(root, deadline)
+            after_revision = _verify_git(root, ["rev-parse", "--verify", "HEAD"], deadline, 256, allow_unborn=True).decode("ascii").strip()
+            if after_revision != revision:
+                raise _VerificationUnavailable("working_tree_changed")
+            latest = self._active(checkout)
+            if latest is None or any(latest.get(key) != active.get(key) for key in
+                                     ("snapshot_id", "checkout_id", "root", "revision", "digest")):
+                response["index"] = latest
+                response["indexed"] = latest is not None
+                verification["snapshot_id"] = latest["snapshot_id"] if latest else None
+                raise _VerificationUnavailable("snapshot_changed")
+            _verify_budget(deadline)
+            added = sorted(set(actual) - set(expected))
+            deleted = sorted(set(expected) - set(actual))
+            modified = sorted(path for path in set(actual) & set(expected) if actual[path] != expected[path])
+            verification.update({"state": "changed" if added or deleted or modified else "current",
+                "complete": True, "checked_files": len(actual), "skipped_files": skipped,
+                "added": len(added), "modified": len(modified), "deleted": len(deleted),
+                "samples": [{"path": path, "change": kind} for kind, paths in
+                    (("added", added), ("modified", modified), ("deleted", deleted)) for path in paths][:20],
+                "reason": None, "current_revision": revision or None,
+                "revision_changed": revision != active["revision"] if revision else None})
+        except _VerificationUnavailable as exc:
+            verification["reason"] = str(exc)
+        except (OSError, UnicodeError, ValueError, subprocess.SubprocessError):
+            # No path/command details or source contents leak through this error.
+            verification["reason"] = "unreadable_sources"
+        verification["checked_at"] = int(time.time() * 1000)
+        return response
 
     def files(self, args):
         """Page repository files, including files with no indexed definitions."""
@@ -550,6 +810,7 @@ def tool_definitions(graph):
 
     return {
         "code_status": tool(graph.status, "Inspect the indexed source snapshot, languages, diagnostics and unresolved references for this checkout. Indexing is performed by byori index; freshness is not assumed.", {}),
+        "code_verify": tool(graph.verify, "Verify indexed source byte hashes against the current checkout within fixed file, byte and time limits. Returns current, changed, or not_checked with explicit completeness; this does not assess semantic validity or run indexing. Other checkout roots cannot be supplied.", {}),
         "code_search": tool(graph.search, "Find indexed Python, Swift, JS/TS and Rust symbols with source locations. Results belong to one immutable checkout snapshot; verify current source before editing.", {
             "query": {"type": "string", "maxLength": 1024}, "file": {"type": "string", "minLength": 1, "maxLength": 4096},
             "language": {"type": "string", "enum": list(LANGUAGES)}, "symbol_id": key,

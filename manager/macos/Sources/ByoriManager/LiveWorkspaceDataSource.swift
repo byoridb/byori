@@ -53,6 +53,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
     private let files: LocalWorkspaceFileTreeService
     private let documents: LocalWorkspaceFileDocumentService
     private let managerService: ManagerService
+    private let memoryClient: ProjectMemoryClient
     private let launchFactory: TerminalLaunchDescriptorFactory
     private let terminalController: TerminalSessionController
     private let claudeGatewaySettings: ClaudeGatewaySettingsController
@@ -108,6 +109,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         self.files = LocalWorkspaceFileTreeService()
         self.documents = LocalWorkspaceFileDocumentService()
         self.managerService = managerService
+        self.memoryClient = ProjectMemoryClient(paths: managerService.paths)
         self.claudeGatewaySettings = claudeGatewaySettings
         self.launchFactory = TerminalLaunchDescriptorFactory(paths: managerService.paths)
         self.customProviders = CustomAgentProviderStore(paths: managerService.paths)
@@ -738,7 +740,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
                 model: launchModel,
                 workingDirectory: checkout.url,
                 terminalID: terminalID,
-                environment: ["BYORIDB_MEMORY_SPACE": project.memorySpace],
+                environment: ["BYORIDB_MEMORY_SPACE": project.memorySpace, "BYORI_TASK_ID": task.id],
                 additionalArguments: request.additionalArguments
             )
             _ = try await taskStore.updateSessionStatus(
@@ -895,6 +897,28 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         return try await managerService.queryCodeIndex(request, projectRoot: root, space: project.memorySpace)
     }
 
+    func resumeCheckpoint(projectID: String, sourceTreeID: String, taskID: String) async throws -> TaskResume {
+        let root = try checkoutURL(projectID: projectID, sourceTreeID: sourceTreeID)
+        guard let project = coreProjects[projectID] else { throw WorkspaceAdapterError.invalidState("프로젝트가 없습니다.") }
+        return try await memoryClient.resume(root: root, space: project.memorySpace, taskID: taskID)
+    }
+
+    func saveCheckpoint(projectID: String, sourceTreeID: String, taskID: String, draft: TaskCheckpointDraft) async throws {
+        let root = try checkoutURL(projectID: projectID, sourceTreeID: sourceTreeID)
+        guard let project = coreProjects[projectID] else { throw WorkspaceAdapterError.invalidState("프로젝트가 없습니다.") }
+        try await memoryClient.checkpoint(root: root, space: project.memorySpace, taskID: taskID, draft: draft)
+    }
+
+    func updateMemoryPolicy(scope: WorkspaceMemoryScope, change: WorkspaceMemoryChange) async throws {
+        let root = try checkoutURL(projectID: scope.projectID, sourceTreeID: scope.sourceTreeID)
+        guard let project = coreProjects[scope.projectID], let record = scope.record else {
+            throw WorkspaceAdapterError.invalidState("기억을 다시 선택해 주세요.")
+        }
+        try await memoryClient.policy(root: root, space: project.memorySpace, type: record.type, name: record.name,
+                                      archived: change.archived, pinned: change.pinned, reviewAfter: change.reviewAfter,
+                                      sourcePath: change.sourcePath, verifySource: change.verifySource)
+    }
+
     func reattachSession(id: String) async throws -> WorkspaceSessionLaunchResult {
         try await operationGate.perform { [self] in
             try await reattachSessionLocked(id: id)
@@ -950,7 +974,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
             model: session.model == Self.cliDefaultModelName ? nil : session.model,
             workingDirectory: checkout.url,
             terminalID: terminalID,
-            environment: ["BYORIDB_MEMORY_SPACE": project.memorySpace],
+            environment: ["BYORIDB_MEMORY_SPACE": project.memorySpace, "BYORI_TASK_ID": task.id],
             additionalArguments: []
         )
         lastTerminalStatus[session.id] = .starting
@@ -1085,7 +1109,8 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
             project: project,
             sourceTreeID: request.sourceTreeID,
             taskID: request.taskID,
-            depth: request.contextDepth
+            depth: request.contextDepth,
+            memoryView: request.memoryView
         )
         return WorkspaceContextSnapshot(items: context.items, isTruncated: context.isTruncated)
     }
@@ -1287,7 +1312,8 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         project: ByoriManagerCore.WorkspaceProject,
         sourceTreeID: String,
         taskID: String?,
-        depth: WorkspaceContextDepth
+        depth: WorkspaceContextDepth,
+        memoryView: MemoryView
     ) async -> (items: [WorkspaceContextItem], isTruncated: Bool) {
         let limit: Int
         switch depth {
@@ -1296,9 +1322,19 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         case .broad: limit = 40
         }
         do {
-            let graph = try await managerService.loadKnowledgeGraph(
-                space: project.memorySpace,
-                limit: 200
+            let root = try checkoutURL(projectID: project.id, sourceTreeID: sourceTreeID)
+            let page = try await memoryClient.read(root: root, space: project.memorySpace, view: memoryView)
+            let records = Dictionary(page.items.map { ($0.vid, $0) }, uniquingKeysWith: { first, _ in first })
+            let graph = KnowledgeGraphSnapshot(
+                nodes: page.items.compactMap { item in
+                    guard let id = Int64(item.vid) else { return nil }
+                    return KnowledgeNode(id: id, name: item.name, kind: item.kind ?? item.type, tag: item.type, timestamp: item.ts)
+                },
+                edges: page.links.compactMap { link in
+                    guard let source = Int64(link.sourceVID), let target = Int64(link.targetVID) else { return nil }
+                    return KnowledgeEdge(source: source, target: target, kind: link.relation)
+                },
+                nodesTruncated: page.truncated || page.scanIncomplete == true
             )
 
             var anchorTerms = [project.id, project.name, sourceTreeID]
@@ -1357,19 +1393,10 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
             }
             if nodes.count > limit { nodes = Array(nodes.prefix(limit)) }
 
-            // One batch, not one task per node. This was a task group of up to 18
-            // concurrent reads, and each read opened its own engine session, so a
-            // single inspector load fired ~19 logins at once — which the engine
-            // answers by refusing some of them as "Invalid credentials".
-            let bodyRequests = nodes.prefix(min(nodes.count, 18)).map {
-                KnowledgeBodyRequest(nodeID: $0.id, tag: $0.tag)
-            }
-            let bodies = (
-                try? await managerService.loadKnowledgeBodies(
-                    requests: bodyRequests,
-                    space: project.memorySpace
-                )
-            ) ?? [:]
+            let bodies = Dictionary(page.items.compactMap { item -> (Int64, String)? in
+                guard let id = Int64(item.vid) else { return nil }
+                return (id, item.body)
+            }, uniquingKeysWith: { first, _ in first })
 
             let items = nodes.map { node in
                 let hop = distances[node.id]
@@ -1381,7 +1408,8 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
                     summary: boundedContext(bodies[node.id] ?? node.name),
                     provenance: "ByoriDB · \(project.memorySpace) · \(relation)",
                     updatedAt: node.updatedAt,
-                    tags: [node.tag, relation]
+                    tags: [node.tag, relation] + (records[String(node.id)]?.reviewReasonLabels ?? []),
+                    memoryRecord: records[String(node.id)]
                 )
             }
             return (

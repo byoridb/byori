@@ -48,6 +48,7 @@ enum ManagerAction: Identifiable, Equatable {
     case startByori
     case stopByori
     case restartByori
+    case recoverByori(automatic: Bool)
 
     var id: String {
         switch self {
@@ -62,6 +63,7 @@ enum ManagerAction: Identifiable, Equatable {
         case .startByori: return "start-byori"
         case .stopByori: return "stop-byori"
         case .restartByori: return "restart-byori"
+        case let .recoverByori(automatic): return automatic ? "recover-byori-automatic" : "recover-byori"
         }
     }
 
@@ -120,6 +122,7 @@ enum ManagerAction: Identifiable, Equatable {
         case .startByori: return "ByoriDB 시작 중…"
         case .stopByori: return "ByoriDB 중지 중…"
         case .restartByori: return "ByoriDB 재시작 중…"
+        case .recoverByori: return "ByoriDB 원인 확인·복구 중…"
         }
     }
 
@@ -216,6 +219,8 @@ struct IntegrationRemovalRequest: Identifiable {
 final class ManagerViewModel: ObservableObject {
     @Published var selectedSection: ManagerSection? = .overview
     @Published private(set) var snapshot: ManagerSnapshot?
+    @Published private(set) var recoveryReport: RuntimeRecoveryReport?
+    @Published private(set) var isCheckingRecovery = false
     @Published private(set) var isBusy = false
     @Published private(set) var canCancelCurrentOperation = false
     @Published private(set) var currentOperation = ""
@@ -308,23 +313,15 @@ final class ManagerViewModel: ObservableObject {
         startUpdateChecks()
     }
 
-    /// Brings ByoriDB back up when it is installed but not running.
-    ///
-    /// Every agent session reads and writes memory through ByoriDB. A stopped
-    /// service does not fail loudly — the agents simply run without memory —
-    /// so leaving it down is a silent downgrade the user has to notice on
-    /// their own. The launch agent already has `RunAtLoad`/`KeepAlive`, which
-    /// means a service that is down was booted out rather than crashed, and
-    /// only a bootstrap brings it back.
-    ///
-    /// Skipped when the user stopped it themselves in this launch: an explicit
-    /// stop that undoes itself is worse than one that sticks.
+    /// One bounded recovery opportunity at launch. The durable controller keeps
+    /// both retry history and manual-stop intent across app restarts.
     private func startByoriIfStopped() async {
         guard !isBusy, let byori = snapshot?.byori else { return }
         guard ByoriAutostart.shouldStart(byori, userStoppedThisLaunch: didUserStopByori) else {
             return
         }
-        execute(.startByori)
+        guard recoveryReport?.canRecoverAutomatically == true else { return }
+        execute(.recoverByori(automatic: true))
     }
 
     deinit {
@@ -377,8 +374,16 @@ final class ManagerViewModel: ObservableObject {
         isBusy = true
         currentOperation = "상태 확인 중"
         snapshot = await service.snapshot()
+        recoveryReport = await service.runtimeRecoveryStatus()
         isBusy = false
         currentOperation = ""
+    }
+
+    func refreshRecovery() async {
+        guard !isBusy, !isCheckingRecovery else { return }
+        isCheckingRecovery = true
+        recoveryReport = await service.runtimeRecoveryStatus()
+        isCheckingRecovery = false
     }
 
     func refreshIntegrations() async {
@@ -489,6 +494,7 @@ final class ManagerViewModel: ObservableObject {
         switch action {
         case .stopByori: didUserStopByori = true
         case .startByori, .restartByori, .installByori: didUserStopByori = false
+        case .recoverByori(automatic: false): didUserStopByori = false
         default: break
         }
         isBusy = true
@@ -666,6 +672,8 @@ final class ManagerViewModel: ObservableObject {
                 result = try await service.stopService()
             case .restartByori:
                 result = try await service.restartService()
+            case let .recoverByori(automatic):
+                result = try await service.recoverRuntime(automatic: automatic)
             case let .connectMCP(kind):
                 result = try await service.connectMCP(kind)
             case let .disconnectMCP(kind):
@@ -767,13 +775,15 @@ final class ManagerViewModel: ObservableObject {
     private func refreshAfterOperation(includeIntegrations: Bool) async {
         let refresh = Task.detached(priority: .userInitiated) { [service] in
             let snapshot = await service.snapshot()
+            let recovery = await service.runtimeRecoveryStatus()
             let inventories = includeIntegrations
                 ? await service.integrationInventories()
                 : nil
-            return (snapshot, inventories)
+            return (snapshot, inventories, recovery)
         }
         let refreshed = await refresh.value
         snapshot = refreshed.0
+        recoveryReport = refreshed.2
         if let inventories = refreshed.1 {
             integrationInventories = inventories
         }

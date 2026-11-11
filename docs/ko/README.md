@@ -77,7 +77,7 @@ Python·Swift·JavaScript/TypeScript·Rust의 코드 구조도 자동으로 분�
 
 > [!WARNING]
 > 현재는 초기 실험 단계입니다. 네이티브 macOS 워크스페이스 MVP, 실제 대화형 PTY,
-> 로컬 단일 노드 ByoriDB, MCP surface, notes + typed wiki + 코드 인덱스 schema v3, 별도의 foreground
+> 로컬 단일 노드 ByoriDB, MCP surface, notes + typed wiki + 코드 인덱스 + 기억 정책·작업 체크포인트 schema v4, 별도의 foreground
 > 멀티 CLI 프로토타입은 구현되어 있습니다. 터미널 세션 유지는 tmux 3.2 이상이 필요하며,
 > 없으면 앱과 함께 종료됩니다. 코드 인덱싱은 명시적인 정적 분석이며 미해결 참조를 별도 표시합니다. 중요한 데이터의 유일한
 > 저장소로 사용하지 마세요.
@@ -169,6 +169,26 @@ byori                              # `byori open .`과 같습니다
 컨텍스트 메뉴에도 남아 있습니다.
 
 
+### 인덱스·기억·작업 이어보기
+
+**Context → 코드 인덱스 보기**에서 저장된 파일·심볼·호출·의존 관계와 변경 영향 후보를
+탐색합니다. 화면을 열거나 새로고침할 때 소스를 한 번 비교하며 **최신 상태 확인**으로
+다시 확인할 수 있습니다. `byori code verify . --json`도 같은 제한된 검증을 수행합니다.
+확인 시각과 최신·변경됨·확인하지 못함을 구분하며, 파일 내용의 일치와 코드·기억의 유효성은
+별개입니다. [코드 인덱스 안내](code-index.md)를 참고하세요.
+
+Context의 **현재 / 재검토 / 보관함 / 전체**에서 기억을 조회하고 보관·보관 해제·중요 표시를
+명시적으로 적용합니다. 중요 표시는 조회 순서를 바꾸지 않으며 대체되거나 재검토가 필요한 기억이 기본 조회로 되살아나지
+않습니다. **작업 체크포인트**는 checkout·task별 명시적 진행 상태를 저장하고 복사해 이어갈
+수 있게 합니다. 원본 세션 수집이나 저장 내용 실행은 하지 않습니다.
+[기억 정책·체크포인트 안내](memory-ontology.md)를 참고하세요.
+
+앱을 갱신한 뒤 **Settings → ByoriDB**의 엔진 설치·업데이트 작업을 실행하고,
+**Agents & Skill**에서 `byoridb-memory`를 **설치/업데이트** 또는 **다시 동기화**한 다음
+기존 에이전트 세션을 재시작·재연결하세요. **이미 최신 엔진**도 같은 버전을 다시
+설치·검증할 수 있습니다. 앱 번들과 이미 실행 중인 에이전트의 MCP·스킬은 별개이며,
+앱 시작만으로 설치된 런타임을 자동 교체하지 않습니다.
+
 ### Byori macOS 앱
 
 핵심 제품 화면은 네이티브 macOS 앱입니다. 신뢰하는 Git 프로젝트를 등록하고 source tree 또는
@@ -176,6 +196,19 @@ byori                              # `byori open .`과 같습니다
 CLI 기본 model을 사용하거나 정확한 launch model identifier를 입력할 수 있습니다. Byori는
 이 launch 선택을 기록하지만 대화형 CLI 안에서 일어난 provider-side model 변경은 관찰하지
 않습니다.
+
+#### 로컬 서비스 진단·복구
+
+**Settings → ByoriDB**와 **Settings → 진단**의 **진단·복구**에서 원인, 가능한
+서비스 시작·재시작, 최근 조치 결과와 다음 시도 시각을 확인합니다. 설치와 설정·소유권이
+확인된 로컬 launchd 서비스만 복구합니다. 다른 포트 소유자, 인증 불일치, 설정 누락,
+256 MiB 미만의 여유 공간, 인증 후 그래프 조회 실패에는 원인별 수동 조치를 안내합니다.
+
+앱 시작 시 가능한 복구를 한 번 시도하며 이후에는 Settings에서 명시적으로 실행합니다.
+백그라운드 무한 재시도는 없습니다. 시도는 10분 동안 최대 3회, 최소 1분 간격이며
+취소·중단된 시도도 기록됩니다. 앱을 다시 켜도 예산과 직접 중지 상태가 유지됩니다.
+복구 후 소유권·로그인·읽기 전용 조회를 검증하며 비밀번호 초기화, DB 삭제, 엔진 재설치는
+하지 않습니다.
 
 #### 앱 설치
 
@@ -356,10 +389,13 @@ Skill은 에이전트가 작업 시작 시 관련 기억을 조회하고 결정�
 | 도구 | 역할 |
 |---|---|
 | `memory_remember(name, kind?, body, relates_to?)` | 안정적인 이름으로 note를 저장하거나 갱신 |
-| `memory_recall(text?, kind?, limit?)` | note 이름·본문에서 이전 기억을 조회 |
+| `memory_recall(text?, kind?, view?, limit?, offset?)` | note 이름·본문 검색과 현재·재검토·보관·전체 범위 조회 |
 | `memory_wiki_upsert(type, name, body, state?, resolved?)` | 검증된 typed-wiki node 생성·갱신; VID는 서버가 결정 |
 | `memory_link(action?, relation, source, target)` | 이미 존재하는 node 사이의 검증된 관계 생성·갱신·삭제 |
-| `memory_read(type?, name?, text?, limit?, include_links?)` | note와 typed-wiki node를 정규화해 조회; VID는 decimal string |
+| `memory_read(type?, name?, text?, view?, limit?, offset?, include_links?)` | note·typed wiki를 현재 범위 기준으로 조회; 재검토·보관·전체 선택 가능 |
+| `memory_policy(type, name, ...)` | 보관·중요 표시·검토 시점·근거 파일 정책을 명시적으로 갱신 |
+| `memory_checkpoint(goal, task_id?, ...)` | 이 checkout·작업의 명시적 진행 상태 저장 |
+| `memory_resume(task_id?)` | 저장된 체크포인트와 revision 근거 조회 |
 | `memory_delete(type, name, cascade?)` | 정확한 node 하나 삭제; link가 있으면 명시적 cascade 필요 |
 | `memory_export(limit?, offset?, include_links?)` | 제한된 best-effort inspection page; 깊은 pagination은 backup이 아님 |
 | `memory_query_read(ngql)` | 검증된 read-only `MATCH`/`FETCH`/`GO`/`LOOKUP`/`SHOW`/`WHY` 한 문장 실행 |
@@ -368,7 +404,7 @@ Skill은 에이전트가 작업 시작 시 관련 기억을 조회하고 결정�
 기본 `legacy` MCP profile은 하위 호환성을 위해 `memory_query`를 유지합니다. unrestricted
 raw mutation이 필요 없는 신규 연동은 `BYORIDB_MCP_PROFILE=safe`를 사용하세요. safe profile은 raw query만
 제거하며 note write와 검증된 structured CRUD는 계속 허용합니다. 오케스트레이션 worker가
-사용하는 `readonly` profile은 read tool 4개만 노출합니다. 이는 authorization sandbox가
+사용하는 `readonly` profile은 코드 조회·최신성 확인·체크포인트 이어보기를 포함한 읽기 도구만 노출합니다. 이는 authorization sandbox가
 아니라 tool filter입니다. 설정된 engine credential을 유지하고 startup에서는
 login/`USE`/schema-version read만 수행하며 writer가 현재 schema를 준비하지 않았으면
 실패합니다. 클라이언트·프로젝트를
@@ -377,7 +413,7 @@ login/`USE`/schema-version read만 수행하며 writer가 현재 schema를 준�
 아니므로 신뢰 영역이 다르면 별도 instance와 credential이 필요합니다. 입력 한도와 정확한
 profile 경계는 [엔진 계약](engine-contract.md)을 참고합니다.
 
-writer profile의 MCP 서버는 시작 시 space를 현재 memory schema(v3)로 자동 migration하고,
+writer profile의 MCP 서버는 시작 시 space를 현재 memory schema(v4)로 자동 migration하고,
 `readonly`는 version만 확인합니다. Writer bootstrap은 독립적인 사실을 위한 `note`/`rel`
 layer와, `module`/`decision`/`bug`/`incident`/
 `concept`/`entity`/`task` + causal edge로 구성된 typed wiki layer가 함께

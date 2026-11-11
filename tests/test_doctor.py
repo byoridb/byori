@@ -15,6 +15,8 @@ that is the whole point of shipping the diagnosis.
 import importlib.util
 import pathlib
 import unittest
+import json
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -228,6 +230,68 @@ class VersionParsingTests(unittest.TestCase):
             (0, 4, 2),
         )
         self.assertIsNone(DOCTOR.parse_version("unknown"))
+
+
+class AuthenticationCleanupTests(unittest.TestCase):
+    """Only mocked HTTP; a diagnostic test must never contact the user's engine."""
+
+    def probe(self, fail_query=None, fail_logout=False, fail_login=False):
+        calls = []
+
+        def open_fake(request, timeout):
+            method = request.get_method()
+            calls.append((method, request.full_url, timeout))
+            if method == "DELETE":
+                if fail_logout:
+                    raise OSError("fake logout failure")
+                body = {}
+            elif request.full_url.endswith("/api/v1/session"):
+                if fail_login:
+                    raise OSError("fake login failure")
+                body = {"session_id": "9007199254740993"}
+            else:
+                self.assertTrue(request.full_url.endswith("/api/v1/query"))
+                payload = json.loads(request.data)
+                self.assertEqual(payload["session_id"], "9007199254740993")
+                query = payload["query"]
+                if query.startswith(fail_query or "never matches"):
+                    raise OSError("fake query failure")
+                body = {"results": [{"total": 4}]} if query.startswith("MATCH") else {"results": []}
+            response = mock.MagicMock()
+            response.__enter__.return_value.read.return_value = json.dumps(body).encode()
+            return response
+
+        with mock.patch("urllib.request.urlopen", side_effect=open_fake):
+            result = DOCTOR._authenticated_probe(
+                "http://127.0.0.1:49993", {"BYORIDB_ROOT_PASSWORD": "fake-credential"}, "test_space"
+            )
+        return result, calls
+
+    def test_success_closes_exact_session(self):
+        result, calls = self.probe()
+        self.assertEqual(result, ("ok", 4))
+        self.assertEqual(calls[-1], ("DELETE", "http://127.0.0.1:49993/api/v1/session/9007199254740993", 5))
+        self.assertEqual(sum(method == "DELETE" for method, _, _ in calls), 1)
+
+    def test_failed_space_query_still_logs_out(self):
+        result, calls = self.probe(fail_query="USE")
+        self.assertEqual(result, ("ok", None))
+        self.assertEqual(calls[-1][0], "DELETE")
+
+    def test_failed_count_stays_unknown_and_still_logs_out(self):
+        result, calls = self.probe(fail_query="MATCH")
+        self.assertEqual(result, ("ok", None))
+        self.assertEqual(calls[-1][0], "DELETE")
+
+    def test_logout_failure_does_not_mask_success(self):
+        result, calls = self.probe(fail_logout=True)
+        self.assertEqual(result, ("ok", 4))
+        self.assertEqual(calls[-1][0], "DELETE")
+
+    def test_failed_login_has_no_session_to_close(self):
+        result, calls = self.probe(fail_login=True)
+        self.assertEqual(result, ("unreachable", None))
+        self.assertFalse(any(method == "DELETE" for method, _, _ in calls))
 
 
 if __name__ == "__main__":
