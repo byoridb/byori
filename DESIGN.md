@@ -190,6 +190,22 @@ Status dots stay small and circular. Pills are reserved for compact system contr
   it, inject it into a terminal, or imply that hidden reasoning or a raw session was restored.
 - Keep memory/checkpoint failures independent of terminal launch, Files, and Git inspection.
 
+### Task Procedure and Verification
+
+- Open **작업 절차·검증** from the selected task's toolbar or terminal header into a native
+  sheet with separate procedure and verification tabs. Keep captured task and checkout visible.
+- Offer three optional presets when creating a task: bug fix, feature, and code review. Applying
+  a replacement procedure is explicit; saving and copying the handoff are separate actions.
+- Manual step checkboxes are user notes. Never render them as executed tests or task completion.
+- Verification commands are user-edited project settings with executable and one argument per
+  line. Saving never executes a command. Show the exact checkout, required/optional status,
+  timeout, and explicit Run/Cancel actions.
+- Distinguish the historical exit outcome from current applicability. Show missing, running,
+  failed, cancelled, timed-out, interrupted, changed and unverified states; a successful exit
+  alone cannot earn current green status. Display the last source check time and refresh action.
+- Keep the last 30 bounded receipts locally, with exit code, times, revisions, resolved executable
+  and output truncation. Cancel and drain an active verification on app termination.
+
 ### Code Index Browser
 
 - Keep **코드 인덱스 보기** visible at the top of the project's Context inspector and in the

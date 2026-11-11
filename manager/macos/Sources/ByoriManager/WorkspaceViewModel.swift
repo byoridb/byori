@@ -49,9 +49,29 @@ protocol WorkspaceDataSource: AnyObject {
     func resumeCheckpoint(projectID: String, sourceTreeID: String, taskID: String) async throws -> TaskResume
     func saveCheckpoint(projectID: String, sourceTreeID: String, taskID: String, draft: TaskCheckpointDraft) async throws
     func updateMemoryPolicy(scope: WorkspaceMemoryScope, change: WorkspaceMemoryChange) async throws
+    func loadTaskWorkflow(scope: WorkspaceTaskWorkScope) async throws -> TaskWorkflowPlan?
+    func saveTaskWorkflow(scope: WorkspaceTaskWorkScope, plan: TaskWorkflowPlan) async throws
+    func loadTaskVerification(scope: WorkspaceTaskWorkScope) async throws -> VerificationSnapshot
+    func saveTaskVerificationCommands(scope: WorkspaceTaskWorkScope, commands: [VerificationCommand]) async throws
+    func runTaskVerification(scope: WorkspaceTaskWorkScope, commandID: String) async throws -> VerificationReceipt
 }
 
 extension WorkspaceDataSource {
+    func loadTaskWorkflow(scope: WorkspaceTaskWorkScope) async throws -> TaskWorkflowPlan? {
+        throw WorkspaceAdapterError.unsupported("작업 절차 저장소가 연결되지 않았습니다.")
+    }
+    func saveTaskWorkflow(scope: WorkspaceTaskWorkScope, plan: TaskWorkflowPlan) async throws {
+        throw WorkspaceAdapterError.unsupported("작업 절차 저장소가 연결되지 않았습니다.")
+    }
+    func loadTaskVerification(scope: WorkspaceTaskWorkScope) async throws -> VerificationSnapshot {
+        throw WorkspaceAdapterError.unsupported("작업 검증이 연결되지 않았습니다.")
+    }
+    func saveTaskVerificationCommands(scope: WorkspaceTaskWorkScope, commands: [VerificationCommand]) async throws {
+        throw WorkspaceAdapterError.unsupported("작업 검증이 연결되지 않았습니다.")
+    }
+    func runTaskVerification(scope: WorkspaceTaskWorkScope, commandID: String) async throws -> VerificationReceipt {
+        throw WorkspaceAdapterError.unsupported("작업 검증이 연결되지 않았습니다.")
+    }
     func resumeCheckpoint(projectID: String, sourceTreeID: String, taskID: String) async throws -> TaskResume {
         throw WorkspaceAdapterError.unsupported("체크포인트 조회가 연결되지 않았습니다.")
     }
@@ -610,6 +630,7 @@ struct WorkspaceSessionLaunchRequest: Hashable {
     let modelChoice: WorkspaceLaunchModelChoice
     let contextDepth: WorkspaceContextDepth
     let additionalArguments: [String]
+    var workflowPreset: TaskWorkflowPreset? = nil
 }
 
 enum WorkspaceLaunchModelChoice: Hashable {
@@ -720,6 +741,7 @@ struct WorkspaceNewSessionDraft: Hashable {
     var sourceTreeID: String = ""
     var taskChoice: WorkspaceNewSessionTaskChoice = .newTask
     var newTaskTitle: String = ""
+    var workflowPreset: TaskWorkflowPreset? = nil
     var sessionName: String = ""
     var providerID: String?
     var modelID: String?
@@ -880,6 +902,7 @@ final class WorkspaceViewModel: ObservableObject {
 
     @Published var history: WorkspaceHistoryPresentation?
     @Published private(set) var codeIndexScope: WorkspaceCodeIndexScope?
+    @Published private(set) var taskWorkScope: WorkspaceTaskWorkScope?
 
     @Published var isPresentingNewSession = false
     @Published var newSessionDraft = WorkspaceNewSessionDraft()
@@ -1148,6 +1171,18 @@ final class WorkspaceViewModel: ObservableObject {
         memoryScope = WorkspaceMemoryScope(project: lineage.project, tree: tree, task: lineage.task, record: record)
     }
     func dismissMemory() { memoryScope = nil }
+    func showTaskWork(taskID: String? = nil) {
+        let lineage: WorkspaceLineage?
+        if let taskID { lineage = self.lineage(for: .task(taskID)) }
+        else { lineage = selectedLineage }
+        guard let lineage, let tree = lineage.sourceTree, let task = lineage.task else { return }
+        taskWorkScope = WorkspaceTaskWorkScope(projectID: lineage.project.id, sourceTreeID: tree.id,
+            taskID: task.id, taskTitle: task.title, title: "\(lineage.project.name) · \(task.title)", root: tree.url)
+    }
+    func dismissTaskWork() { taskWorkScope = nil }
+    func taskWorkProvider(for scope: WorkspaceTaskWorkScope) -> any WorkspaceTaskWorkProviding {
+        WorkspaceTaskWorkProvider(dataSource: dataSource, scope: scope)
+    }
     func resumeCheckpoint(scope: WorkspaceMemoryScope) async throws -> TaskResume {
         try await dataSource.resumeCheckpoint(projectID: scope.projectID, sourceTreeID: scope.sourceTreeID, taskID: scope.taskID)
     }
@@ -1903,7 +1938,8 @@ final class WorkspaceViewModel: ObservableObject {
             providerID: providerID,
             modelChoice: modelChoice,
             contextDepth: newSessionDraft.contextDepth,
-            additionalArguments: composedLaunchArguments()
+            additionalArguments: composedLaunchArguments(),
+            workflowPreset: existingTaskID == nil ? newSessionDraft.workflowPreset : nil
         )
 
         do {

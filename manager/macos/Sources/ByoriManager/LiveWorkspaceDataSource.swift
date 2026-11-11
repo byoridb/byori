@@ -48,6 +48,10 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
     private let projectRegistry: WorkspaceProjectRegistry
     private let checkoutVisibilityStore: WorkspaceCheckoutVisibilityStore
     private let taskStore: WorkspaceTaskStore
+    private let workflowStore: TaskWorkflowStore
+    private let verificationService: TaskVerificationService
+    private var verificationRuns: [UUID: Task<VerificationReceipt, Error>] = [:]
+    private var verificationIsShuttingDown = false
     private let git: WorkspaceGitService
     private let workspaceHome: URL
     private let files: LocalWorkspaceFileTreeService
@@ -104,6 +108,8 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         )
         self.checkoutVisibilityStore = checkoutVisibilityStore
         self.taskStore = WorkspaceTaskStore(home: workspaceHome)
+        self.workflowStore = TaskWorkflowStore(home: workspaceHome)
+        self.verificationService = TaskVerificationService(home: workspaceHome, paths: managerService.paths)
         self.git = git
         self.workspaceHome = workspaceHome
         self.files = LocalWorkspaceFileTreeService()
@@ -120,6 +126,79 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         try await operationGate.perform { [self] in
             try await loadWorkspaceLocked()
         }
+    }
+
+    // Verification is an explicit user operation. Only preparation holds the
+    // workspace gate; running a long test never blocks unrelated workspace UI.
+    var hasActiveVerification: Bool { !verificationRuns.isEmpty }
+
+    func cancelVerificationAndWait() async {
+        verificationIsShuttingDown = true
+        let pending = Array(verificationRuns.values)
+        for run in pending { run.cancel() }
+        for run in pending { _ = await run.result }
+    }
+
+    private func validatedVerificationScope(_ scope: WorkspaceTaskWorkScope) async throws -> VerificationScope {
+        let key = CheckoutKey(projectID: scope.projectID, checkoutID: scope.sourceTreeID)
+        guard coreProjects[scope.projectID] != nil, let checkout = checkouts[key],
+              checkout.url.standardizedFileURL.resolvingSymlinksInPath() == scope.root.standardizedFileURL.resolvingSymlinksInPath(),
+              let task = try await taskStore.task(id: scope.taskID), task.projectID == scope.projectID,
+              task.checkout == WorkspaceCheckoutReference(kind: checkout.kind, id: scope.sourceTreeID) else {
+            throw VerificationError.scopeMismatch
+        }
+        return VerificationScope(projectID: scope.projectID, checkoutID: scope.sourceTreeID,
+                                 taskID: scope.taskID, root: checkout.url)
+    }
+
+    func loadTaskWorkflow(scope: WorkspaceTaskWorkScope) async throws -> TaskWorkflowPlan? {
+        try await operationGate.perform {
+            let validated = try await validatedVerificationScope(scope)
+            return try workflowStore.load(scope: validated)
+        }
+    }
+
+    func saveTaskWorkflow(scope: WorkspaceTaskWorkScope, plan: TaskWorkflowPlan) async throws {
+        try await operationGate.perform {
+            let validated = try await validatedVerificationScope(scope)
+            try Task.checkCancellation()
+            try workflowStore.save(plan, scope: validated)
+        }
+    }
+
+    func loadTaskVerification(scope: WorkspaceTaskWorkScope) async throws -> VerificationSnapshot {
+        let validated = try await operationGate.perform { try await validatedVerificationScope(scope) }
+        return try await verificationService.snapshot(scope: validated)
+    }
+
+    func saveTaskVerificationCommands(scope: WorkspaceTaskWorkScope, commands: [VerificationCommand]) async throws {
+        try await operationGate.perform {
+            let validated = try await validatedVerificationScope(scope)
+            try Task.checkCancellation()
+            try await verificationService.saveProfile(projectID: validated.projectID, commands: commands)
+        }
+    }
+
+    func runTaskVerification(scope: WorkspaceTaskWorkScope, commandID: String) async throws -> VerificationReceipt {
+        guard !verificationIsShuttingDown else { throw CancellationError() }
+        try Task.checkCancellation()
+        let id = UUID()
+        let execution = Task { @MainActor in
+            let ticket = try await operationGate.perform {
+                try Task.checkCancellation()
+                let validated = try await validatedVerificationScope(scope)
+                try Task.checkCancellation()
+                return try await verificationService.prepareRun(scope: validated, commandID: commandID)
+            }
+            // executeRun also finalizes cancelled reservations; do not throw
+            // between preparing a ticket and handing it back to the service.
+            return try await verificationService.executeRun(ticket)
+        }
+        verificationRuns[id] = execution
+        defer { verificationRuns.removeValue(forKey: id) }
+        return try await withTaskCancellationHandler {
+            try await execution.value
+        } onCancel: { execution.cancel() }
     }
 
     private func loadWorkspaceLocked() async throws -> WorkspacePresentationSnapshot {
@@ -457,6 +536,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
                     "Stop the active session before removing this task from Byori."
                 )
             }
+            guard !(await verificationService.isRunning(taskID: id)) else { throw VerificationError.running }
             _ = try await taskStore.archiveTask(id: id)
         }
     }
@@ -573,6 +653,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
                     "Only a worktree created and managed by Byori can be deleted here."
                 )
             }
+            guard !(await verificationService.isRunning(root: checkout.url)) else { throw VerificationError.running }
 
             let taskList = try await taskStore.tasks(projectID: projectID, limit: 1_000)
             guard !taskList.isTruncated else {
@@ -625,6 +706,10 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         projectID: String,
         checkout: WorkspaceCheckoutReference?
     ) async throws {
+        for (key, registered) in checkouts where key.projectID == projectID
+            && (checkout == nil || key.checkoutID == checkout?.id) {
+            guard !(await verificationService.isRunning(root: registered.url)) else { throw VerificationError.running }
+        }
         let taskList = try await taskStore.tasks(projectID: projectID, limit: 1_000)
         guard !taskList.isTruncated else {
             throw WorkspaceAdapterError.invalidState(
@@ -703,6 +788,10 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
                 ),
                 title: title
             )
+            if let preset = request.workflowPreset {
+                try workflowStore.save(preset.makePlan(goal: title), scope: VerificationScope(
+                    projectID: project.id, checkoutID: request.sourceTreeID, taskID: task.id, root: checkout.url))
+            }
         }
 
         let explicitModel: String?
@@ -1063,6 +1152,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
     func checkout(projectID: String, sourceTreeID: String, ref: String) async throws {
         let url = try checkoutURL(projectID: projectID, sourceTreeID: sourceTreeID)
         try await operationGate.perform {
+            guard !(await verificationService.isRunning(root: url)) else { throw VerificationError.running }
             try await git.checkout(at: url, ref: ref)
         }
     }
