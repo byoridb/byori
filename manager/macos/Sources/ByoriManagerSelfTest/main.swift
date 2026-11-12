@@ -478,9 +478,13 @@ enum ByoriManagerSelfTest {
 
         let cancelInstallHome = root.appendingPathComponent("cancel-install-home", isDirectory: true)
         let cancelInstallRuntime = root.appendingPathComponent("cancel-install-runtime", isDirectory: true)
+        // launchd addresses a job by UID and label, never by HOME. A label other than
+        // the installed engine's keeps this fixture from ever naming that job.
+        let cancelInstallLabel = "com.byoridb.selftest.\(UUID().uuidString)"
         let cancelInstallPaths = ManagerPaths(
             home: cancelInstallHome,
-            runtimeRoot: cancelInstallRuntime
+            runtimeRoot: cancelInstallRuntime,
+            serviceLabel: cancelInstallLabel
         )
         let fakePython = cancelInstallHome.appendingPathComponent(".local/bin/python3")
         try fileManager.createDirectory(
@@ -510,7 +514,13 @@ enum ByoriManagerSelfTest {
             [.posixPermissions: 0o755],
             ofItemAtPath: cancelInstallPaths.installer.path
         )
-        let cancelInstallService = ManagerService(paths: cancelInstallPaths)
+        // The installer must really run so its cancellation is real, but launchctl must
+        // not: rollback boots the service out, and that would stop the developer's engine.
+        let cancelInstallRunner = LaunchctlIsolatingRunner()
+        let cancelInstallService = ManagerService(
+            paths: cancelInstallPaths,
+            runner: cancelInstallRunner
+        )
         let installTask = Task {
             try await cancelInstallService.installOrUpdateByori()
         }
@@ -533,6 +543,13 @@ enum ByoriManagerSelfTest {
         }
         guard try String(contentsOf: runtimeState, encoding: .utf8) == "before" else {
             throw Failure("cancelled ByoriDB install did not restore its runtime snapshot")
+        }
+        let launchctlTargets = await cancelInstallRunner.launchctlCalls.flatMap(\.arguments)
+        guard !launchctlTargets.contains(where: { $0.hasSuffix("/com.byoridb.local") }) else {
+            throw Failure("cancelled ByoriDB install addressed the installed engine's launchd job")
+        }
+        guard launchctlTargets.contains(where: { $0.hasSuffix("/\(cancelInstallLabel)") }) else {
+            throw Failure("cancelled ByoriDB install did not roll back through its own launchd label")
         }
 
         let childPIDFile = root.appendingPathComponent("timeout-child.pid")
@@ -862,6 +879,21 @@ private actor FailedRemoveRunner: CommandRunning {
             return CommandResult(exitCode: 1, output: "simulated probe failure")
         }
         return CommandResult(exitCode: 0, output: "ok")
+    }
+}
+
+/// Runs everything for real except launchctl, which is recorded and answered as
+/// "job not loaded". launchctl acts on the user's live launchd domain.
+private actor LaunchctlIsolatingRunner: CommandRunning {
+    private let real = ProcessCommandRunner()
+    private(set) var launchctlCalls: [CommandSpec] = []
+
+    func run(_ command: CommandSpec) async -> CommandResult {
+        guard command.executable == "/bin/launchctl" else {
+            return await real.run(command)
+        }
+        launchctlCalls.append(command)
+        return CommandResult(exitCode: command.arguments.first == "print" ? 113 : 0, output: "")
     }
 }
 
