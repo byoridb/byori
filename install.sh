@@ -6,7 +6,8 @@
 #
 #   curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh | bash
 #
-# Options: --no-hooks --with-bulk-read-hook --tag vX.Y.Z --engine-tag vX.Y.Z|latest
+# Options: --no-hooks --with-bulk-read-hook --with-usage-statusline
+#          --tag vX.Y.Z --engine-tag vX.Y.Z|latest
 #          --uninstall --binary PATH --indexer-binary PATH --assets DIR
 #          --no-service --no-claude --no-codex
 #   --no-hooks   skip the Claude checkpoint hooks (installed by default: they are
@@ -22,6 +23,11 @@
 #                tool calls — a behavior change the user chooses, not one an
 #                installer assumes. The agent and skill install with the other
 #                skills either way; ranged reads (offset/limit) always pass.
+#   --with-usage-statusline
+#                show Claude (5h/7d) and Codex (weekly, credits) plan usage at the
+#                bottom of Claude Code. Off by default: the status line is a single
+#                slot the user may already use. An existing statusLine is kept and
+#                run first, and --uninstall puts it back.
 #   --tag        pins the byori asset version (default: latest byori release)
 #   --engine-tag ByoriDB engine release to install: a tag, or `latest` to resolve
 #                the newest engine release (default: the validated pinned tag)
@@ -58,7 +64,7 @@ BULK_AGENT_FILE="byori-bulk-reader.md"
 CLAUDE_AGENTS_ROOT="${HOME}/.claude/agents"
 
 TAG=""; ENGINE_TAG="${BYORI_ENGINE_TAG:-$ENGINE_TAG_DEFAULT}"
-WITH_HOOKS=1; WITH_BULK_READ_HOOK=0; UNINSTALL=0; BINARY=""; ASSETS=""; NO_SERVICE=0; NO_CLAUDE=0; NO_CODEX=0
+WITH_HOOKS=1; WITH_BULK_READ_HOOK=0; WITH_USAGE_STATUSLINE=0; UNINSTALL=0; BINARY=""; ASSETS=""; NO_SERVICE=0; NO_CLAUDE=0; NO_CODEX=0
 ALLOW_ENGINE_DOWNGRADE=0; SKIP_ENGINE=0; INDEXER_BINARY=""
 # Whether the engine binary on disk changed in this run. A service reload is only
 # needed when it did — the running server is executing the old one.
@@ -75,6 +81,7 @@ while [ $# -gt 0 ]; do
     --with-hooks) WITH_HOOKS=1 ;;   # accepted for compatibility; now the default
     --no-hooks)   WITH_HOOKS=0 ;;
     --with-bulk-read-hook) WITH_BULK_READ_HOOK=1 ;;
+    --with-usage-statusline) WITH_USAGE_STATUSLINE=1 ;;
     --uninstall)  UNINSTALL=1 ;;
     --no-service) NO_SERVICE=1 ;;
     --no-claude)  NO_CLAUDE=1 ;;
@@ -115,6 +122,14 @@ uninstall() {
     "$CODEX_SKILLS_ROOT/$DESIGN_SKILL_NAME" \
     "$CODEX_SKILLS_ROOT/$BULK_SKILL_NAME"
   rm -f "$CLAUDE_AGENTS_ROOT/$BULK_AGENT_FILE"
+  # The status line runs a script this uninstall deletes. Put the user's own
+  # statusLine back (or drop ours) while that script can still do it.
+  if [ -f "$BYORIDB_HOME/bin/byori-statusline.py" ] && command -v python3 >/dev/null 2>&1; then
+    python3 "$BYORIDB_HOME/bin/byori-statusline.py" uninstall \
+      --settings "${HOME}/.claude/settings.json" \
+      --state "$BYORIDB_HOME/statusline.previous.json" >/dev/null 2>&1 \
+      || warn "could not restore the status line; check statusLine in ~/.claude/settings.json"
+  fi
   # The guard hook runs a script this uninstall deletes; left behind, every
   # Read and Bash call would spawn a failing command. The checkpoint hooks are
   # self-contained one-liners and are deliberately kept.
@@ -229,6 +244,7 @@ get "adapters/claude/skills/byori-design/agents/openai.yaml" "$WORK/byori-design
 get "adapters/claude/agents/byori-bulk-reader.md" "$WORK/byori-bulk-reader.agent.md"
 get "adapters/claude/skills/byori-bulk-read/SKILL.md" "$WORK/byori-bulk-read.SKILL.md"
 get "adapters/codex/skills/byori-bulk-read/SKILL.md" "$WORK/byori-bulk-read.codex.SKILL.md"
+get "adapters/claude/byori-statusline.py" "$WORK/byori-statusline.py"
 if [ "$WITH_BULK_READ_HOOK" = 1 ]; then
   get "adapters/claude/bulk-read-guard.sh" "$WORK/bulk-read-guard.sh"
   get "adapters/claude/hooks.bulk-read.snippet.json" "$WORK/hooks.bulk-read.json"
@@ -247,7 +263,7 @@ fi
 render "$WORK/run-server.sh" "$WORK/run-server.rendered.sh"
 render "$WORK/run-mcp.sh" "$WORK/run-mcp.rendered.sh"
 render "$WORK/run-byori.sh" "$WORK/run-byori.rendered.sh"
-"$PYTHON" -m py_compile "$WORK/byoridb_mcp.py" "$WORK/code_graph.py" "$WORK/byori.py" "$WORK/archaeology.py" "$WORK/doctor.py"
+"$PYTHON" -m py_compile "$WORK/byoridb_mcp.py" "$WORK/code_graph.py" "$WORK/byori.py" "$WORK/archaeology.py" "$WORK/doctor.py" "$WORK/byori-statusline.py"
 bash -n "$WORK/run-server.rendered.sh" "$WORK/run-mcp.rendered.sh" \
   "$WORK/run-byori.rendered.sh"
 
@@ -493,10 +509,14 @@ fi
 cp "$WORK/byori.py" "$BYORIDB_HOME/bin/byori.py"
 cp "$WORK/archaeology.py" "$BYORIDB_HOME/bin/archaeology.py"
 cp "$WORK/doctor.py" "$BYORIDB_HOME/bin/doctor.py"
+# Ships with or without --with-usage-statusline: a re-run without the flag must
+# not leave an already wired status line pointing at a stale or missing script.
+cp "$WORK/byori-statusline.py" "$BYORIDB_HOME/bin/byori-statusline.py"
 cp "$WORK/run-server.rendered.sh" "$BYORIDB_HOME/bin/run-server.sh"
 cp "$WORK/run-mcp.rendered.sh" "$BYORIDB_HOME/bin/run-mcp.sh"
 cp "$WORK/run-byori.rendered.sh" "$BYORIDB_HOME/bin/byori"
-chmod 644 "$BYORIDB_HOME/bin/byori.py" "$BYORIDB_HOME/bin/archaeology.py" "$BYORIDB_HOME/bin/doctor.py"
+chmod 644 "$BYORIDB_HOME/bin/byori.py" "$BYORIDB_HOME/bin/archaeology.py" "$BYORIDB_HOME/bin/doctor.py" \
+  "$BYORIDB_HOME/bin/byori-statusline.py"
 chmod +x "$BYORIDB_HOME/bin/run-server.sh" "$BYORIDB_HOME/bin/run-mcp.sh" \
   "$BYORIDB_HOME/bin/byori"
 
@@ -788,6 +808,36 @@ if [ "$WITH_BULK_READ_HOOK" = 1 ]; then
   fi
 fi
 
+# 9c) usage status line (opt-in)
+#
+# Its own flag, off by default: the status line is one slot, and the user may
+# already fill it. The script keeps an existing statusLine and runs it first, and
+# records it so --uninstall can put it back. The script itself ships either way
+# (above); this only wires settings.json, and needs no jq.
+statusline_state="not wired (opt in with --with-usage-statusline)"
+if [ "$WITH_USAGE_STATUSLINE" = 1 ]; then
+  settings="${HOME}/.claude/settings.json"; mkdir -p "${HOME}/.claude"
+  backup=""
+  if [ -f "$settings" ]; then
+    backup="${settings}.bak.$(date +%Y%m%d%H%M%S)"
+    cp "$settings" "$backup"
+  fi
+  # The interpreter's real path, not a version-manager shim: a shim resolves per
+  # directory, and in a project pinning an uninstalled version it would fail —
+  # taking the wrapped user status line down with ours.
+  statusline_command="$("$PYTHON" -c 'import shlex, sys; print(" ".join(shlex.quote(a) for a in [sys.executable] + sys.argv[1:]))' \
+    "$BYORIDB_HOME/bin/byori-statusline.py")"
+  if statusline_result="$("$PYTHON" "$BYORIDB_HOME/bin/byori-statusline.py" install \
+      --settings "$settings" --state "$BYORIDB_HOME/statusline.previous.json" \
+      --command "$statusline_command")"; then
+    statusline_state="$statusline_result"
+    log "usage status line: $statusline_result${backup:+ (backup: $backup)}"
+  else
+    statusline_state="failed (settings.json left as it was)"
+    warn "could not wire the usage status line; $settings is unchanged"
+  fi
+fi
+
 printf '\n%sByoriDB runtime and agent integrations installed.%s\n' "$c_blue" "$c_off"
 printf '  home     : %s\n' "$BYORIDB_HOME"
 printf '  server   : http://%s  (health: curl -s http://%s/health)\n' "$HTTP_ADDR" "$HTTP_ADDR"
@@ -818,4 +868,5 @@ if [ "$NO_CODEX" != 1 ] && command -v codex >/dev/null 2>&1; then
   printf '  codex    : %s/{%s,%s,%s}/   (codex mcp list -> byoridb)\n' \
     "$CODEX_SKILLS_ROOT" "$MEMORY_SKILL_NAME" "$DESIGN_SKILL_NAME" "$BULK_SKILL_NAME"
 fi
+printf '  status   : usage status line %s\n' "$statusline_state"
 printf 'Restart your agent CLI so it picks up the MCP server and skills.\n'

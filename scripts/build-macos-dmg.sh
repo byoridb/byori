@@ -184,15 +184,16 @@ done
   die "missing Claude hooks snippet"
 # install.sh `get`s every one of these from --assets; a missing file makes the
 # in-app update fail at validation, so they are checked and packaged together.
-BULK_READ_ASSETS=(
+ADAPTER_ASSETS=(
   "adapters/claude/agents/byori-bulk-reader.md"
+  "adapters/claude/byori-statusline.py"
   "adapters/claude/skills/byori-bulk-read/SKILL.md"
   "adapters/codex/skills/byori-bulk-read/SKILL.md"
   "adapters/claude/bulk-read-guard.sh"
   "adapters/claude/hooks.bulk-read.snippet.json"
 )
-for asset in "${BULK_READ_ASSETS[@]}"; do
-  [ -f "$REPO_ROOT/$asset" ] || die "missing bulk-read asset: $asset"
+for asset in "${ADAPTER_ASSETS[@]}"; do
+  [ -f "$REPO_ROOT/$asset" ] || die "missing adapter asset: $asset"
 done
 
 for tool in cargo codesign ditto hdiutil install lipo plutil python3 sed strip xattr xcrun; do
@@ -237,7 +238,7 @@ RUNTIME_DIR="$RESOURCES_DIR/runtime"
 mkdir -p "$MACOS_DIR" "$RUNTIME_DIR/mcp" "$RUNTIME_DIR/cli" "$RUNTIME_DIR/bin" \
   "$RUNTIME_DIR/adapters/claude/skills/byoridb-memory" \
   "$RUNTIME_DIR/adapters/claude/skills/byori-design/agents"
-for asset in "${BULK_READ_ASSETS[@]}"; do
+for asset in "${ADAPTER_ASSETS[@]}"; do
   mkdir -p "$RUNTIME_DIR/$(dirname "$asset")"
 done
 
@@ -358,7 +359,7 @@ install -m 644 \
 install -m 644 \
   "$REPO_ROOT/adapters/claude/hooks.snippet.json" \
   "$RUNTIME_DIR/adapters/claude/hooks.snippet.json"
-for asset in "${BULK_READ_ASSETS[@]}"; do
+for asset in "${ADAPTER_ASSETS[@]}"; do
   install -m 644 "$REPO_ROOT/$asset" "$RUNTIME_DIR/$asset"
 done
 printf '%s\n' "$VERSION" > "$RESOURCES_DIR/VERSION"
