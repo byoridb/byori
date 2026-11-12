@@ -55,7 +55,7 @@ ByoriDB 지식 그래프를 공유한다.
 ## 옵션
 
 ```sh
-install.sh [--no-hooks] [--with-bulk-read-hook] [--tag vX.Y.Z]
+install.sh [--no-hooks] [--with-bulk-read-hook] [--with-usage-statusline] [--tag vX.Y.Z]
            [--engine-tag vX.Y.Z|latest] [--uninstall] [--binary PATH] [--assets DIR]
            [--indexer-binary PATH]
            [--no-service] [--no-claude] [--no-codex]
@@ -79,6 +79,17 @@ install.sh [--no-hooks] [--with-bulk-read-hook] [--tag vX.Y.Z]
   `byori-bulk-read` 스킬은 다른 스킬들과 함께 항상 설치된다. 가드는 판정할 수 없는 것을
   전부 통과시킨다(fail open). `jq` 필요. `--no-claude`와 함께 쓰면 위임할 에이전트가
   없으므로 경고 후 건너뛴다. `--uninstall`은 가드 스크립트와 함께 그 hook 항목도 걷어낸다.
+- `--with-usage-statusline` — Claude Code 하단에 플랜 사용량을 보여준다:
+  `Claude 5h 24% (1h52m) · 7d 41% (3d) │ Codex 7d 75% (3d) · credits 62,500`. Claude 값은
+  Claude Code가 상태줄에 넘기는 `rate_limits`라서 Pro/Max/Ultra 플랜에서, 세션의 첫 응답 이후에만
+  나온다. Codex 값은 Codex가 `~/.codex/sessions`에 마지막으로 남긴 스냅샷이다 — 마지막 Codex
+  사용 시점의 값이고, Codex 업데이트로 바뀔 수 있는 내부 로그 형식을 읽는다. 형식이 바뀌면 틀린
+  숫자를 보이는 대신 그 부분이 사라진다. 이미 리셋된 구간은 숨긴다. **기본은 미설치**다: 상태줄은
+  칸이 하나뿐이고 사용자가 이미 쓰고 있을 수 있다. 기존 `statusLine`은 유지해 같은 입력으로 실행하고
+  그 출력을 앞에 둔다. 원래 값은 `~/.byoridb/statusline.previous.json`에 기록하고, `--uninstall`이
+  되돌린다(그 사이 사용자가 다른 상태줄로 바꿨다면 건드리지 않는다). 설치기를 다시 실행해도 우리
+  상태줄을 원래 값으로 기록하지 않는다. `settings.json`을 먼저 백업하며 `jq`는 필요 없다.
+  리셋 쿠폰(limit reset) 보유 여부는 감지할 인터페이스가 없어 표시하지 않는다.
 - `--tag` — byori 자산(MCP/스킬/템플릿) 버전 고정(기본: 최신 byori 릴리스).
 - `--engine-tag` — 설치할 ByoriDB 엔진 릴리스(기본: 이 byori 버전과 함께 검증된 고정 태그).
   `latest`를 주면 최신 엔진 릴리스를 조회해 설치한다. 조회가 실패하면(네트워크 없음, GitHub API
