@@ -77,9 +77,9 @@ prototype and compatibility path.
   outline and makes the selected checkout explicit. Its top `+` menu creates a new project or
   opens an existing folder. A source-tree `+` opens a session sheet
   for a new task; a task `+` targets that exact task. The sheet proposes an editable two-word
-  session name, while legacy unnamed sessions retain the provider/model fallback. An ended
-  session can be hidden with **Close** and restored from its Task row's
-  **More Actions → Closed Sessions** menu.
+  session name, while legacy unnamed sessions retain the provider/model fallback.
+  Search by project name below the sidebar header; clearing the search restores the full list
+  and its expanded/collapsed rows without switching the active terminal.
 - A task row's **More Actions → Remove Task from Byori…** moves its task/session metadata to
   `~/.byori/archived-tasks` after every session has ended. It does not change repository files,
   the worktree or branch, or ByoriDB context.
@@ -113,6 +113,22 @@ prototype and compatibility path.
   **Settings → ByoriDB** is for service installation and maintenance; shared project
   knowledge belongs in the Context inspector.
 
+## Suggested work location
+
+The New Session sheet fills in a work strategy before launch and explains its recommendation:
+
+- **New branch** for new work on an idle, clean `main` or `master`; it uses the same folder.
+- **New worktree** when another writing session is using the selected checkout; it creates a
+  separate folder and branch from a committed ref, without copying uncommitted changes.
+- **Work directly** to continue an existing task, use an existing feature branch, review code in
+  an idle checkout, or preserve uncommitted work. The label names the actual current branch.
+
+The branch name follows the task title and avoids existing names. Strategy and branch name remain
+editable for a new task, and a worktree's base can be selected. A new branch in the current folder
+starts from that checkout's HEAD. Later suggestions preserve manual edits. **추천 다시 적용** resets
+them to the recommendation. Existing tasks remain in their original checkout. No branch or folder
+is created until **Start Session**, which checks the chosen location again before changing Git.
+
 ## Session lifetime
 
 Closing the workspace window detaches it from the terminal view without ending active sessions.
@@ -128,10 +144,20 @@ next session without relaunching Byori:
 - A later app launch discovers retained sessions and offers to reattach to their existing PTYs.
 - An ended session offers **New Session** for the same task. An active session cannot be
   closed and must be stopped first.
-- **Close** persistently hides the ended session from the sidebar without deleting its task
-  or session history. Restore it from the parent Task row's
-  **More Actions → Closed Sessions** menu.
+- Ended sessions are omitted from the outline unless currently selected; their parent task remains.
 - ByoriDB itself is separate and continues running as a launchd user service.
+
+The archive button beside **Projects** opens **지난 세션 정리**. It lists tasks whose sessions
+have all ended, using the most recent recorded end time (not last keyboard activity). Choose
+7, 30, or 90 days, or all ended tasks, and optionally narrow to one project. No rows are selected
+initially. Select rows and choose **보관** to move complete task/session metadata out of the active
+list; project files, branches, worktrees and ByoriDB records stay in place. Running, starting and
+detached sessions, including shells, are excluded. State is checked again before each archive;
+partial failures are reported without undoing successful entries.
+
+The **보관함** tab lists archived tasks and restores selected records without starting sessions.
+Restoration requires the original project and checkout and refuses an existing task with the same
+ID. An incomplete bounded listing is shown as partial, rather than implying all history was read.
 
 ## Settings and administration
 

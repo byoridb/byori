@@ -49,6 +49,7 @@ final class WorkspaceShellSessionTests: XCTestCase {
 
         await model.prepareNewSession()
         model.newSessionDraft.newTaskTitle = "Fix the parser"
+        model.chooseSessionLocationStrategy(.currentCheckout)
         model.chooseProvider("claude")
         model.chooseModel("default")
         await model.startSession()

@@ -248,10 +248,10 @@ private final class GateDataSource: WorkspaceDataSource {
         let primary = WorkspaceSourceTreeItem(
             id: "primary123",
             projectID: "project123",
-            name: "main",
+            name: "feature/gate-tests",
             url: URL(fileURLWithPath: "/tmp/byori", isDirectory: true),
             kind: .primary,
-            branch: "main",
+            branch: "feature/gate-tests",
             headRevision: String(repeating: "a", count: 40),
             workingState: .clean,
             tasks: taskItems
@@ -266,6 +266,10 @@ private final class GateDataSource: WorkspaceDataSource {
             hiddenSourceTrees: []
         )
         return WorkspacePresentationSnapshot(projects: [project])
+    }
+
+    func branches(projectID: String) async throws -> [WorkspaceGitBranch] {
+        [.init(name: "feature/gate-tests", isRemote: false, isCheckedOut: true)]
     }
 
     func loadSessionOptions(projectID: String) async throws -> [WorkspaceProviderOption] {

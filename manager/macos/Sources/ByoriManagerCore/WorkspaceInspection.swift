@@ -268,6 +268,7 @@ public protocol WorkspaceGitInspecting: Sendable {
     func branches(at path: URL) async throws -> [WorkspaceGitBranch]
     func log(at path: URL, limit: Int) async throws -> (commits: [WorkspaceGitCommit], isTruncated: Bool)
     func checkout(at path: URL, ref: String) async throws
+    func createBranch(at path: URL, name: String, startPoint: String) async throws
     func addWorktree(
         repositoryRoot: URL,
         at destination: URL,
@@ -331,6 +332,10 @@ extension WorkspaceGitInspecting {
 
     public func checkout(at path: URL, ref: String) async throws {
         throw WorkspaceError.gitCommandFailed("Checkout is not available here.")
+    }
+
+    public func createBranch(at path: URL, name: String, startPoint: String) async throws {
+        throw WorkspaceError.gitCommandFailed("Branch creation is not available here.")
     }
 }
 
@@ -656,6 +661,47 @@ public struct WorkspaceGitService: WorkspaceGitInspecting, Sendable {
             // overwrite files instead of switching branches.
             ["-C", path.standardizedFileURL.path, "checkout", ref, "--"],
             workingDirectory: path.standardizedFileURL.path
+        )
+        guard result.succeeded else {
+            throw WorkspaceError.checkoutRefused(bounded(result.output, limit: 2_048))
+        }
+    }
+
+    /// Creates a branch and switches this checkout to it without moving existing
+    /// branches or carrying uncommitted work into the new task.
+    public func createBranch(at path: URL, name: String, startPoint: String) async throws {
+        try Self.validateBranchName(name)
+        try Self.validateStartPoint(startPoint)
+        let root = path.standardizedFileURL.path
+        // Validate the literal full ref. `check-ref-format --branch` expands
+        // @{-1}, which must not turn a typed name into a different branch.
+        let validName = await git(
+            ["-C", root, "check-ref-format", "refs/heads/\(name)"],
+            workingDirectory: root
+        )
+        guard validName.succeeded else {
+            throw WorkspaceError.checkoutRefused("Branch name is not usable: \(name)")
+        }
+        let status = try await status(at: path, maxChanges: 1)
+        guard status.isClean else {
+            throw WorkspaceError.checkoutRefused(
+                "This source tree has uncommitted changes. Commit or stash them first."
+            )
+        }
+        let revision = await git(
+            ["-C", root, "rev-parse", "--verify", "--end-of-options", "\(startPoint)^{commit}"],
+            workingDirectory: root
+        )
+        let commit = revision.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard revision.succeeded, !commit.isEmpty else {
+            throw WorkspaceError.checkoutRefused("The start point does not name a commit: \(startPoint)")
+        }
+        // -c is transactional and refuses an existing name; -C would reset it.
+        // Resolve the start point first so no pathspec, option, remote tracking
+        // guess, or changing symbolic ref can alter the requested operation.
+        let result = await git(
+            ["-C", root, "switch", "--no-track", "-c", name, "--", commit],
+            workingDirectory: root
         )
         guard result.succeeded else {
             throw WorkspaceError.checkoutRefused(bounded(result.output, limit: 2_048))
