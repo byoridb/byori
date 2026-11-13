@@ -54,7 +54,10 @@ The current workflow is local and Git-centered:
 1. The developer signs in through each vendor CLI and explicitly registers a trusted Git
    project with Byori.
 2. They use the source-tree or task `+` action, accept or edit a generated session name,
-   and choose one installed agent and model for the new session.
+   and review a prefilled work-location recommendation: use the current checkout, create a
+   branch in that checkout, or create an isolated worktree. The sheet explains the recommendation
+   and suggests an editable branch name from the task title. They choose one installed agent
+   and model; Git changes happen only when they start the session.
 3. Byori opens an interactive terminal for that session and loads a bounded slice of project
    knowledge in the Context inspector. The agent accesses project memory through its separately
    configured MCP and Memory Skill. Byori preserves the launch selection; any provider-side model
@@ -70,6 +73,11 @@ archives its exact registry record outside the active project list; adding the s
 repository root again restores the prior project ID, graph space, and task/session linkage. Hiding
 a linked checkout only removes that canonical path from the project's outline until it is restored.
 Removing a task moves its exact task/session metadata directory into recoverable archived storage.
+Project-name search filters the outline while preserving the selected terminal. A session-cleanup
+sheet previews tasks whose sessions have all ended, filters by their latest recorded end time,
+and archives only the user's selection. Running and detached sessions are excluded. The same
+sheet restores archived tasks when their registered project and checkout remain available;
+restoring records does not restart a session. Byori does not claim to track last terminal activity.
 An explicit, separately confirmed cleanup action may delete only a clean Byori-managed worktree
 after its sessions have stopped and its tasks have been removed. The user can keep its branch or
 ask Git to delete the branch with safe `-d` semantics, which preserves unmerged work. None of these
@@ -145,7 +153,8 @@ Current implementation constraints:
   are not implemented; managed-worktree deletion remains an explicit user action;
 - native project removal and checkout hiding are visibility/registration operations, not Git
   cleanup or knowledge deletion;
-- the default managed-worktree mode requires a clean registered repository;
+- the foreground CLI's default managed-worktree mode requires a clean registered repository;
+  native session worktrees start from a committed ref and do not copy uncommitted changes;
 - vendor authentication and model data handling remain owned by each coding CLI unless the user
   explicitly enables Byori's Claude gateway override for new sessions;
 - memory is historical reference and must be checked against the current repository; a current

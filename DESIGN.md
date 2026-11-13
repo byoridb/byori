@@ -131,6 +131,17 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 ### Project Outline
 
 - Use native disclosures and list rows for every hierarchy level.
+- Keep a project-name search field directly below the outline header. Match names without
+  case or accent sensitivity, include Korean names, and provide a clear action and a useful
+  no-results state. Filtering never changes the active terminal or discards disclosure choices.
+- Open `지난 세션 정리` from the outline header. Preview inactive tasks by project and most
+  recent session end time, defaulting to 30 days with 7/90-day and all-ended alternatives.
+  Do not call this last-use time: terminal input activity is not recorded. Start with no rows
+  selected; show excluded active tasks and any incomplete scans. Archive only explicitly
+  selected tasks after rechecking their latest state, retaining their full session/sidecar data.
+- Provide a recoverable task archive in that same sheet. Restore stable task/session identities
+  without launching sessions or overwriting another task. A missing project or checkout explains
+  why restoration is unavailable. Never stop a running or detached session as part of cleanup.
 - Offer `Create New Project…` and `Open Folder…` from the outline header and actionable empty
   state. Creation shows the resulting path and initializes a local `main` repository without a
   remote. It commits once, empty, so `main` is a branch and not only HEAD's name: a project that
@@ -145,7 +156,7 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 - Removing a project archives its exact registration outside the active list. Re-adding the same canonical repository restores its stable project identity, graph space, and task/session linkage.
 - Removing a linked checkout hides that canonical path from the outline until the user restores it. The action must be described as hiding from Byori, not deleting a Git worktree.
 - Removing a task archives its exact task/session metadata outside the active outline. State plainly that repository files, its checkout and branch, and ByoriDB records remain.
-- Offer actual cleanup only for a Byori-managed worktree, behind a separate destructive confirmation. Disable it until active sessions have stopped, tasks have been removed, and Git reports a clean worktree. Let the user keep the branch or request Git-safe `-d` deletion; report an unmerged branch as retained after the worktree is removed.
+- Offer Git worktree deletion only for a Byori-managed worktree, behind a separate destructive confirmation. Disable it until active sessions have stopped, tasks have been removed, and Git reports a clean worktree. Let the user keep the branch or request Git-safe `-d` deletion; report an unmerged branch as retained after the worktree is removed.
 - Never offer file deletion for the primary checkout or an externally managed worktree.
 
 ### Terminal Session
@@ -232,6 +243,18 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 - Treat session creation as protected focus: location, task, provider, launch model, dirty-tree confirmation, and Context depth belong in one native sheet.
 - Put a small `+` action directly on source-tree and task rows: source-tree `+` starts a new task, while task `+` preserves that exact task target.
 - Prefill a short two-word session name, keep it editable, and preserve the provider/model label as the fallback for legacy unnamed sessions.
+- Present a work-location recommendation before launch and prefill its strategy, branch name,
+  and starting ref. Recommend a new branch for new work on an idle, clean `main`/`master`, a
+  worktree when the selected checkout has an active writing session, and the current checkout
+  when continuing an existing task, reviewing code in an idle checkout, or retaining existing
+  changes. Existing feature branches can be reused. Label direct work with the actual branch.
+- Keep the strategy and branch name editable for new tasks, and allow choosing a worktree's base.
+  A branch created in the current folder starts from that checkout's HEAD. Explain why the recommendation
+  applies, preserve user edits when the title or branch inventory changes, and offer an explicit
+  reset to the recommendation. Existing tasks stay bound to their checkout.
+- Opening or cancelling the sheet creates nothing. Start revalidates the selected plan;
+  concurrent work or changed Git state must produce an actionable refusal, not silently choose
+  a different location. Failed launches retain any checkout already created for a safe retry.
 - State that Byori records the launch selection while provider-side terminal commands remain provider-controlled.
 - Disable Start until every required choice is valid and an explicit dirty-tree confirmation is present when needed.
 

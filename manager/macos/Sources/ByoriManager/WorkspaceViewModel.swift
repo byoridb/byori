@@ -24,8 +24,11 @@ protocol WorkspaceDataSource: AnyObject {
     func createProject(named name: String, in parentDirectoryURL: URL) async throws
     func removeProject(id: String) async throws
     func archiveTask(id: String) async throws
+    func archivedTasks(projectID: String?) async throws -> WorkspaceArchivedTaskList
+    func restoreTask(id: String) async throws
     func branches(projectID: String) async throws -> [WorkspaceGitBranch]
     func createSourceTree(projectID: String, branch: String, startPoint: String?) async throws -> URL
+    func createBranch(projectID: String, sourceTreeID: String, name: String, startPoint: String) async throws
     func hideSourceTree(projectID: String, sourceTreeID: String) async throws
     func deleteManagedSourceTree(
         projectID: String,
@@ -129,6 +132,14 @@ extension WorkspaceDataSource {
         throw WorkspaceAdapterError.unsupported("Task removal is not connected yet.")
     }
 
+    func archivedTasks(projectID: String?) async throws -> WorkspaceArchivedTaskList {
+        throw WorkspaceAdapterError.unsupported("보관한 작업 조회가 연결되지 않았습니다.")
+    }
+
+    func restoreTask(id: String) async throws {
+        throw WorkspaceAdapterError.unsupported("작업 복원이 연결되지 않았습니다.")
+    }
+
     func branches(projectID: String) async throws -> [WorkspaceGitBranch] {
         throw WorkspaceAdapterError.unsupported("Branch listing is not connected yet.")
     }
@@ -139,6 +150,10 @@ extension WorkspaceDataSource {
         startPoint: String?
     ) async throws -> URL {
         throw WorkspaceAdapterError.unsupported("Source tree creation is not connected yet.")
+    }
+
+    func createBranch(projectID: String, sourceTreeID: String, name: String, startPoint: String) async throws {
+        throw WorkspaceAdapterError.unsupported("Branch creation is not connected yet.")
     }
 
     func hideSourceTree(projectID: String, sourceTreeID: String) async throws {
@@ -223,9 +238,11 @@ final class UnavailableWorkspaceDataSource: WorkspaceDataSource {
 
 struct WorkspacePresentationSnapshot: Hashable {
     var projects: [WorkspaceProjectItem]
+    var truncatedTaskProjectIDs: Set<String>
 
-    init(projects: [WorkspaceProjectItem]) {
+    init(projects: [WorkspaceProjectItem], truncatedTaskProjectIDs: Set<String> = []) {
         self.projects = projects
+        self.truncatedTaskProjectIDs = truncatedTaskProjectIDs
     }
 }
 
@@ -741,6 +758,9 @@ struct WorkspaceNewSessionDraft: Hashable {
     var sourceTreeID: String = ""
     var taskChoice: WorkspaceNewSessionTaskChoice = .newTask
     var newTaskTitle: String = ""
+    var locationStrategy: WorkspaceSessionLocationStrategy = .currentCheckout
+    var newBranchName: String = ""
+    var startPoint: String = ""
     var workflowPreset: TaskWorkflowPreset? = nil
     var sessionName: String = ""
     var providerID: String?
@@ -855,6 +875,31 @@ final class WorkspaceViewModel: ObservableObject {
     @Published private(set) var phase: WorkspacePresentationPhase = .idle
     @Published private(set) var projects: [WorkspaceProjectItem] = []
     @Published private(set) var selection: WorkspaceSelection?
+    @Published var projectSearchQuery = ""
+    @Published var isPresentingSessionCleanup = false
+    @Published var cleanupProjectID: String? {
+        didSet {
+            if oldValue != cleanupProjectID { clearCleanupSelections() }
+        }
+    }
+    @Published var cleanupThreshold: WorkspaceCleanupThreshold = .thirtyDays {
+        didSet {
+            if oldValue != cleanupThreshold { clearCleanupSelections() }
+        }
+    }
+    @Published var selectedCleanupTaskIDs: Set<String> = []
+    @Published var selectedArchivedTaskIDs: Set<String> = []
+    @Published private(set) var cleanupProjects: [WorkspaceCleanupProject] = []
+    @Published private(set) var cleanupPhase: WorkspaceSessionOptionsPhase = .idle
+    @Published private(set) var cleanupArchivedPhase: WorkspaceSessionOptionsPhase = .idle
+    @Published private(set) var isCleaningSessions = false
+    @Published private(set) var cleanupError: String?
+    @Published private(set) var cleanupResultSummary: String?
+    @Published private(set) var cleanupArchiveListIsTruncated = false
+    @Published private var cleanupSnapshot = WorkspacePresentationSnapshot(projects: [])
+    @Published private var cleanupArchivedRows: [WorkspaceArchivedTaskItem] = []
+    private var cleanupReferenceDate = Date()
+    private var cleanupRequestToken = UUID()
     @Published var inspectorTab: WorkspaceInspectorTab = .files
     @Published private(set) var contextDepth: WorkspaceContextDepth = .related
     @Published private(set) var memoryView: MemoryView = .current
@@ -905,7 +950,26 @@ final class WorkspaceViewModel: ObservableObject {
     @Published private(set) var taskWorkScope: WorkspaceTaskWorkScope?
 
     @Published var isPresentingNewSession = false
-    @Published var newSessionDraft = WorkspaceNewSessionDraft()
+    @Published var newSessionDraft = WorkspaceNewSessionDraft() {
+        didSet {
+            if oldValue.newTaskTitle != newSessionDraft.newTaskTitle
+                || oldValue.taskChoice != newSessionDraft.taskChoice
+                || oldValue.workflowPreset != newSessionDraft.workflowPreset {
+                refreshSessionPlanSuggestions()
+            }
+        }
+    }
+    @Published private(set) var sessionBranches: [WorkspaceGitBranch] = []
+    @Published private(set) var sessionBranchesPhase: WorkspaceSessionOptionsPhase = .idle
+    private var sessionPlanRequestToken = UUID()
+    private var sessionStrategyWasEdited = false
+    private var sessionBranchWasEdited = false
+    private var sessionStartPointWasEdited = false
+    private var lastSuggestedSessionBranch = ""
+    private var lastSuggestedSessionStartPoint = ""
+    private var sessionPlanBaseBranch: String?
+    private var sessionPlanBaseRevision: String?
+    private var pendingSessionLocation: (projectID: String, sourceTreeID: String?, url: URL?, branch: String)?
     @Published private(set) var sessionOptions: [WorkspaceProviderOption] = []
     @Published private(set) var sessionOptionsPhase: WorkspaceSessionOptionsPhase = .idle
     @Published private(set) var isStartingSession = false
@@ -1053,20 +1117,19 @@ final class WorkspaceViewModel: ObservableObject {
         !isStartingSession && startSessionBlockedReason == nil
     }
 
-    /// Where the session will run, as the sheet states it rather than asks it.
-    /// Byori decides; this is the sentence that keeps the decision visible.
     var plannedSessionLocation: String {
-        guard let project = projects.first(where: { $0.id == newSessionDraft.projectID }) else {
-            return "새 워크트리"
+        if let pending = pendingSessionLocation {
+            return "생성 완료 · \(pending.branch) (위치 확인 후 이어서 시작)"
         }
-        guard let planned = project.sourceTrees
-            .first(where: { $0.id == newSessionDraft.sourceTreeID }) else {
-            return "새 워크트리 (Byori가 자동으로 만듭니다)"
+        switch newSessionDraft.locationStrategy {
+        case .newWorktree:
+            return "새 워크트리 · \(newSessionDraft.newBranchName) ← \(newSessionDraft.startPoint)"
+        case .newBranch:
+            return "새 브랜치 · \(newSessionDraft.newBranchName) ← \(newSessionDraft.startPoint)"
+        case .currentCheckout:
+            guard let tree = sessionPlanSourceTree else { return "작업 위치를 확인해 주세요." }
+            return "\(tree.branch) · \(tree.kind.locationLabel)"
         }
-        let identity = planned.name == planned.branch
-            ? planned.name
-            : "\(planned.name) — \(planned.branch)"
-        return "\(identity) · \(planned.kind.locationLabel)"
     }
 
     var launchConstraintMessage: String? {
@@ -1074,39 +1137,13 @@ final class WorkspaceViewModel: ObservableObject {
             return "The selected project is no longer registered."
         }
         switch project.registration {
-        case .trusted:
-            break
+        case .trusted: break
         case .approvalRequired:
             return "Approve this project as trusted before launching a coding process."
         case .missing:
             return "The selected project folder is missing."
         }
-
-        // An empty source tree means Byori will cut a worktree when the session
-        // starts. There is nothing to validate about a checkout that does not
-        // exist yet: it is free by construction and its working tree is clean.
-        guard !newSessionDraft.sourceTreeID.isEmpty else { return nil }
-        guard let sourceTree = project.sourceTrees.first(where: { $0.id == newSessionDraft.sourceTreeID }) else {
-            return "The selected source tree is no longer available."
-        }
-        if case let .existing(taskID) = newSessionDraft.taskChoice {
-            guard let task = sourceTree.tasks.first(where: { $0.id == taskID }) else {
-                return "The selected task is no longer available in this source tree."
-            }
-            guard task.status.allowsNewSession else {
-                return "This task is \(task.status.label.lowercased()) and cannot start another session."
-            }
-        }
-        if case let .unavailable(reason) = sourceTree.workingState {
-            return reason
-        }
-        if sourceTree.hasActiveWritingSession {
-            return "This source tree already has an active writing session. Choose another source tree."
-        }
-        if case .modified = sourceTree.workingState, !newSessionDraft.acceptsModifiedWorkingTree {
-            return "Confirm that you want to start in a modified working tree."
-        }
-        return nil
+        return sessionPlanValidationMessage
     }
 
     func load(force: Bool = false) async {
@@ -1840,11 +1877,21 @@ final class WorkspaceViewModel: ObservableObject {
         sourceTree: WorkspaceSourceTreeItem?,
         task: WorkspaceTaskItem?
     )) async {
+        sessionPlanRequestToken = UUID()
+        sessionStrategyWasEdited = false
+        sessionBranchWasEdited = false
+        sessionStartPointWasEdited = false
+        lastSuggestedSessionBranch = ""
+        lastSuggestedSessionStartPoint = ""
+        pendingSessionLocation = nil
+        sessionBranches = []
+        sessionBranchesPhase = .loading
+        sessionPlanBaseBranch = target.sourceTree?.branch
+        sessionPlanBaseRevision = target.sourceTree?.headRevision
         newSessionDraft = WorkspaceNewSessionDraft(
             projectID: target.project.id,
-            // Empty means "Byori will cut a worktree on start". Resolved here
-            // only when a checkout already exists, so opening this sheet and
-            // cancelling never leaves a branch or a directory behind.
+            // Keep the selected checkout as the base even when it is busy.
+            // Opening or cancelling a sheet never creates Git state.
             sourceTreeID: target.sourceTree?.id ?? "",
             taskChoice: target.task.map { .existing($0.id) } ?? .newTask,
             sessionName: WorkspaceSessionNameGenerator.make(),
@@ -1855,7 +1902,9 @@ final class WorkspaceViewModel: ObservableObject {
         sessionOptionsPhase = .loading
         newSessionError = nil
         isPresentingNewSession = true
+        refreshSessionPlanSuggestions()
         sessionPersistenceWarning = await dataSource.sessionPersistenceWarning()
+        await retrySessionBranches()
         await loadSessionOptions(projectID: target.project.id)
     }
 
@@ -1867,6 +1916,7 @@ final class WorkspaceViewModel: ObservableObject {
     func dismissNewSession() {
         guard !isStartingSession else { return }
         isPresentingNewSession = false
+        sessionPlanRequestToken = UUID()
         newSessionError = nil
     }
 
@@ -1914,15 +1964,11 @@ final class WorkspaceViewModel: ObservableObject {
 
         isStartingSession = true
         newSessionError = nil
-        // Where the session runs is settled here rather than asked in the sheet.
-        // It can create a worktree, which is why it waits for the confirmation.
+        // Execute exactly the reviewed plan, after checking live checkout state.
+        // Creating a branch or worktree waits for this confirmation.
         let sourceTreeID: String
         do {
-            sourceTreeID = try await resolvedSessionSourceTreeID(
-                projectID: newSessionDraft.projectID,
-                existingTaskID: existingTaskID,
-                taskTitle: newTaskTitle
-            )
+            sourceTreeID = try await resolveSessionLocationPlan()
         } catch {
             isStartingSession = false
             newSessionError = error.localizedDescription
@@ -2381,10 +2427,10 @@ final class WorkspaceViewModel: ObservableObject {
         // which is a wall built out of an implementation detail — the answer is
         // another checkout, and Byori is the one that knows how to get one.
         if let lineage = selectedLineage {
-            return (lineage.project, freeSourceTree(in: lineage.project), nil)
+            return (lineage.project, lineage.sourceTree ?? primarySourceTree(in: lineage.project), nil)
         }
         if let project = selectedProject ?? selectedLineage?.project ?? projects.first {
-            return (project, freeSourceTree(in: project), nil)
+            return (project, primarySourceTree(in: project), nil)
         }
         return nil
     }
@@ -2397,13 +2443,17 @@ final class WorkspaceViewModel: ObservableObject {
         task: WorkspaceTaskItem?
     )? {
         guard let project = projects.first(where: { $0.id == target.projectID }) else { return nil }
+        // Project-row + deliberately has no checkout ID; a missing named
+        // checkout is still rejected rather than replaced behind the user.
+        if target.sourceTreeID.isEmpty, target.existingTaskID == nil {
+            return (project, primarySourceTree(in: project), nil)
+        }
         guard let sourceTree = project.sourceTrees.first(where: { $0.id == target.sourceTreeID }) else {
-            // The caller named a checkout that is gone. Starting a session is
-            // still meaningful — Byori picks the location — so this is not fatal.
-            return (project, freeSourceTree(in: project), nil)
+            // An explicit target must never silently become a different checkout.
+            return nil
         }
         guard let taskID = target.existingTaskID else {
-            return (project, sourceTree.hasActiveWritingSession ? freeSourceTree(in: project) : sourceTree, nil)
+            return (project, sourceTree, nil)
         }
         guard let task = sourceTree.tasks.first(where: { $0.id == taskID }) else {
             return nil
@@ -2411,13 +2461,12 @@ final class WorkspaceViewModel: ObservableObject {
         return (project, sourceTree, task)
     }
 
-    /// A checkout in `project` that can take a new writing session right now.
-    ///
-    /// The primary checkout wins when it is free. One session at a time is the
-    /// common case, and running it where the user already works costs no second
-    /// copy of the repository, no cold build, and nothing to clean up afterwards.
-    /// Worktrees exist for the case this returns nil: something is already
-    /// writing, so a second session needs its own files.
+    /// The project's default base when no exact checkout was selected.
+    private func primarySourceTree(in project: WorkspaceProjectItem) -> WorkspaceSourceTreeItem? {
+        project.sourceTrees.first { $0.kind == .primary } ?? project.sourceTrees.first
+    }
+
+    /// Legacy shell fallback: prefer a free primary checkout before creating one.
     private func freeSourceTree(in project: WorkspaceProjectItem) -> WorkspaceSourceTreeItem? {
         let usable = project.sourceTrees.filter { sourceTree in
             if case .unavailable = sourceTree.workingState { return false }
@@ -2508,19 +2557,18 @@ final class WorkspaceViewModel: ObservableObject {
         avoiding existingNames: Set<String>
     ) -> String {
         let slug = slugifiedBranchComponent(taskTitle)
-        let base = "byori/\(slug)"
-        guard existingNames.contains(base) else { return base }
+        let base = existingNames.contains("byori") ? "byori-\(slug)" : "byori/\(slug)"
+        guard existingNames.contains(where: { branchNamesConflict(base, $0) }) else { return base }
         for suffix in 2...99 {
             let candidate = "\(base)-\(suffix)"
-            if !existingNames.contains(candidate) { return candidate }
+            if !existingNames.contains(where: { branchNamesConflict(candidate, $0) }) { return candidate }
         }
         return "\(base)-\(UUID().uuidString.prefix(8).lowercased())"
     }
 
     private static func slugifiedBranchComponent(_ title: String?) -> String {
         let scalars = (title ?? "").lowercased().unicodeScalars.map { scalar -> Character in
-            let isAllowed = (48...57).contains(scalar.value)
-                || (97...122).contains(scalar.value)
+            let isAllowed = CharacterSet.alphanumerics.contains(scalar)
             return isAllowed ? Character(scalar) : "-"
         }
         let collapsed = String(scalars)
@@ -2688,5 +2736,484 @@ final class WorkspaceViewModel: ObservableObject {
     private func isFailure(_ phase: WorkspacePresentationPhase) -> Bool {
         if case .failed = phase { return true }
         return false
+    }
+}
+
+// MARK: - Reviewed session location plan
+
+extension WorkspaceViewModel {
+    var sessionPlanSourceTree: WorkspaceSourceTreeItem? {
+        projects.first { $0.id == newSessionDraft.projectID }?
+            .sourceTrees.first { $0.id == newSessionDraft.sourceTreeID }
+    }
+
+    var sessionPlanHasPendingLocation: Bool { pendingSessionLocation != nil }
+
+    var sessionLocationIsLocked: Bool {
+        if pendingSessionLocation != nil { return true }
+        if case .existing = newSessionDraft.taskChoice { return true }
+        return false
+    }
+
+    func sessionLocationStrategyLabel(_ strategy: WorkspaceSessionLocationStrategy) -> String {
+        switch strategy {
+        case .currentCheckout: return "\(sessionPlanSourceTree?.branch ?? "현재 브랜치")에서 직접 작업"
+        case .newBranch: return "새 브랜치"
+        case .newWorktree: return "새 워크트리 + 브랜치"
+        }
+    }
+
+    var sessionLocationRecommendation: WorkspaceSessionLocationRecommendation {
+        if pendingSessionLocation != nil {
+            return .init(strategy: newSessionDraft.locationStrategy, reason: "이미 생성한 작업 위치를 확인하고 이어서 시작합니다. 브랜치나 워크트리를 다시 만들지 않습니다.")
+        }
+        if sessionLocationIsLocked {
+            return .init(strategy: .currentCheckout, reason: "기존 작업의 파일과 이력을 이어가기 위해 같은 위치를 사용합니다.")
+        }
+        guard let tree = sessionPlanSourceTree else {
+            return .init(strategy: .newWorktree, reason: "새 작업을 위한 별도 작업 폴더를 만듭니다.")
+        }
+        if tree.hasActiveWritingSession {
+            return .init(strategy: .newWorktree, reason: "이 위치에서 다른 세션이 작업 중입니다. 파일이 섞이지 않도록 별도 워크트리를 권장합니다.")
+        }
+        if case .modified = tree.workingState {
+            return .init(strategy: .currentCheckout, reason: "아직 커밋하지 않은 변경이 있어 현재 위치에서 이어가도록 제안합니다. 시작 전에 변경 사용을 확인해 주세요.")
+        }
+        if tree.headRevision == nil {
+            return .init(strategy: .currentCheckout, reason: "첫 커밋 전에는 현재 위치에서 작업을 시작합니다.")
+        }
+        if newSessionDraft.workflowPreset == .codeReview {
+            return .init(strategy: .currentCheckout, reason: "코드 리뷰는 선택한 브랜치에서 바로 시작하도록 제안합니다.")
+        }
+        if ["main", "master"].contains(tree.branch) {
+            return .init(strategy: .newBranch, reason: "새 작업의 변경을 \(tree.branch)와 분리하도록 새 브랜치를 제안합니다.")
+        }
+        return .init(strategy: .currentCheckout, reason: "이미 작업 브랜치 \(tree.branch)에 있으므로 이 위치에서 이어가도록 제안합니다.")
+    }
+
+    /// Called by the draft observer as task inputs change. A user's explicit
+    /// choice or edited field survives every automatic suggestion refresh.
+    func refreshSessionPlanSuggestions() {
+        guard isPresentingNewSession, !isStartingSession, pendingSessionLocation == nil else { return }
+        if sessionLocationIsLocked || !sessionStrategyWasEdited {
+            newSessionDraft.locationStrategy = sessionLocationRecommendation.strategy
+        }
+        let names = Set(sessionBranches.filter { !$0.isRemote }.map(\.name))
+        let suggestedBranch = Self.availableBranchName(for: newSessionDraft.newTaskTitle, avoiding: names)
+        if !sessionBranchWasEdited,
+           newSessionDraft.newBranchName.isEmpty || newSessionDraft.newBranchName == lastSuggestedSessionBranch {
+            newSessionDraft.newBranchName = suggestedBranch
+        }
+        lastSuggestedSessionBranch = suggestedBranch
+        let suggestedBase = sessionPlanSourceTree.map { tree in
+            sessionBranches.contains(where: { !$0.isRemote && $0.name == tree.branch })
+                ? tree.branch : (tree.headRevision ?? tree.branch)
+        } ?? ""
+        if !sessionStartPointWasEdited,
+           newSessionDraft.startPoint.isEmpty || newSessionDraft.startPoint == lastSuggestedSessionStartPoint {
+            newSessionDraft.startPoint = suggestedBase
+        }
+        lastSuggestedSessionStartPoint = suggestedBase
+    }
+
+    func chooseSessionLocationStrategy(_ strategy: WorkspaceSessionLocationStrategy) {
+        guard !isStartingSession, !sessionLocationIsLocked else { return }
+        sessionStrategyWasEdited = true
+        newSessionDraft.locationStrategy = strategy
+        newSessionDraft.acceptsModifiedWorkingTree = false
+        if strategy == .newBranch {
+            sessionStartPointWasEdited = false
+            newSessionDraft.startPoint = lastSuggestedSessionStartPoint
+        }
+        newSessionError = nil
+    }
+
+    func updateSessionBranchName(_ name: String) {
+        guard !isStartingSession, pendingSessionLocation == nil else { return }
+        sessionBranchWasEdited = true
+        newSessionDraft.newBranchName = name
+    }
+
+    func updateSessionStartPoint(_ ref: String) {
+        guard !isStartingSession, pendingSessionLocation == nil, newSessionDraft.locationStrategy == .newWorktree else { return }
+        sessionStartPointWasEdited = true
+        newSessionDraft.startPoint = ref
+    }
+
+    func applySessionLocationRecommendation() {
+        guard !isStartingSession, pendingSessionLocation == nil else { return }
+        sessionStrategyWasEdited = false
+        sessionBranchWasEdited = false
+        sessionStartPointWasEdited = false
+        newSessionDraft.newBranchName = ""
+        newSessionDraft.startPoint = ""
+        newSessionDraft.acceptsModifiedWorkingTree = false
+        refreshSessionPlanSuggestions()
+    }
+
+    func retrySessionBranches() async {
+        let projectID = newSessionDraft.projectID
+        guard !projectID.isEmpty, !isStartingSession else { return }
+        let token = UUID()
+        sessionPlanRequestToken = token
+        sessionBranchesPhase = .loading
+        do {
+            let branches = try await dataSource.branches(projectID: projectID)
+            guard sessionPlanRequestToken == token, isPresentingNewSession,
+                  newSessionDraft.projectID == projectID else { return }
+            sessionBranches = branches
+            sessionBranchesPhase = .ready
+            refreshSessionPlanSuggestions()
+        } catch {
+            guard sessionPlanRequestToken == token, isPresentingNewSession,
+                  newSessionDraft.projectID == projectID else { return }
+            sessionBranchesPhase = .failed(error.localizedDescription)
+        }
+    }
+
+    var sessionPlanValidationMessage: String? {
+        // A successful Git operation whose discovery failed is retried by finding
+        // that exact result, never by making another branch or worktree.
+        if pendingSessionLocation != nil { return nil }
+        guard let tree = sessionPlanSourceTree else {
+            return "The selected source tree is no longer available."
+        }
+        if case let .unavailable(reason) = tree.workingState { return reason }
+        if case let .existing(taskID) = newSessionDraft.taskChoice {
+            guard let task = tree.tasks.first(where: { $0.id == taskID }) else {
+                return "The selected task is no longer available in this source tree."
+            }
+            guard task.status.allowsNewSession else {
+                return "This task is \(task.status.label.lowercased()) and cannot start another session."
+            }
+            if newSessionDraft.locationStrategy != .currentCheckout {
+                return "기존 작업은 현재 작업 위치에서 이어가야 합니다."
+            }
+        }
+        if newSessionDraft.locationStrategy != .newWorktree, tree.hasActiveWritingSession {
+            return "This source tree already has an active writing session. Choose another source tree."
+        }
+        switch newSessionDraft.locationStrategy {
+        case .currentCheckout:
+            if case .modified = tree.workingState, !newSessionDraft.acceptsModifiedWorkingTree {
+                return "Confirm that you want to start in a modified working tree."
+            }
+            return nil
+        case .newBranch:
+            if case .modified = tree.workingState {
+                return "새 브랜치를 만들기 전에 현재 변경을 커밋하거나 보관해 주세요."
+            }
+        case .newWorktree:
+            if let project = projects.first(where: { $0.id == newSessionDraft.projectID }),
+               let primary = primarySourceTree(in: project) {
+                if case let .unavailable(reason) = primary.workingState { return reason }
+            }
+        }
+        switch sessionBranchesPhase {
+        case .idle, .loading: return "브랜치 목록을 확인하는 중입니다…"
+        case let .failed(message): return "브랜치 목록을 확인하지 못했습니다: \(message)"
+        case .ready: break
+        }
+        guard tree.headRevision != nil, !sessionBranches.isEmpty else {
+            return "첫 커밋이 있어야 새 브랜치나 워크트리를 만들 수 있습니다."
+        }
+        return sessionBranchFieldsValidationMessage(branches: sessionBranches, tree: tree)
+    }
+
+    private func sessionBranchFieldsValidationMessage(
+        branches: [WorkspaceGitBranch], tree: WorkspaceSourceTreeItem
+    ) -> String? {
+        let name = newSessionDraft.newBranchName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard Self.isValidSessionBranchName(name) else { return "유효한 새 브랜치 이름을 입력해 주세요." }
+        if branches.contains(where: { !$0.isRemote && Self.branchNamesConflict(name, $0.name) }) {
+            return "브랜치 \(name)이 이미 있거나 기존 브랜치 경로와 겹칩니다. 다른 이름을 입력해 주세요."
+        }
+        let base = newSessionDraft.startPoint
+        guard !base.isEmpty, branches.contains(where: { $0.name == base }) || base == tree.headRevision else {
+            return "시작할 기준 브랜치를 선택해 주세요."
+        }
+        if newSessionDraft.locationStrategy == .newBranch,
+           base != tree.branch && base != tree.headRevision {
+            return "현재 작업 폴더의 HEAD에서 새 브랜치를 만들어 주세요. 다른 기준은 워크트리에서 선택할 수 있습니다."
+        }
+        return nil
+    }
+
+    private static func branchNamesConflict(_ left: String, _ right: String) -> Bool {
+        left == right || left.hasPrefix(right + "/") || right.hasPrefix(left + "/")
+    }
+
+    private static func isValidSessionBranchName(_ name: String) -> Bool {
+        guard !name.isEmpty, name.utf8.count <= 255, name != "@", name != "HEAD", !name.hasPrefix("-"),
+              !name.hasPrefix("/"), !name.hasSuffix("/"), !name.hasSuffix("."),
+              !name.contains(".."), !name.contains("@{"), !name.contains("//"),
+              !name.unicodeScalars.contains(where: {
+                  CharacterSet.whitespacesAndNewlines.contains($0) || $0.value < 32 || $0.value == 127
+                      || "~^:?*[\\".unicodeScalars.contains($0)
+              }) else { return false }
+        return name.split(separator: "/").allSatisfy { !$0.hasPrefix(".") && !$0.hasSuffix(".lock") }
+    }
+
+    private func resolveSessionLocationPlan() async throws -> String {
+        let projectID = newSessionDraft.projectID
+        // This read is separate from the normal UI refresh gate: a launch cannot
+        // rely on the snapshot from when a sheet was opened.
+        projects = try await dataSource.loadWorkspace().projects
+        if pendingSessionLocation != nil {
+            return try adoptPendingSessionLocation()
+        }
+        guard let tree = sessionPlanSourceTree else {
+            throw WorkspaceAdapterError.invalidState("The selected source tree is no longer available.")
+        }
+        guard tree.branch == sessionPlanBaseBranch, tree.headRevision == sessionPlanBaseRevision else {
+            throw WorkspaceAdapterError.invalidState("작업 위치의 브랜치나 커밋이 바뀌었습니다. 창을 다시 열어 작업 위치를 확인해 주세요.")
+        }
+        if let message = launchConstraintMessage {
+            throw WorkspaceAdapterError.invalidState(message)
+        }
+        if newSessionDraft.locationStrategy == .currentCheckout { return tree.id }
+        let branches = try await dataSource.branches(projectID: projectID)
+        sessionBranches = branches
+        if let message = sessionBranchFieldsValidationMessage(branches: branches, tree: tree) {
+            throw WorkspaceAdapterError.invalidState(message)
+        }
+        let branch = newSessionDraft.newBranchName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = newSessionDraft.startPoint
+        if newSessionDraft.locationStrategy == .newBranch {
+            try await dataSource.createBranch(projectID: projectID, sourceTreeID: tree.id, name: branch, startPoint: base)
+            pendingSessionLocation = (projectID, tree.id, nil, branch)
+        } else {
+            let url = try await dataSource.createSourceTree(projectID: projectID, branch: branch, startPoint: base)
+            pendingSessionLocation = (projectID, nil, url.standardizedFileURL.resolvingSymlinksInPath(), branch)
+        }
+        projects = try await dataSource.loadWorkspace().projects
+        return try adoptPendingSessionLocation()
+    }
+
+    private func adoptPendingSessionLocation() throws -> String {
+        guard let pending = pendingSessionLocation,
+              let tree = projects.first(where: { $0.id == pending.projectID })?.sourceTrees.first(where: {
+                  $0.branch == pending.branch && (pending.sourceTreeID == $0.id
+                      || pending.url == $0.url.standardizedFileURL.resolvingSymlinksInPath())
+              }) else {
+            throw WorkspaceAdapterError.invalidState("작업 위치는 생성됐지만 아직 조회하지 못했습니다. 다시 시작하면 생성된 위치를 확인합니다.")
+        }
+        newSessionDraft.sourceTreeID = tree.id
+        newSessionDraft.locationStrategy = .currentCheckout
+        sessionStrategyWasEdited = true
+        sessionPlanBaseBranch = tree.branch
+        sessionPlanBaseRevision = tree.headRevision
+        pendingSessionLocation = nil
+        if let message = launchConstraintMessage { throw WorkspaceAdapterError.invalidState(message) }
+        return tree.id
+    }
+}
+
+// MARK: - Project search and reversible session cleanup
+
+extension WorkspaceViewModel {
+    var filteredProjects: [WorkspaceProjectItem] {
+        let query = projectSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return projects }
+        return projects.filter {
+            $0.name.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+        }
+    }
+
+    private var cleanupScopedProjects: [WorkspaceProjectItem] {
+        cleanupSnapshot.projects.filter {
+            $0.registration != .approvalRequired && (cleanupProjectID == nil || $0.id == cleanupProjectID)
+        }
+    }
+
+    var cleanupCandidates: [WorkspaceCleanupTaskItem] {
+        cleanupScopedProjects.flatMap { project in
+            project.sourceTrees.flatMap { tree in
+                tree.tasks.compactMap {
+                    WorkspaceCleanupEligibility.candidate(
+                        task: $0, project: project, threshold: cleanupThreshold,
+                        referenceDate: cleanupReferenceDate
+                    )
+                }
+            }
+        }.sorted {
+            let left = $0.latestEndedAt ?? .distantFuture
+            let right = $1.latestEndedAt ?? .distantFuture
+            return left != right ? left < right : $0.id < $1.id
+        }
+    }
+
+    var cleanupActiveExclusionCount: Int {
+        cleanupScopedProjects.reduce(0) { sum, project in
+            sum + project.sourceTrees.reduce(0) { count, tree in
+                count + tree.tasks.filter(WorkspaceCleanupEligibility.hasActiveSession).count
+            }
+        }
+    }
+
+    var cleanupActiveListIsTruncated: Bool {
+        cleanupScopedProjects.contains { cleanupSnapshot.truncatedTaskProjectIDs.contains($0.id) }
+    }
+
+    var archivedCleanupTasks: [WorkspaceArchivedTaskItem] {
+        cleanupArchivedRows.filter { cleanupProjectID == nil || $0.projectID == cleanupProjectID }
+    }
+
+    private func clearCleanupSelections() {
+        selectedCleanupTaskIDs = []
+        selectedArchivedTaskIDs = []
+    }
+
+    func prepareSessionCleanup(projectID: String? = nil, now: Date = Date()) async {
+        guard !isPresentingSessionCleanup, !isCleaningSessions else { return }
+        cleanupProjectID = projectID
+        cleanupThreshold = .thirtyDays
+        cleanupReferenceDate = now
+        clearCleanupSelections()
+        cleanupError = nil
+        cleanupResultSummary = nil
+        cleanupSnapshot = .init(projects: [])
+        cleanupArchivedRows = []
+        cleanupArchiveListIsTruncated = false
+        isPresentingSessionCleanup = true
+        await loadCleanupData()
+    }
+
+    func dismissSessionCleanup() {
+        guard !isCleaningSessions else { return }
+        isPresentingSessionCleanup = false
+        cleanupRequestToken = UUID()
+    }
+
+    func refreshSessionCleanup() async {
+        guard isPresentingSessionCleanup, !isCleaningSessions else { return }
+        cleanupError = nil
+        await loadCleanupData()
+    }
+
+    private func loadCleanupData() async {
+        let token = UUID()
+        cleanupRequestToken = token
+        cleanupPhase = .loading
+        cleanupArchivedPhase = .loading
+        do {
+            let snapshot = try await dataSource.loadWorkspace()
+            guard isPresentingSessionCleanup, token == cleanupRequestToken else { return }
+            cleanupSnapshot = snapshot
+            cleanupProjects = snapshot.projects.filter { $0.registration != .approvalRequired }
+                .map { WorkspaceCleanupProject(id: $0.id, name: $0.name) }
+            cleanupPhase = .ready
+            selectedCleanupTaskIDs.formIntersection(Set(cleanupCandidates.map(\.id)))
+        } catch {
+            guard isPresentingSessionCleanup, token == cleanupRequestToken else { return }
+            cleanupPhase = .failed(error.localizedDescription)
+            cleanupSnapshot = .init(projects: [])
+            cleanupProjects = []
+            cleanupArchivedRows = []
+            cleanupArchiveListIsTruncated = false
+            cleanupArchivedPhase = .failed("프로젝트 목록을 확인한 뒤 보관함을 다시 읽어 주세요.")
+            clearCleanupSelections()
+            return
+        }
+        do {
+            let archived = try await dataSource.archivedTasks(projectID: cleanupProjectID)
+            guard isPresentingSessionCleanup, token == cleanupRequestToken else { return }
+            let registeredIDs = Set(cleanupProjects.map(\.id))
+            cleanupArchivedRows = archived.items.filter { registeredIDs.contains($0.projectID) }
+            cleanupArchiveListIsTruncated = archived.isTruncated
+            cleanupArchivedPhase = .ready
+            selectedArchivedTaskIDs.formIntersection(Set(archivedCleanupTasks.filter {
+                $0.restoreUnavailableReason == nil
+            }.map(\.id)))
+        } catch {
+            guard isPresentingSessionCleanup, token == cleanupRequestToken else { return }
+            cleanupArchivedPhase = .failed(error.localizedDescription)
+            cleanupArchivedRows = []
+            selectedArchivedTaskIDs = []
+        }
+    }
+
+    func archiveSelectedCleanupTasks() async {
+        guard isPresentingSessionCleanup, !isCleaningSessions, cleanupPhase == .ready else { return }
+        let selected = cleanupCandidates.filter { selectedCleanupTaskIDs.contains($0.id) }
+        guard !selected.isEmpty else { return }
+        let threshold = cleanupThreshold
+        let referenceDate = cleanupReferenceDate
+        isCleaningSessions = true
+        cleanupError = nil
+        cleanupResultSummary = nil
+        var successes: Set<String> = []
+        var failures: [String] = []
+        for item in selected {
+            do {
+                // Each record is re-read immediately before its own mutation,
+                // so a running session or newly added session cannot be swept up
+                // merely because the task was selected earlier in this sheet.
+                let latest = try await dataSource.loadWorkspace()
+                guard let project = latest.projects.first(where: {
+                    $0.id == item.projectID && $0.registration != .approvalRequired
+                }), let tree = project.sourceTrees.first(where: { $0.id == item.sourceTreeID }),
+                      let task = tree.tasks.first(where: { $0.id == item.id }),
+                      let current = WorkspaceCleanupEligibility.candidate(
+                        task: task, project: project, threshold: threshold, referenceDate: referenceDate
+                      ), current.sessionIDs == item.sessionIDs else {
+                    failures.append("\(item.title): 상태나 세션 구성이 바뀌어 보관하지 않았습니다.")
+                    continue
+                }
+                try await dataSource.archiveTask(id: item.id)
+                successes.insert(item.id)
+                if selectedLineage?.task?.id == item.id {
+                    selection = .sourceTree(item.sourceTreeID)
+                }
+            } catch {
+                failures.append("\(item.title): \(error.localizedDescription)")
+            }
+        }
+        selectedCleanupTaskIDs.subtract(successes)
+        await load(force: true)
+        await loadCleanupData()
+        cleanupResultSummary = "\(successes.count)개 작업을 보관했습니다."
+            + (failures.isEmpty ? "" : " \(failures.count)개는 보관하지 않았습니다.")
+        cleanupError = failures.isEmpty ? nil : failures.joined(separator: "\n")
+        isCleaningSessions = false
+    }
+
+    func restoreSelectedCleanupTasks() async {
+        guard isPresentingSessionCleanup, !isCleaningSessions, cleanupArchivedPhase == .ready else { return }
+        let selected = archivedCleanupTasks.filter {
+            selectedArchivedTaskIDs.contains($0.id) && $0.restoreUnavailableReason == nil
+        }
+        guard !selected.isEmpty else { return }
+        isCleaningSessions = true
+        cleanupError = nil
+        cleanupResultSummary = nil
+        var successes: Set<String> = []
+        var failures: [String] = []
+        for item in selected {
+            do {
+                let latest = try await dataSource.loadWorkspace()
+                guard latest.projects.contains(where: {
+                    $0.id == item.projectID && $0.registration != .approvalRequired
+                        && $0.sourceTrees.contains(where: { $0.id == item.sourceTreeID })
+                }) else {
+                    failures.append("\(item.title): 프로젝트나 원래 작업 위치를 먼저 복원해 주세요.")
+                    continue
+                }
+                // The live adapter validates the exact archived task and its
+                // checkout again. Restore only moves metadata; it never starts
+                // a terminal or resumes an agent process.
+                try await dataSource.restoreTask(id: item.id)
+                successes.insert(item.id)
+            } catch {
+                failures.append("\(item.title): \(error.localizedDescription)")
+            }
+        }
+        selectedArchivedTaskIDs.subtract(successes)
+        await load(force: true)
+        await loadCleanupData()
+        cleanupResultSummary = "\(successes.count)개 작업을 복원했습니다."
+            + (failures.isEmpty ? "" : " \(failures.count)개는 복원하지 않았습니다.")
+        cleanupError = failures.isEmpty ? nil : failures.joined(separator: "\n")
+        isCleaningSessions = false
     }
 }

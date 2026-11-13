@@ -204,6 +204,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
     private func loadWorkspaceLocked() async throws -> WorkspacePresentationSnapshot {
         let projects = try await projectRegistry.projects()
         var projectItems: [WorkspaceProjectItem] = []
+        var truncatedTaskProjectIDs: Set<String> = []
         var nextProjects: [String: ByoriManagerCore.WorkspaceProject] = [:]
         var nextTasks: [String: ByoriManagerCore.WorkspaceTask] = [:]
         var nextCheckouts: [CheckoutKey: RegisteredCheckout] = [:]
@@ -215,7 +216,9 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
 
         for project in projects {
             nextProjects[project.id] = project
-            let loadedTasks = try await taskStore.tasks(projectID: project.id, limit: 500).tasks
+            let taskList = try await taskStore.tasks(projectID: project.id, limit: 500)
+            if taskList.isTruncated { truncatedTaskProjectIDs.insert(project.id) }
+            let loadedTasks = taskList.tasks
             var reconciledTasks: [ByoriManagerCore.WorkspaceTask] = []
             for task in loadedTasks {
                 let reconciled = try await reconcileStaleSessions(
@@ -305,7 +308,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         coreTasks = nextTasks
         checkouts = nextCheckouts
         taskIDBySessionID = nextTaskBySession
-        return WorkspacePresentationSnapshot(projects: projectItems)
+        return WorkspacePresentationSnapshot(projects: projectItems, truncatedTaskProjectIDs: truncatedTaskProjectIDs)
     }
 
     func loadSessionOptions(projectID: String) async throws -> [WorkspaceProviderOption] {
@@ -541,6 +544,57 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         }
     }
 
+    func archivedTasks(projectID: String?) async throws -> WorkspaceArchivedTaskList {
+        try await operationGate.perform { [self] in
+            let listed = try await taskStore.archivedTasks(projectID: projectID, limit: 1_000)
+            let rows = listed.tasks.compactMap { task -> WorkspaceArchivedTaskItem? in
+                guard let project = coreProjects[task.projectID] else { return nil }
+                let key = CheckoutKey(projectID: task.projectID, checkoutID: task.checkout.id)
+                let checkout = checkouts[key]
+                var isDirectory: ObjCBool = false
+                let exists = checkout.map {
+                    FileManager.default.fileExists(atPath: $0.url.path, isDirectory: &isDirectory)
+                        && isDirectory.boolValue && $0.kind == task.checkout.kind
+                } ?? false
+                let dates = task.sessions.compactMap(\.endedAt)
+                let reason: String?
+                if !task.sessions.allSatisfy({ $0.status.isTerminal }) {
+                    reason = "종료되지 않은 세션 기록이 있어 복원할 수 없습니다."
+                } else if !exists {
+                    reason = "원래 작업 위치를 먼저 복원해 주세요."
+                } else { reason = nil }
+                return WorkspaceArchivedTaskItem(
+                    id: task.id, projectID: task.projectID, projectName: project.name,
+                    sourceTreeID: task.checkout.id, title: task.title,
+                    sessionCount: task.sessions.count,
+                    latestEndedAt: dates.count == task.sessions.count ? dates.max() : nil,
+                    restoreUnavailableReason: reason
+                )
+            }
+            return WorkspaceArchivedTaskList(items: rows, isTruncated: listed.isTruncated)
+        }
+    }
+
+    func restoreTask(id: String) async throws {
+        try await operationGate.perform { [self] in
+            _ = try await loadWorkspaceLocked()
+            guard let task = try await taskStore.archivedTask(id: id),
+                  coreProjects[task.projectID] != nil,
+                  let checkout = checkouts[CheckoutKey(projectID: task.projectID, checkoutID: task.checkout.id)],
+                  checkout.kind == task.checkout.kind else {
+                throw WorkspaceAdapterError.invalidState("등록된 프로젝트와 원래 작업 위치를 먼저 복원해 주세요.")
+            }
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: checkout.url.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue else {
+                throw WorkspaceAdapterError.invalidState("원래 작업 폴더가 없어 복원하지 않았습니다.")
+            }
+            // Verify that the registered path still identifies a Git checkout.
+            _ = try await git.status(at: checkout.url, maxChanges: 1)
+            _ = try await taskStore.restoreTask(id: id)
+        }
+    }
+
     func branches(projectID: String) async throws -> [WorkspaceGitBranch] {
         try await operationGate.perform { [self] in
             guard let project = coreProjects[projectID] else {
@@ -704,7 +758,9 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
 
     private func requireNoActiveWritingSession(
         projectID: String,
-        checkout: WorkspaceCheckoutReference?
+        checkout: WorkspaceCheckoutReference?,
+        allowsShellSessions: Bool = false,
+        refusalMessage: String = "Stop the active writing session before removing this item from Byori."
     ) async throws {
         for (key, registered) in checkouts where key.projectID == projectID
             && (checkout == nil || key.checkoutID == checkout?.id) {
@@ -718,12 +774,12 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         }
         let hasActiveSession = taskList.tasks.contains { task in
             (checkout == nil || task.checkout == checkout)
-                && task.sessions.contains(where: { !$0.status.isTerminal })
+                && task.sessions.contains(where: {
+                    !$0.status.isTerminal && (!allowsShellSessions || $0.isWritingSession)
+                })
         }
         guard !hasActiveSession else {
-            throw WorkspaceAdapterError.invalidState(
-                "Stop the active writing session before removing this item from Byori."
-            )
+            throw WorkspaceAdapterError.invalidState(refusalMessage)
         }
     }
 
@@ -1154,6 +1210,29 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
         try await operationGate.perform {
             guard !(await verificationService.isRunning(root: url)) else { throw VerificationError.running }
             try await git.checkout(at: url, ref: ref)
+        }
+    }
+
+    func createBranch(
+        projectID: String,
+        sourceTreeID: String,
+        name: String,
+        startPoint: String
+    ) async throws {
+        try await operationGate.perform { [self] in
+            let key = CheckoutKey(projectID: projectID, checkoutID: sourceTreeID)
+            guard coreProjects[projectID] != nil, let checkout = checkouts[key] else {
+                throw WorkspaceAdapterError.invalidState(
+                    "Refresh the workspace before creating a branch."
+                )
+            }
+            try await requireNoActiveWritingSession(
+                projectID: projectID,
+                checkout: WorkspaceCheckoutReference(kind: checkout.kind, id: sourceTreeID),
+                allowsShellSessions: true,
+                refusalMessage: "Stop the active writing session before changing this checkout's branch."
+            )
+            try await git.createBranch(at: checkout.url, name: name, startPoint: startPoint)
         }
     }
 

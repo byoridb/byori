@@ -167,6 +167,12 @@ struct WorkspaceView<TerminalHost: View>: View {
             }
         }
         .task { await model.load() }
+        .sheet(isPresented: Binding(
+            get: { model.isPresentingSessionCleanup },
+            set: { if !$0 { model.dismissSessionCleanup() } }
+        )) {
+            WorkspaceSessionCleanupSheet(model: model)
+        }
         .sheet(isPresented: newSessionPresentation) {
             NewWorkspaceSessionSheet(model: model)
         }
@@ -498,6 +504,7 @@ private struct WorkspaceSidebar: View {
     let openSettings: () -> Void
     let requestRemoval: (WorkspaceRemovalRequest) -> Void
     let restoreSourceTree: (WorkspaceHiddenSourceTreeItem) -> Void
+    @State private var manualExpansions: [String: Bool] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -510,6 +517,16 @@ private struct WorkspaceSidebar: View {
                         .controlSize(.small)
                         .accessibilityLabel("Adding project")
                 }
+                Button {
+                    Task { await model.prepareSessionCleanup() }
+                } label: {
+                    Image(systemName: "archivebox")
+                }
+                .buttonStyle(.borderless)
+                .help("지난 세션 정리 및 보관한 작업 복원")
+                .accessibilityLabel("지난 세션 정리")
+                .disabled(model.projects.isEmpty || model.phase != .ready)
+
                 Menu {
                     Button(action: createProject) {
                         Label("Create New Project…", systemImage: "folder.badge.plus")
@@ -529,6 +546,36 @@ private struct WorkspaceSidebar: View {
             }
             .padding(.horizontal, 14)
             .frame(height: 48)
+
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("프로젝트 이름 검색", text: $model.projectSearchQuery)
+                    .textFieldStyle(.plain)
+                    .accessibilityLabel("프로젝트 이름 검색")
+                    .accessibilityHint("프로젝트 이름으로 목록을 좁힙니다. 열려 있는 세션은 유지됩니다")
+                if !model.projectSearchQuery.isEmpty {
+                    Button { model.projectSearchQuery = "" } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("검색 지우기")
+                    .accessibilityLabel("프로젝트 검색 지우기")
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+            .padding(.horizontal, 12)
+            .padding(.bottom, 10)
+
+            if !model.projectSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("\(model.filteredProjects.count) / \(model.projects.count)개 프로젝트")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 8)
+            }
 
             Divider()
 
@@ -580,6 +627,13 @@ private struct WorkspaceSidebar: View {
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .ready where model.filteredProjects.isEmpty:
+            VStack(spacing: 10) {
+                Image(systemName: "magnifyingglass").font(.title2).foregroundStyle(.secondary)
+                Text("일치하는 프로젝트가 없습니다").font(.callout)
+                Button("검색 지우기") { model.projectSearchQuery = "" }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .ready:
             List(selection: selectionBinding) {
                 ForEach(sidebarNodes) { node in
@@ -606,6 +660,7 @@ private struct WorkspaceSidebar: View {
                         isMutatingWorkspace: model.isMutatingWorkspace,
                         depth: 0,
                         selection: model.selection,
+                        manualExpansions: $manualExpansions
                     )
                 }
             }
@@ -615,7 +670,12 @@ private struct WorkspaceSidebar: View {
     }
 
     private var selectionBinding: Binding<WorkspaceSelection?> {
-        Binding(get: { model.selection }, set: { model.select($0) })
+        Binding(get: { model.selection }, set: { selection in
+            // Filtering rows must not detach the session currently being read.
+            if selection != nil || model.projectSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                model.select(selection)
+            }
+        })
     }
 
     /// project → task → session. The checkout a task runs in is not a level here.
@@ -626,7 +686,7 @@ private struct WorkspaceSidebar: View {
     /// runs — Byori chooses it, carries the local config into it, and prunes it —
     /// so it belongs on the task's row as a detail, not in the path to it.
     private var sidebarNodes: [WorkspaceSidebarNode] {
-        model.projects.map { project in
+        model.filteredProjects.map { project in
             let taskNodes = project.sourceTrees.flatMap { sourceTree -> [WorkspaceSidebarNode] in
                 let activeSessionReason = sourceTree.hasActiveWritingSession
                     ? "A writing session is already active in this checkout."
@@ -799,7 +859,7 @@ private struct WorkspaceSidebarBranch: View {
     /// Nil until the user opens or closes this branch themselves, after which
     /// their choice is kept. Everything was expanded to the leaves before, so a
     /// few projects filled the pane with sessions nobody was looking at.
-    @State private var manualExpansion: Bool?
+    @Binding var manualExpansions: [String: Bool]
 
     var body: some View {
         if let children = node.children, !children.isEmpty {
@@ -817,6 +877,7 @@ private struct WorkspaceSidebarBranch: View {
                         isMutatingWorkspace: isMutatingWorkspace,
                         depth: depth + 1,
                         selection: selection,
+                        manualExpansions: $manualExpansions
                     )
                 }
             } label: {
@@ -829,8 +890,8 @@ private struct WorkspaceSidebarBranch: View {
 
     private var expansion: Binding<Bool> {
         Binding(
-            get: { manualExpansion ?? (depth == 0 || node.contains(selection)) },
-            set: { manualExpansion = $0 }
+            get: { manualExpansions[node.id] ?? (depth == 0 || node.contains(selection)) },
+            set: { manualExpansions[node.id] = $0 }
         )
     }
 
@@ -2014,29 +2075,8 @@ private struct NewWorkspaceSessionSheet: View {
                         }
                     }
 
-                    Section("Location") {
+                    Section("작업") {
                         LabeledContent("Project", value: projectName)
-
-                        // Stated, not chosen: Byori runs the session in the
-                        // project's own checkout when it is free and only cuts a
-                        // worktree when something else is already writing. The
-                        // line stays so the decision is never a surprise.
-                        LabeledContent("Checkout", value: model.plannedSessionLocation)
-
-                        if let selectedSourceTree {
-                            LabeledContent("Working Directory") {
-                                Text(selectedSourceTree.url.path)
-                                    .font(.caption.monospaced())
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                    .help(selectedSourceTree.url.path)
-                                    .textSelection(.enabled)
-                            }
-
-                            Text(selectedSourceTree.kind.sessionLocationDetail)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
 
                         Picker("Task", selection: $model.newSessionDraft.taskChoice) {
                             Text("New Task").tag(WorkspaceNewSessionTaskChoice.newTask)
@@ -2048,10 +2088,11 @@ private struct NewWorkspaceSessionSheet: View {
                                     .disabled(!task.status.allowsNewSession)
                             }
                         }
+                        .disabled(model.sessionPlanHasPendingLocation)
 
                         if case .newTask = model.newSessionDraft.taskChoice {
                             TextField("Task Title", text: $model.newSessionDraft.newTaskTitle)
-                                .accessibilityHint("Names the work represented by this session")
+                                .accessibilityHint("작업 제목에 맞춰 추천 브랜치 이름도 채웁니다")
                             Picker("작업 절차", selection: $model.newSessionDraft.workflowPreset) {
                                 Text("선택 안 함").tag(TaskWorkflowPreset?.none)
                                 ForEach(TaskWorkflowPreset.allCases) { preset in
@@ -2062,20 +2103,10 @@ private struct NewWorkspaceSessionSheet: View {
                                 Text(preset.summary).font(.caption).foregroundStyle(.secondary)
                             }
                         }
+                    }
 
-                        if let warning = sourceTreeWarning {
-                            Label(warning, systemImage: "exclamationmark.triangle")
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                        }
-
-                        if sourceTreeIsModified {
-                            Toggle(
-                                "Start in this modified working tree",
-                                isOn: $model.newSessionDraft.acceptsModifiedWorkingTree
-                            )
-                            .accessibilityHint("Confirms that existing uncommitted changes may be affected")
-                        }
+                    Section("작업 위치") {
+                        sessionLocationPlan
 
                         if let constraint = model.launchConstraintMessage {
                             Label(constraint, systemImage: "xmark.octagon")
@@ -2139,6 +2170,7 @@ private struct NewWorkspaceSessionSheet: View {
                 .formStyle(.grouped)
                 .padding(.horizontal, 8)
             }
+            .disabled(model.isStartingSession)
 
             Divider()
 
@@ -2189,10 +2221,128 @@ private struct NewWorkspaceSessionSheet: View {
             .padding(16)
         }
         .frame(width: 560)
-        .frame(minHeight: 510, idealHeight: 580)
+        .frame(minHeight: 560, idealHeight: 720)
         .interactiveDismissDisabled(model.isStartingSession)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("New coding session")
+    }
+
+    @ViewBuilder
+    private var sessionLocationPlan: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Label(
+                    "추천: \(model.sessionLocationStrategyLabel(model.sessionLocationRecommendation.strategy))",
+                    systemImage: "lightbulb"
+                )
+                .font(.callout.weight(.medium))
+                Spacer()
+                if !model.sessionLocationIsLocked {
+                    Button("추천 다시 적용") { model.applySessionLocationRecommendation() }
+                        .font(.caption)
+                        .disabled(model.isStartingSession || model.sessionPlanHasPendingLocation)
+                }
+            }
+            Text(model.sessionLocationRecommendation.reason)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
+        Picker("작업 방식", selection: Binding(
+            get: { model.newSessionDraft.locationStrategy },
+            set: { model.chooseSessionLocationStrategy($0) }
+        )) {
+            ForEach(WorkspaceSessionLocationStrategy.allCases) { strategy in
+                Text(model.sessionLocationStrategyLabel(strategy)).tag(strategy)
+            }
+        }
+        .disabled(model.sessionLocationIsLocked || model.isStartingSession)
+        .accessibilityHint("추천을 그대로 사용하거나 직접 작업, 새 브랜치, 새 워크트리 중 선택합니다")
+
+        Text(locationStrategyDetail)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+        if model.newSessionDraft.locationStrategy != .currentCheckout {
+            TextField("새 브랜치 이름", text: Binding(
+                get: { model.newSessionDraft.newBranchName },
+                set: { model.updateSessionBranchName($0) }
+            ))
+            .font(.body.monospaced())
+            .disabled(model.isStartingSession || model.sessionPlanHasPendingLocation)
+            .accessibilityHint("작업 제목으로 미리 채웠으며 직접 수정할 수 있습니다")
+
+            if model.newSessionDraft.locationStrategy == .newWorktree {
+                Picker("기준 브랜치", selection: Binding(
+                    get: { model.newSessionDraft.startPoint },
+                    set: { model.updateSessionStartPoint($0) }
+                )) {
+                    if !model.sessionBranches.contains(where: { $0.name == model.newSessionDraft.startPoint }) {
+                        Text(model.newSessionDraft.startPoint.isEmpty ? "기준 없음" : model.newSessionDraft.startPoint)
+                            .tag(model.newSessionDraft.startPoint)
+                    }
+                    ForEach(model.sessionBranches, id: \.name) { branch in
+                        Text(branch.name).tag(branch.name)
+                    }
+                }
+                .disabled(model.isStartingSession || model.sessionPlanHasPendingLocation)
+            } else {
+                LabeledContent("기준 브랜치", value: model.newSessionDraft.startPoint)
+            }
+
+            switch model.sessionBranchesPhase {
+            case .idle, .loading:
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("브랜치를 확인하고 있습니다…").font(.caption)
+                }
+            case let .failed(message):
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(message).font(.caption).foregroundStyle(.red)
+                    Button("브랜치 다시 확인") {
+                        Task { await model.retrySessionBranches() }
+                    }
+                }
+            case .ready:
+                EmptyView()
+            }
+        }
+
+        LabeledContent("작업 위치", value: model.plannedSessionLocation)
+
+        if let selectedSourceTree {
+            LabeledContent(model.newSessionDraft.locationStrategy == .newWorktree ? "기준 작업 폴더" : "작업 폴더") {
+                Text(selectedSourceTree.url.path)
+                    .font(.caption.monospaced())
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(selectedSourceTree.url.path)
+                    .textSelection(.enabled)
+            }
+        }
+
+        if model.newSessionDraft.locationStrategy == .currentCheckout {
+            if let warning = sourceTreeWarning {
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            if sourceTreeIsModified {
+                Toggle("Start in this modified working tree", isOn: $model.newSessionDraft.acceptsModifiedWorkingTree)
+                    .accessibilityHint("Confirms that existing uncommitted changes may be affected")
+            }
+        }
+    }
+
+    private var locationStrategyDetail: String {
+        switch model.newSessionDraft.locationStrategy {
+        case .currentCheckout:
+            return "현재 폴더와 브랜치에서 바로 작업합니다."
+        case .newBranch:
+            return "현재 폴더에서 새 브랜치로 전환합니다. 별도 작업 폴더는 만들지 않습니다."
+        case .newWorktree:
+            return "새 브랜치와 별도 작업 폴더를 만듭니다. 기존 폴더의 미커밋 변경은 옮기지 않습니다."
+        }
     }
 
     @ViewBuilder

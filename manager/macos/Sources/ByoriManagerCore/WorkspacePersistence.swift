@@ -791,6 +791,9 @@ public actor WorkspaceCheckoutVisibilityStore: WorkspaceCheckoutVisibilityPersis
 public protocol WorkspaceTaskPersisting: Sendable {
     func task(id: String) async throws -> WorkspaceTask?
     func tasks(projectID: String?, limit: Int) async throws -> WorkspaceTaskList
+    func archivedTask(id: String) async throws -> WorkspaceTask?
+    func archivedTasks(projectID: String?, limit: Int) async throws -> WorkspaceTaskList
+    func restoreTask(id: String) async throws -> WorkspaceTask
     func createTask(
         projectID: String,
         checkout: WorkspaceCheckoutReference,
@@ -810,6 +813,20 @@ public protocol WorkspaceTaskPersisting: Sendable {
     ) async throws -> WorkspaceSession
     func updateTaskStatus(taskID: String, status: WorkspaceTaskStatus) async throws -> WorkspaceTask
     func archiveTask(id: String) async throws -> WorkspaceTask
+}
+
+public extension WorkspaceTaskPersisting {
+    func archivedTask(id: String) async throws -> WorkspaceTask? {
+        throw WorkspaceError.persistence("archived task lookup is not available")
+    }
+
+    func archivedTasks(projectID: String?, limit: Int) async throws -> WorkspaceTaskList {
+        throw WorkspaceError.persistence("archived task listing is not available")
+    }
+
+    func restoreTask(id: String) async throws -> WorkspaceTask {
+        throw WorkspaceError.persistence("task restoration is not available")
+    }
 }
 
 public actor WorkspaceTaskStore: WorkspaceTaskPersisting {
@@ -894,6 +911,100 @@ public actor WorkspaceTaskStore: WorkspaceTaskPersisting {
             tasks: Array(values.prefix(requestedLimit)),
             isTruncated: truncated
         )
+    }
+
+    public func archivedTask(id: String) async throws -> WorkspaceTask? {
+        try Self.validateArchiveTaskID(id)
+        let disk = WorkspaceTaskArchiveDisk(home: home)
+        guard let directory = try disk.directory(["archived-tasks", id], create: false) else { return nil }
+        defer { close(directory) }
+        return try readArchivedTask(id: id, directory: directory, disk: disk)
+    }
+
+    public func archivedTasks(
+        projectID: String? = nil,
+        limit: Int = 200
+    ) async throws -> WorkspaceTaskList {
+        if let projectID { try WorkspaceValidation.identifier(projectID, label: "project id") }
+        let requestedLimit = min(max(limit, 1), 1_000)
+        let disk = WorkspaceTaskArchiveDisk(home: home)
+        guard let root = try disk.directory(["archived-tasks"], create: false) else {
+            return WorkspaceTaskList(tasks: [], isTruncated: false)
+        }
+        defer { close(root) }
+        let entries = try disk.names(in: root, limit: Self.scanLimit)
+        var truncated = entries.isTruncated
+        var values: [WorkspaceTask] = []
+        for id in entries.names.sorted() {
+            var info = stat()
+            if fstatat(root, id, &info, AT_SYMLINK_NOFOLLOW) != 0 {
+                if errno == ENOENT { continue }
+                throw WorkspaceError.persistence("cannot inspect archived task metadata")
+            }
+            guard (info.st_mode & S_IFMT) != S_IFLNK else {
+                throw WorkspaceError.persistence("archived task directories must not be symlinks")
+            }
+            guard (info.st_mode & S_IFMT) == S_IFDIR else { continue }
+            try Self.validateArchiveTaskID(id)
+            guard let directory = try disk.childDirectory(id, in: root) else { continue }
+            defer { close(directory) }
+            guard let task = try readArchivedTask(id: id, directory: directory, disk: disk) else { continue }
+            if projectID == nil || task.projectID == projectID { values.append(task) }
+        }
+        values.sort {
+            $0.updatedAt != $1.updatedAt ? $0.updatedAt > $1.updatedAt : $0.id < $1.id
+        }
+        if values.count > requestedLimit { truncated = true }
+        return WorkspaceTaskList(tasks: Array(values.prefix(requestedLimit)), isTruncated: truncated)
+    }
+
+    /// Restores the exact metadata directory, including workflow and verification
+    /// sidecars. It never rewrites task/session identity, status, or timestamps.
+    public func restoreTask(id: String) async throws -> WorkspaceTask {
+        try Self.validateArchiveTaskID(id)
+        let disk = WorkspaceTaskArchiveDisk(home: home)
+        return try disk.withLock {
+            guard let archive = try disk.directory(["archived-tasks"], create: false) else {
+                throw WorkspaceError.taskNotFound(id)
+            }
+            defer { close(archive) }
+            guard let source = try disk.childDirectory(id, in: archive) else {
+                throw WorkspaceError.taskNotFound(id)
+            }
+            defer { close(source) }
+            guard let task = try readArchivedTask(id: id, directory: source, disk: disk) else {
+                throw WorkspaceError.taskNotFound(id)
+            }
+            guard task.sessions.allSatisfy({ $0.status.isTerminal }) else {
+                throw WorkspaceError.invalidTask("An archived task with an active session cannot be restored.")
+            }
+            guard let active = try disk.directory(["tasks"], create: true) else {
+                throw WorkspaceError.persistence("cannot open active task metadata")
+            }
+            defer { close(active) }
+            // RENAME_EXCL rejects even an empty directory or dangling symlink at
+            // the destination; a check followed by plain rename could overwrite it.
+            guard renameatx_np(archive, id, active, id, UInt32(RENAME_EXCL)) == 0 else {
+                throw WorkspaceError.persistence("cannot restore task metadata; the destination may already exist")
+            }
+            _ = fsync(archive)
+            _ = fsync(active)
+            return task
+        }
+    }
+
+    private static func validateArchiveTaskID(_ id: String) throws {
+        try WorkspaceValidation.identifier(id, label: "task id")
+        guard id != ".", id != ".." else { throw WorkspaceError.invalidIdentifier("task id") }
+    }
+
+    private func readArchivedTask(
+        id: String, directory: Int32, disk: WorkspaceTaskArchiveDisk
+    ) throws -> WorkspaceTask? {
+        guard let data = try disk.readState(in: directory, limit: Self.stateByteLimit) else { return nil }
+        let task = try decodeTask(data)
+        guard task.id == id else { throw WorkspaceError.persistence("archived task identity does not match its directory") }
+        return task
     }
 
     public func createTask(
@@ -1040,6 +1151,10 @@ public actor WorkspaceTaskStore: WorkspaceTaskPersisting {
             byteLimit: Self.stateByteLimit,
             label: "task state"
         )
+        return try decodeTask(data)
+    }
+
+    private func decodeTask(_ data: Data) throws -> WorkspaceTask {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let document: TaskDocument
@@ -1104,6 +1219,122 @@ public actor WorkspaceTaskStore: WorkspaceTaskPersisting {
 
     private func taskDirectoryURL(id: String) -> URL {
         tasksRoot.appendingPathComponent(id, isDirectory: true)
+    }
+}
+
+/// Opens the archive relative to directory descriptors so metadata symlinks are
+/// refused. Only state.json is read; sidecars are carried by the directory rename.
+private struct WorkspaceTaskArchiveDisk {
+    let home: URL
+
+    func directory(_ components: [String], create: Bool) throws -> Int32? {
+        if create && !FileManager.default.fileExists(atPath: home.path) {
+            try FileManager.default.createDirectory(
+                at: home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
+            )
+        }
+        var descriptor = Darwin.open(home.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        if descriptor < 0 {
+            if errno == ENOENT && !create { return nil }
+            throw WorkspaceError.persistence("cannot open task metadata home safely")
+        }
+        do {
+            for component in components {
+                if create {
+                    guard mkdirat(descriptor, component, 0o700) == 0 || errno == EEXIST else {
+                        throw WorkspaceError.persistence("cannot create task metadata directory")
+                    }
+                }
+                guard let next = try childDirectory(component, in: descriptor) else {
+                    close(descriptor)
+                    return nil
+                }
+                close(descriptor)
+                descriptor = next
+            }
+            return descriptor
+        } catch {
+            close(descriptor)
+            throw error
+        }
+    }
+
+    func childDirectory(_ name: String, in parent: Int32) throws -> Int32? {
+        let descriptor = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        if descriptor < 0 {
+            if errno == ENOENT { return nil }
+            throw WorkspaceError.persistence("cannot open task metadata directory safely")
+        }
+        return descriptor
+    }
+
+    func withLock<T>(_ body: () throws -> T) throws -> T {
+        guard let locks = try directory(["locks"], create: true) else {
+            throw WorkspaceError.persistence("cannot open task metadata locks")
+        }
+        defer { close(locks) }
+        let lock = openat(locks, "workspace-tasks.lock", O_CREAT | O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0o600)
+        guard lock >= 0 else { throw WorkspaceError.persistence("cannot open metadata lock safely") }
+        defer { close(lock) }
+        var info = stat()
+        guard fstat(lock, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+              flock(lock, LOCK_EX) == 0 else {
+            throw WorkspaceError.persistence("cannot acquire metadata lock")
+        }
+        defer { _ = flock(lock, LOCK_UN) }
+        return try body()
+    }
+
+    func names(in directory: Int32, limit: Int) throws -> (names: [String], isTruncated: Bool) {
+        let copy = dup(directory)
+        guard copy >= 0 else { throw WorkspaceError.persistence("cannot enumerate task metadata") }
+        guard let stream = fdopendir(copy) else {
+            close(copy)
+            throw WorkspaceError.persistence("cannot enumerate task metadata")
+        }
+        defer { closedir(stream) }
+        var names: [String] = []
+        while true {
+            errno = 0
+            guard let entry = readdir(stream) else {
+                guard errno == 0 else { throw WorkspaceError.persistence("cannot enumerate task metadata") }
+                return (names, false)
+            }
+            let name = withUnsafePointer(to: &entry.pointee.d_name) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: Int(entry.pointee.d_namlen) + 1) {
+                    String(cString: $0)
+                }
+            }
+            guard !name.hasPrefix(".") else { continue }
+            guard names.count < limit else { return (names, true) }
+            names.append(name)
+        }
+    }
+
+    func readState(in directory: Int32, limit: Int) throws -> Data? {
+        let file = openat(directory, "state.json", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        if file < 0 {
+            if errno == ENOENT { return nil }
+            throw WorkspaceError.persistence("cannot read task state safely")
+        }
+        defer { close(file) }
+        var info = stat()
+        guard fstat(file, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_size >= 0, info.st_size <= limit else {
+            throw WorkspaceError.persistence("task state must be a bounded regular file")
+        }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 16_384)
+        while true {
+            let count = buffer.withUnsafeMutableBytes { Darwin.read(file, $0.baseAddress, $0.count) }
+            if count == 0 { return data }
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw WorkspaceError.persistence("cannot read task state")
+            }
+            guard data.count + count <= limit else { throw WorkspaceError.persistence("task state exceeds its byte limit") }
+            data.append(contentsOf: buffer.prefix(count))
+        }
     }
 }
 
