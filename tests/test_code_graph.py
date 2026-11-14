@@ -38,7 +38,11 @@ class Engine:
         for statement in CG.MIGRATION:
             match = re.match(r"CREATE TAG IF NOT EXISTS (\w+)\((.*)\)", statement)
             if match:
-                self.db.execute("CREATE TABLE %s (vid INTEGER PRIMARY KEY, %s)" % (match[1], match[2]))
+                # SQLite gives an unknown STRING type NUMERIC affinity, which
+                # can coerce hexadecimal IDs like 57406629480e9476 to infinity.
+                # Match nGQL's string semantics instead of SQLite's type guess.
+                columns = re.sub(r"\bSTRING\b", "TEXT", match[2])
+                self.db.execute("CREATE TABLE %s (vid INTEGER PRIMARY KEY, %s)" % (match[1], columns))
 
     def query(self, text, read_only=False):
         self.queries.append((text, read_only))
@@ -137,6 +141,23 @@ class CodeGraphTests(unittest.TestCase):
         self.assertEqual(sum(r["target"] is None for r in outgoing["relations"]), 1)
         self.assertEqual(len(self.engine.edges), 3)  # two defines, one resolved call
         self.assertTrue(all(read for text, read in self.engine.queries if text.startswith("MATCH")))
+
+    def test_numeric_looking_strings_survive_the_sqlite_peer_round_trip(self):
+        for checkout in ("57406629480e9476", "0000000000000001", "1234567890123456"):
+            with self.subTest(checkout=checkout), mock.patch.object(CG, "checkout_for_root", return_value=checkout):
+                data = payload(self.root, snapshot="0", name="00042")
+                data["revision"] = "000123"
+                data["files"][0]["hash"] = "0" * 64
+                self.graph.store(data)
+
+                index = self.graph.status({})["index"]
+                self.assertEqual(index["checkout_id"], checkout)
+                self.assertEqual(index["snapshot_id"], "0" * 64)
+                self.assertEqual(index["revision"], "000123")
+                result = self.graph.search({"query": "00042"})
+                self.assertEqual([symbol["name"] for symbol in result["symbols"]], ["00042"])
+                self.assertEqual(result["symbols"][0]["content_hash"], "0" * 64)
+                self.assertIs(type(result["symbols"][0]["start_line"]), int)
 
     def test_file_pages_include_empty_files_and_stay_within_checkout_snapshot(self):
         data = payload(self.root)
