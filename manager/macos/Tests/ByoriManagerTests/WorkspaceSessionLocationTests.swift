@@ -178,17 +178,47 @@ final class WorkspaceSessionLocationTests: XCTestCase {
         XCTAssertEqual(review.newSessionDraft.locationStrategy, .currentCheckout)
     }
 
-    func testDirtyCheckoutRecommendsCurrentAndRequiresExplicitAcknowledgement() async {
+    func testDirtyCheckoutRecommendsWorktreeThatLeavesChangesInPlace() async {
+        let source = LocationDataSource(snapshot: makeSnapshot(primaryBusy: false, branch: "chore/cleanup", workingState: .modified(changeCount: 1)))
+        let model = await openSheet(source)
+        configureLaunch(model)
+        XCTAssertEqual(model.newSessionDraft.locationStrategy, .newWorktree)
+        XCTAssertEqual(model.newSessionDraft.startPoint, String(repeating: "a", count: 40))
+        XCTAssertTrue(model.canStartSession, model.startSessionBlockedReason ?? "")
+        await model.startSession()
+        XCTAssertEqual(source.createdWorktrees.count, 1)
+        XCTAssertTrue(source.createdBranches.isEmpty)
+        XCTAssertEqual(source.startedRequests.count, 1)
+    }
+
+    func testDirectWorkInDirtyCheckoutStillRequiresExplicitAcknowledgement() async {
         let source = LocationDataSource(snapshot: makeSnapshot(primaryBusy: false, workingState: .modified(changeCount: 2)))
         let model = await openSheet(source)
         configureLaunch(model)
-        XCTAssertEqual(model.newSessionDraft.locationStrategy, .currentCheckout)
+        model.chooseSessionLocationStrategy(.currentCheckout)
         XCTAssertFalse(model.canStartSession)
         model.newSessionDraft.acceptsModifiedWorkingTree = true
         XCTAssertTrue(model.canStartSession)
         await model.startSession()
         XCTAssertEqual(source.startedRequests.count, 1)
         XCTAssertTrue(source.createdBranches.isEmpty)
+        XCTAssertTrue(source.createdWorktrees.isEmpty)
+    }
+
+    func testLockedTaskInDirtyCheckoutPointsToNewTask() async {
+        let source = LocationDataSource(snapshot: makeSnapshot(primaryBusy: false, workingState: .modified(changeCount: 1)))
+        source.snapshot.projects[0].sourceTrees[0].tasks = [
+            .init(id: "existing", sourceTreeID: "primary123", title: "Continue", status: .open, createdAt: Date(), sessions: []),
+        ]
+        let model = WorkspaceViewModel(dataSource: source)
+        await model.load()
+        await model.prepareNewSession(target: .init(projectID: "project123", sourceTreeID: "primary123", existingTaskID: "existing"))
+        configureLaunch(model)
+        XCTAssertTrue(model.launchConstraintMessage?.contains("New Task") == true)
+        model.newSessionDraft.taskChoice = .newTask
+        model.newSessionDraft.newTaskTitle = "Fix parser"
+        XCTAssertEqual(model.newSessionDraft.locationStrategy, .newWorktree)
+        XCTAssertTrue(model.canStartSession, model.startSessionBlockedReason ?? "")
     }
 
     func testDirtyCheckoutNeverSwitchesBranchEvenWithAcknowledgement() async {
