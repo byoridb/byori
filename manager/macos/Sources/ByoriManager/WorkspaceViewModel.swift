@@ -2776,11 +2776,14 @@ extension WorkspaceViewModel {
         if tree.hasActiveWritingSession {
             return .init(strategy: .newWorktree, reason: "이 위치에서 다른 세션이 작업 중입니다. 파일이 섞이지 않도록 별도 워크트리를 권장합니다.")
         }
-        if case .modified = tree.workingState {
-            return .init(strategy: .currentCheckout, reason: "아직 커밋하지 않은 변경이 있어 현재 위치에서 이어가도록 제안합니다. 시작 전에 변경 사용을 확인해 주세요.")
-        }
         if tree.headRevision == nil {
             return .init(strategy: .currentCheckout, reason: "첫 커밋 전에는 현재 위치에서 작업을 시작합니다.")
+        }
+        // New work beside someone's unfinished changes is isolated by default:
+        // a worktree starts from the committed base and leaves those changes
+        // where they are. Continuing them in place stays one explicit choice away.
+        if case .modified = tree.workingState {
+            return .init(strategy: .newWorktree, reason: "이 위치에 아직 커밋하지 않은 변경이 있습니다. 새 작업이 섞이지 않도록 별도 워크트리를 권장합니다. 변경은 원래 폴더에 그대로 남습니다.")
         }
         if newSessionDraft.workflowPreset == .codeReview {
             return .init(strategy: .currentCheckout, reason: "코드 리뷰는 선택한 브랜치에서 바로 시작하도록 제안합니다.")
@@ -2896,6 +2899,11 @@ extension WorkspaceViewModel {
         switch newSessionDraft.locationStrategy {
         case .currentCheckout:
             if case .modified = tree.workingState, !newSessionDraft.acceptsModifiedWorkingTree {
+                // An existing task cannot move, so the only other way forward
+                // is a new task, which can choose a separate worktree.
+                if case .existing = newSessionDraft.taskChoice {
+                    return "Confirm that you want to start in a modified working tree, or choose New Task to start in a separate worktree."
+                }
                 return "Confirm that you want to start in a modified working tree."
             }
             return nil

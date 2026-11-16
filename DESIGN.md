@@ -245,9 +245,11 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 - Prefill a short two-word session name, keep it editable, and preserve the provider/model label as the fallback for legacy unnamed sessions.
 - Present a work-location recommendation before launch and prefill its strategy, branch name,
   and starting ref. Recommend a new branch for new work on an idle, clean `main`/`master`, a
-  worktree when the selected checkout has an active writing session, and the current checkout
-  when continuing an existing task, reviewing code in an idle checkout, or retaining existing
-  changes. Existing feature branches can be reused. Label direct work with the actual branch.
+  worktree when the selected checkout has an active writing session or uncommitted changes, and
+  the current checkout when continuing an existing task or reviewing code in an idle checkout.
+  Direct work in a modified checkout stays selectable behind an explicit confirmation; when an
+  existing task is locked to one, the refusal points to New Task. Existing feature branches can be
+  reused. Label direct work with the actual branch.
 - Keep the strategy and branch name editable for new tasks, and allow choosing a worktree's base.
   A branch created in the current folder starts from that checkout's HEAD. Explain why the recommendation
   applies, preserve user edits when the title or branch inventory changes, and offer an explicit

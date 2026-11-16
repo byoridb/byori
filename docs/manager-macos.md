@@ -118,10 +118,13 @@ prototype and compatibility path.
 The New Session sheet fills in a work strategy before launch and explains its recommendation:
 
 - **New branch** for new work on an idle, clean `main` or `master`; it uses the same folder.
-- **New worktree** when another writing session is using the selected checkout; it creates a
-  separate folder and branch from a committed ref, without copying uncommitted changes.
-- **Work directly** to continue an existing task, use an existing feature branch, review code in
-  an idle checkout, or preserve uncommitted work. The label names the actual current branch.
+- **New worktree** when another writing session is using the selected checkout, or when it has
+  uncommitted changes; it creates a separate folder and branch from a committed ref, leaving those
+  changes untouched in the original folder.
+- **Work directly** to continue an existing task, use an existing feature branch, or review code in
+  an idle checkout. The label names the actual current branch. Working directly in a checkout with
+  uncommitted changes remains available but must be confirmed; an existing task bound to such a
+  checkout can start elsewhere only as a **New Task**.
 
 The branch name follows the task title and avoids existing names. Strategy and branch name remain
 editable for a new task, and a worktree's base can be selected. A new branch in the current folder
