@@ -84,7 +84,7 @@ enum ManagerAction: Identifiable, Equatable {
     var confirmationDetail: String {
         switch self {
         case let .installCLI(kind):
-            return "\(kind.displayName)의 공식 설치 명령을 실행합니다. 로그인 정보는 Byori가 다루지 않습니다."
+            return "\(kind.displayName)의 공식 설치 또는 업데이트 명령을 실행합니다. 로그인 정보는 Byori가 다루지 않습니다."
         case .updateApp:
             return "최신 릴리스의 디스크 이미지를 내려받아 Apple 공증과 개발자 서명을 확인한 뒤 교체합니다. 확인에 실패하면 설치하지 않습니다. 교체를 위해 앱이 한 번 종료되었다가 다시 열립니다."
         case .installByori:

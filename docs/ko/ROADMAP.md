@@ -38,7 +38,7 @@ backup / upgrade --plan / rollback / uninstall`.
   tmux 3.2 이상이면 앱을 완전히 종료해도 세션이 유지되고 다음 실행에서 다시 attach된다
 - ✅ 세션마다 사용자가 고른 launch provider/model 하나를 기록한다. 앱은 prompt를 자동
   fan-out하거나 winner를 선택하고 agent 작업을 merge·삭제하지 않는다
-- 앱은 Claude Code, Codex, Gemini CLI, Cursor CLI, OpenCode를 감지하고 사용자의 명시적
+- 앱은 Claude Code, Codex, Antigravity CLI, Cursor CLI, OpenCode를 감지하고 사용자의 명시적
   동의 후 각 벤더의 **공식 설치 명령**을 실행할 수 있다. 로그인은 벤더 CLI에 맡기며
   Byori는 vendor token을 읽거나 저장하지 않는다
 - `connect`/`disconnect`는 idempotent, 변경 전 원본 설정 백업

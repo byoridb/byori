@@ -31,8 +31,8 @@ public enum AgentMCPCommandStyle: Equatable, Sendable {
     case claude
     /// `mcp add <name> -- <command>`
     case codex
-    /// `mcp add --scope user --transport stdio <name> <command>`
-    case gemini
+    /// `mcp add --type stdio <name> <command>` writes global configuration.
+    case antigravity
 
     public func addArguments(name: String, command: String) -> [String] {
         switch self {
@@ -40,9 +40,9 @@ public enum AgentMCPCommandStyle: Equatable, Sendable {
             return ["mcp", "add", "--transport", "stdio", "--scope", "user", name, "--", command]
         case .codex:
             return ["mcp", "add", name, "--", command]
-        case .gemini:
+        case .antigravity:
             // Takes the command as a positional, so no `--` separator.
-            return ["mcp", "add", "--scope", "user", "--transport", "stdio", name, command]
+            return ["mcp", "add", "--type", "stdio", name, command]
         }
     }
 
@@ -52,11 +52,8 @@ public enum AgentMCPCommandStyle: Equatable, Sendable {
             return ["mcp", "remove", "--scope", "user", name]
         case .codex:
             return ["mcp", "remove", name]
-        case .gemini:
-            // `--scope` takes a value and defaults to `project`; the removal has
-            // to name the same scope the registration used or it silently
-            // removes nothing.
-            return ["mcp", "remove", "--scope", "user", name]
+        case .antigravity:
+            return ["mcp", "remove", name]
         }
     }
 
@@ -72,10 +69,9 @@ public enum AgentMCPCommandStyle: Equatable, Sendable {
             return .cliGet(requiresUserScope: true)
         case .codex:
             return .cliGet(requiresUserScope: false)
-        case .gemini:
-            // Gemini CLI 0.37 has no `mcp get`, and `mcp list` prints nothing
-            // even with a server configured. Its settings file is the only
-            // thing that actually answers the question.
+        case .antigravity:
+            // Antigravity CLI has no `mcp get`; confirm the exact command in
+            // its global MCP configuration instead of parsing display text.
             return .settingsJSON(serversKey: "mcpServers", commandKey: "command")
         }
     }
@@ -108,6 +104,9 @@ public struct AgentProviderDescriptor: Identifiable, Equatable, Sendable {
     public let executableName: String
     public let systemImage: String
     public let install: AgentInstallMethod?
+    /// A native updater invoked on the resolved, installed executable.
+    /// When absent, Byori uses the provider's install command for updates.
+    public let updateArguments: [String]?
     public let mcp: AgentMCPCommandStyle?
     /// Directory, relative to the user's home, this CLI reads skills from.
     ///
@@ -138,13 +137,15 @@ public struct AgentProviderDescriptor: Identifiable, Equatable, Sendable {
         skillsRootRelativePath: String?,
         supportsModelFlag: Bool,
         launchArguments: AgentLaunchArguments,
-        limitations: String?
+        limitations: String?,
+        updateArguments: [String]? = nil
     ) {
         self.id = id
         self.displayName = displayName
         self.executableName = executableName
         self.systemImage = systemImage
         self.install = install
+        self.updateArguments = updateArguments
         self.mcp = mcp
         self.skillsRootRelativePath = skillsRootRelativePath
         self.supportsModelFlag = supportsModelFlag
@@ -201,26 +202,22 @@ public enum AgentProviderCatalog {
                 launchArguments: .codexWorkingDirectory,
                 limitations: nil
             )
-        case .gemini:
+        case .antigravity:
             return AgentProviderDescriptor(
-                id: "gemini",
-                displayName: "Gemini CLI",
-                executableName: "gemini",
+                id: "antigravity",
+                displayName: "Antigravity CLI",
+                executableName: "agy",
                 systemImage: "diamond",
-                // Google documents Homebrew as an official macOS installation
-                // method. Unlike the other providers, Gemini has no native
-                // install script, so the package-manager command is intentional.
                 install: .shellPipeline(
-                    command: "/usr/bin/env brew install gemini-cli",
+                    command: "/usr/bin/curl -fsSL https://antigravity.google/cli/install.sh | /bin/bash",
                     shell: "/bin/bash"
                 ),
-                mcp: .gemini,
-                // It reads GEMINI.md context files, not a skills directory of
-                // the shape Byori installs.
-                skillsRootRelativePath: nil,
+                mcp: .antigravity,
+                skillsRootRelativePath: ".gemini/config/skills",
                 supportsModelFlag: true,
                 launchArguments: .none,
-                limitations: "Byori does not sync a Skill to this CLI. MCP is connected."
+                limitations: nil,
+                updateArguments: ["update"]
             )
         case .cursorAgent:
             return AgentProviderDescriptor(

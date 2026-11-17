@@ -51,6 +51,9 @@ public enum UserSkillOrigin: String, Equatable, Sendable {
     case claudeUser
     case codexShared
     case codexLegacy
+    case antigravityShared
+    case antigravityCLI
+    case antigravityLegacy
 }
 
 public struct UserSkillSummary: Identifiable, Equatable, Sendable {
@@ -143,6 +146,49 @@ public enum MCPInventoryParser {
         return servers.keys.sorted().prefix(boundedLimit).map {
             ParsedServer(name: $0, status: .configured)
         }
+    }
+
+    /// Antigravity's global `mcp_config.json` contains credentials alongside
+    /// registrations. Retain only bounded display names and the disabled bit.
+    /// A missing config is an empty inventory; unreadable or malformed input
+    /// is unavailable so a failed read cannot verify a removal.
+    public static func antigravityServers(in file: URL, limit: Int = 200) -> [ParsedServer]? {
+        let boundedLimit = max(0, min(limit, 500))
+        guard let servers = antigravityServerEntries(in: file) else { return nil }
+        var result: [ParsedServer] = []
+        for key in servers.keys.sorted() {
+            guard let entry = servers[key] as? [String: Any] else { return nil }
+            guard let name = safeServerName(key), name == key else { continue }
+            if result.count >= boundedLimit { break }
+            result.append(ParsedServer(
+                name: name,
+                status: entry["disabled"] as? Bool == true ? .disabled : .configured
+            ))
+        }
+        return result
+    }
+
+    /// Mutation verification must not use the bounded display inventory: a
+    /// server beyond the first 200 names is still present in the config.
+    static func antigravityServerIsPresent(name: String, in file: URL) -> Bool? {
+        guard let servers = antigravityServerEntries(in: file) else { return nil }
+        return servers[name] != nil
+    }
+
+    private static func antigravityServerEntries(in file: URL) -> [String: Any]? {
+        guard FileManager.default.fileExists(atPath: file.path) else { return [:] }
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: file.path),
+              let size = attributes[.size] as? NSNumber,
+              size.intValue <= 2 * 1_024 * 1_024,
+              let data = try? Data(contentsOf: file),
+              data.count <= 2 * 1_024 * 1_024,
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        guard let rawServers = root["mcpServers"] else { return [:] }
+        guard let servers = rawServers as? [String: Any],
+              servers.values.allSatisfy({ $0 is [String: Any] }) else { return nil }
+        return servers
     }
 
     /// Parses only the non-sensitive fields needed by Settings. Values such as
@@ -433,7 +479,31 @@ public struct UserSkillScanner: @unchecked Sendable {
                     })
                 ),
             ]
-        case .gemini, .cursorAgent, .opencode:
+        case .antigravity:
+            // The shared directory is the current documented install target.
+            // Antigravity also discovers the two legacy user roots; inventory
+            // those without treating their files as Byori-managed installs.
+            let shared = home.appendingPathComponent(".gemini/config/skills", isDirectory: true)
+            return [
+                Root(
+                    url: shared,
+                    origin: .antigravityShared,
+                    managedSkillFiles: Set(ManagedSkill.allCases.map {
+                        shared.appendingPathComponent("\($0.rawValue)/SKILL.md").standardizedFileURL
+                    })
+                ),
+                Root(
+                    url: home.appendingPathComponent(".gemini/antigravity-cli/skills", isDirectory: true),
+                    origin: .antigravityCLI,
+                    managedSkillFiles: []
+                ),
+                Root(
+                    url: home.appendingPathComponent(".gemini/skills", isDirectory: true),
+                    origin: .antigravityLegacy,
+                    managedSkillFiles: []
+                ),
+            ]
+        case .cursorAgent, .opencode:
             // These CLIs do not read a Byori-managed skills directory, so there
             // is nothing to scan. Pointing the scanner at a plausible-looking
             // path would list files Byori has no business managing.
@@ -442,7 +512,11 @@ public struct UserSkillScanner: @unchecked Sendable {
     }
 
     private func agent(for origin: UserSkillOrigin) -> AgentKind {
-        origin == .claudeUser ? .claude : .codex
+        switch origin {
+        case .claudeUser: return .claude
+        case .codexShared, .codexLegacy: return .codex
+        case .antigravityShared, .antigravityCLI, .antigravityLegacy: return .antigravity
+        }
     }
 
     private func summary(for child: URL, root: Root, agent: AgentKind) -> UserSkillSummary? {

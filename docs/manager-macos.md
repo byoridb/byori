@@ -187,7 +187,7 @@ ID. An incomplete bounded listing is shown as partial, rather than implying all 
   fails, the page says so instead of implying the installed engine is current
 - Start, stop, and restart ByoriDB, and read the end of its server or error log inside the
   app, with the log folder still one click away
-- Detect Claude Code, Codex, Gemini CLI, Cursor CLI, and OpenCode, and install or update them
+- Detect Claude Code, Codex, Antigravity CLI, Cursor CLI, and OpenCode, and install or update them
   through each vendor's official installation command
 - Register any other coding CLI by its executable path, with optional default arguments that are
   passed as `argv` without a shell. A registered CLI is launch-only, and Settings says so: Byori
@@ -196,8 +196,8 @@ ID. An incomplete bounded listing is shown as partial, rather than implying all 
   executable and existing session history untouched
 - Configure the `byoridb` stdio MCP integration through each CLI's official
   `mcp add/remove` commands
-- Synchronize the Memory Skill to Claude's `~/.claude/skills` and Codex's
-  `~/.agents/skills`
+- Synchronize the Memory Skill to Claude's `~/.claude/skills`, Codex's
+  `~/.agents/skills`, and Antigravity's `~/.gemini/config/skills`
 - Inspect a bounded, Settings-only list of each agent's user MCP registrations and Skills;
   edit configuration/`SKILL.md` at its source or remove a validated item after backup
 - Optionally launch new Claude Code sessions through Upstage Solar or another
@@ -206,7 +206,7 @@ ID. An incomplete bounded listing is shown as partial, rather than implying all 
 - Keep secret-bearing MCP command arguments, headers, environment values, and tokens out of
   the inventory UI and Activity history; Claude.ai-owned connectors are shown read-only
 - Keep ByoriDB installation separate from agent wiring: database install/update does not
-  implicitly change Claude or Codex MCP and Skill configuration
+  implicitly change any agent's MCP and Skill configuration
 - Back up MCP configuration and Skill changes automatically under
   `~/.byori-manager/backups`
 - Take a runtime snapshot before installation or updates and automatically restore the
@@ -223,6 +223,14 @@ Vendor CLI installation buttons ask for confirmation before running and invoke o
 vendor installation command. Each CLI handles its own login. Byori reads no existing
 vendor credential; the optional Claude model API setting stores only a credential the user enters
 explicitly and never presents it again.
+
+Antigravity CLI (`agy`) replaces Gemini CLI in the built-in provider list. Byori uses
+[Google's official installer](https://antigravity.google/docs/getting-started/) when it is
+missing and runs `agy update` for an installed CLI. Its user MCP registrations live in
+`~/.gemini/config/mcp_config.json`; authentication and importing prior settings remain owned
+by the vendor CLI. Google [ended Gemini CLI access for individual accounts on June 18, 2026](https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/).
+Existing Gemini session records and settings remain intact and are never relabeled as
+Antigravity sessions. Start a new Antigravity session to use the replacement.
 
 ## Development and verification
 

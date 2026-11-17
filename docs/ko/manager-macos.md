@@ -178,21 +178,22 @@ shell을 포함해 제외하며, 각 항목을 처리하기 전에 상태를 다
   진술이며, 릴리스 조회에 실패하면 설치된 엔진이 최신인 척하지 않고 확인 실패를 말한다
 - ByoriDB 시작·중지·재시작, 서버 로그와 오류 로그의 마지막 부분을 앱 안에서 읽기(로그 폴더도
   한 번의 클릭으로 열린다)
-- Claude Code, Codex, Gemini CLI, Cursor CLI, OpenCode 탐지와 각 벤더의 공식 설치 명령을
+- Claude Code, Codex, Antigravity CLI, Cursor CLI, OpenCode 탐지와 각 벤더의 공식 설치 명령을
   통한 설치·업데이트
 - 그 밖의 코딩 CLI는 실행 파일 경로로 직접 등록한다. 기본 인자는 셸을 거치지 않고 `argv`로
   전달한다. 등록한 CLI는 실행 전용이며 Settings가 이를 그대로 알린다. 처음 보는 CLI의 설치
   명령이나 MCP 인터페이스는 검증할 수 없으므로 설치·MCP 연결·Skill 동기화를 하지 않는다.
   등록 해제는 Byori 목록에서만 제거하며 실행 파일과 기존 세션 기록은 그대로 둔다
 - 각 CLI의 공식 `mcp add/remove` 명령을 통한 `byoridb` stdio MCP 설정
-- Claude의 `~/.claude/skills`, Codex의 `~/.agents/skills`에 Memory Skill 동기화
+- Claude의 `~/.claude/skills`, Codex의 `~/.agents/skills`, Antigravity의
+  `~/.gemini/config/skills`에 Memory Skill 동기화
 - Settings에서 각 agent의 사용자 범위 MCP·Skill 목록을 제한된 크기로 조회하고,
   원본 설정/`SKILL.md` 편집 또는 백업 후 안전한 제거 지원
 - 새 Claude Code 세션을 Upstage Solar 또는 다른 Anthropic 호환 모델 API로 선택적으로 실행하고,
   credential은 macOS Keychain에 보관하며 `~/.claude`를 변경하지 않고 일반 Claude 환경으로 복원
 - MCP command 인자, header, 환경변수 값, token은 목록이나 작업 기록에 표시하지 않고,
   Claude.ai가 관리하는 connector는 읽기 전용으로 표시
-- ByoriDB 설치와 agent 연결 분리: database 설치·업데이트는 Claude/Codex의 MCP나
+- ByoriDB 설치와 agent 연결 분리: database 설치·업데이트는 각 agent의 MCP나
   Skill 설정을 암묵적으로 변경하지 않음
 - MCP 설정과 Skill 변경 전 `~/.byori-manager/backups`에 자동 백업
 - 설치·업데이트 전 runtime snapshot, 실패 시 파일과 이전 launchd 상태 자동 복원
@@ -206,6 +207,13 @@ shell을 포함해 제외하며, 각 항목을 처리하기 전에 상태를 다
 벤더 CLI 설치 버튼은 실행 전 확인을 받고 각 벤더의 공식 설치 명령만 실행한다.
 각 CLI가 자체 로그인을 처리한다. Byori는 기존 벤더 credential을 읽지 않으며, 선택형 Claude 모델
 API 설정에서 사용자가 직접 입력한 credential만 저장하고 화면에 다시 표시하지 않는다.
+
+Antigravity CLI(`agy`)는 기본 에이전트 목록에서 Gemini CLI를 대체한다. 미설치 시
+[Google 공식 설치 프로그램](https://antigravity.google/docs/getting-started/)을 사용하고,
+설치된 CLI 업데이트에는 `agy update`를 실행한다. MCP는 `~/.gemini/config/mcp_config.json`의
+사용자 범위 설정을 관리하며, 로그인과 이전 설정 가져오기는 벤더 CLI가 처리한다.
+Google은 [2026년 6월 18일 개인 계정의 Gemini CLI 지원을 종료했다](https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/).
+기존 Gemini 세션 기록과 설정은 유지하며, 새 Antigravity 세션으로 자동 변환하지 않는다.
 
 ## 개발 및 검증
 

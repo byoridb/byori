@@ -41,7 +41,7 @@ backup / upgrade --plan / rollback / uninstall`.
   on the next launch
 - ✅ Each session records one user-selected launch provider and model. The app does not
   automatically fan out prompts, select a winner, merge, or delete agent work
-- The app can detect Claude Code, Codex, Gemini CLI, Cursor CLI, and OpenCode and, with the
+- The app can detect Claude Code, Codex, Antigravity CLI, Cursor CLI, and OpenCode and, with the
   user's explicit consent, run each vendor's **official installation command**. Authentication
   remains the responsibility of the vendor CLI;
   Byori neither reads nor stores vendor tokens

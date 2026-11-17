@@ -56,8 +56,9 @@ public struct ManagerPaths: Sendable {
     }
     public var claudeConfig: URL { home.appendingPathComponent(".claude.json") }
     public var codexConfig: URL { home.appendingPathComponent(".codex/config.toml") }
-    /// Where `gemini mcp add --scope user` writes its `mcpServers` map.
-    public var geminiConfig: URL { home.appendingPathComponent(".gemini/settings.json") }
+    /// Antigravity's shared user MCP configuration, distinct from legacy
+    /// Gemini CLI's `.gemini/settings.json` and its authentication settings.
+    public var antigravityConfig: URL { home.appendingPathComponent(".gemini/config/mcp_config.json") }
     public var legacyCodexSkill: URL {
         legacyCodexSkill(.byoridbMemory)
     }

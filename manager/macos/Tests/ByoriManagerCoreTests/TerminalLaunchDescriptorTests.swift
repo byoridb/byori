@@ -125,6 +125,40 @@ final class TerminalLaunchDescriptorTests: XCTestCase {
         XCTAssertEqual(descriptor.environment["CLICOLOR"], "1")
     }
 
+    func testAntigravityResolvesAgyAndKeepsTheVendorDefaultInteractiveLaunch() throws {
+        let executable = try makeExecutable(named: "agy")
+        let factory = TerminalLaunchDescriptorFactory(
+            paths: paths,
+            environment: ["CUSTOM": "preserved"],
+            fileManager: .default,
+            executableResolver: { name in name == "agy" ? executable : nil }
+        )
+
+        let descriptor = try factory.codingAgent(.antigravity, workingDirectory: workingDirectory)
+
+        XCTAssertEqual(descriptor.target, .codingAgent(.antigravity))
+        XCTAssertEqual(descriptor.executable, executable.resolvingSymlinksInPath())
+        XCTAssertEqual(descriptor.arguments, [])
+        XCTAssertEqual(descriptor.modelSelection, .cliDefault)
+        XCTAssertEqual(descriptor.workingDirectory, workingDirectory.resolvingSymlinksInPath())
+        XCTAssertEqual(descriptor.environment["CUSTOM"], "preserved")
+    }
+
+    func testAntigravityPassesOnlyTheExplicitModelWithoutOtherProviderFlags() throws {
+        let executable = try makeExecutable(named: "agy")
+        let factory = TerminalLaunchDescriptorFactory(paths: paths, environment: [:])
+
+        let descriptor = try factory.codingAgent(
+            .antigravity,
+            model: "configured-model",
+            workingDirectory: workingDirectory,
+            executableOverride: executable
+        )
+
+        XCTAssertEqual(descriptor.modelSelection, .explicit("configured-model"))
+        XCTAssertEqual(descriptor.arguments, ["--model", "configured-model"])
+    }
+
     func testClaudeGatewayCanReplaceOnlyItsManagedInheritedEnvironment() throws {
         let executable = try makeExecutable(named: "claude")
         let factory = TerminalLaunchDescriptorFactory(
