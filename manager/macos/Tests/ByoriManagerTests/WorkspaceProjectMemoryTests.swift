@@ -87,6 +87,7 @@ final class WorkspaceProjectMemoryTests: XCTestCase {
         dataSource.snapshotAfterRegistration = makeSnapshot()
         let model = WorkspaceViewModel(dataSource: dataSource)
         await model.load()
+        XCTAssertFalse(model.isInspectorPresented)
 
         await model.addProjectFolder(at: repository)
 
@@ -95,6 +96,7 @@ final class WorkspaceProjectMemoryTests: XCTestCase {
         // The tab it is about is already open behind the dialog, so declining still
         // leaves the answer in view.
         XCTAssertEqual(model.inspectorTab, .context)
+        XCTAssertTrue(model.isInspectorPresented)
         XCTAssertEqual(model.selection, .project("project123"))
         XCTAssertTrue(dataSource.builtProjectIDs.isEmpty, "nothing runs until it is accepted")
     }
@@ -176,6 +178,10 @@ final class WorkspaceProjectMemoryTests: XCTestCase {
         let dataSource = ProjectMemoryDataSource(snapshot: WorkspacePresentationSnapshot(projects: []))
         let model = WorkspaceViewModel(dataSource: dataSource)
         await model.load()
+        // The tab may already be Context when the user closes the inspector.
+        // Opening a project must reveal it even though its selected tab is unchanged.
+        model.showInspector(.context)
+        model.isInspectorPresented = false
         // What `byori open` did before the app was asked: wrote the registry entry.
         dataSource.snapshot = makeSnapshot()
 
@@ -184,6 +190,7 @@ final class WorkspaceProjectMemoryTests: XCTestCase {
         XCTAssertTrue(dataSource.registeredURLs.isEmpty, "it was already registered")
         XCTAssertEqual(model.selection, .project("project123"))
         XCTAssertEqual(model.inspectorTab, .context)
+        XCTAssertTrue(model.isInspectorPresented)
         XCTAssertEqual(model.projectMemoryOffer?.projectID, "project123")
     }
 
@@ -219,19 +226,46 @@ final class WorkspaceProjectMemoryTests: XCTestCase {
     /// A memory space belongs to the project, not to a checkout. Selecting a project
     /// row used to leave the tab on a spinner that never resolved, which is where the
     /// empty-graph affordance was supposed to be.
-    func testSelectingAProjectRowReadsItsContext() async {
+    func testSelectingAProjectAndRefreshingKeepInspectorClosedWhileReadingContext() async {
         let dataSource = ProjectMemoryDataSource(snapshot: makeSnapshot())
         let model = WorkspaceViewModel(dataSource: dataSource)
         await model.load()
+        XCTAssertFalse(model.isInspectorPresented)
+        model.showInspector(.context)
+        model.isInspectorPresented = false
+        dataSource.contextRequests.removeAll()
+        let selectedContext = WorkspaceContextItem(
+            id: "selected", kind: "decision", title: "Selected project memory",
+            summary: "Loaded after selection.", provenance: "commit 123abc",
+            updatedAt: nil, tags: []
+        )
+        dataSource.contextItems = [selectedContext]
 
         model.select(.project("project123"))
-        for _ in 0..<200 where dataSource.contextRequests.isEmpty {
+        for _ in 0..<200 where model.contextSnapshot?.items != [selectedContext] {
             await Task.yield()
         }
 
         XCTAssertEqual(dataSource.contextRequests.map(\.projectID), ["project123"])
         // Read from the primary checkout, since a project row names none.
         XCTAssertEqual(dataSource.contextRequests.map(\.sourceTreeID), ["primary123"])
+        XCTAssertEqual(model.contextSnapshot?.items, [selectedContext])
+        XCTAssertFalse(model.isInspectorPresented)
+
+        let refreshedContext = WorkspaceContextItem(
+            id: "refreshed", kind: "decision", title: "Refreshed project memory",
+            summary: "Loaded by refresh while the inspector stays closed.", provenance: "commit 456def",
+            updatedAt: nil, tags: []
+        )
+        dataSource.contextItems = [refreshedContext]
+
+        await model.load(force: true)
+
+        XCTAssertEqual(dataSource.contextRequests.map(\.projectID), ["project123", "project123"])
+        XCTAssertEqual(model.contextSnapshot?.items, [refreshedContext])
+        XCTAssertEqual(model.selection, .project("project123"))
+        XCTAssertEqual(model.inspectorTab, .context)
+        XCTAssertFalse(model.isInspectorPresented)
     }
 
     private func makeSnapshot() -> WorkspacePresentationSnapshot {

@@ -32,7 +32,7 @@ ByoriDB는 별도로 설치한다. **Settings → ByoriDB** 또는 [shell 설치
 
 ## 워크스페이스 모델
 
-메인 계층은 다음과 같다.
+내부 데이터 관계는 다음과 같다.
 
 ```text
 Project
@@ -40,6 +40,9 @@ Project
     └── Task
         └── Session (사용자가 고른 코딩 agent 하나 + model 선택 하나)
 ```
+
+사이드바에서는 이를 프로젝트별 작업·세션 목록으로 보여 준다. Checkout과 branch는 보조 정보로
+표시하므로 화면에서 모델의 모든 계층을 차례로 펼칠 필요는 없다.
 
 - Project는 사용자가 명시적으로 등록하고 신뢰한 로컬 Git repository다. **새 프로젝트
   생성…**은 이름을 정한 폴더를 만들고 `main` repository로 초기화한 뒤 remote 없이 등록한다.
@@ -68,13 +71,14 @@ prototype/호환 경로로 남아 있다.
 
 ## 메인 창
 
-- 왼쪽 sidebar는 **Project → Source Tree/Worktree → Task → Session** 계층을
-  보여 주고 현재 checkout을 명확히 한다. 상단 `+` 메뉴에서 새 project를 만들거나 기존
-  폴더를 열 수 있다. Source Tree의 `+`는 새 Task용 session sheet를,
-  Task의 `+`는 정확히 그 Task용 sheet를 연다. Session 이름은 두 단어로 자동 제안되고
-  수정할 수 있으며, 이름이 없는 기존 session은 provider/model 이름으로 표시한다.
-  사이드바 상단 검색란에서 프로젝트 이름으로 목록을 좁힐 수 있다. 검색을 지워도 이전 펼침·접힘
-  상태를 유지하며, 검색 중에 열려 있는 terminal이 바뀌지 않는다.
+- 왼쪽 사이드바 맨 위에서 프로젝트 이름을 검색하고, 프로젝트별로 두 줄 작업·세션 목록을
+  보여 준다. 작업과 표시할 세션이 하나이면 같은 행을 쓰고, branch와 agent는 제목과 구분되는
+  보조 정보로 표시한다. Checkout은 별도 탐색 계층을 차지하지 않는다. 검색을 지워도 이전
+  펼침·접힘 상태를 유지하며, 검색 중에 열려 있는 terminal이 바뀌지 않는다.
+  프로젝트 제목 옆 `+` 메뉴는 새 project를 만들거나 기존 폴더를 연다. 각 project 행의 `+`는
+  추천 checkout을 채운 새 작업 화면을, 작업·세션 행의 `+`는 정확히 그 작업과 checkout의
+  세션 화면을 연다. 행에는 `+`와 더 보기 동작만 둔다. Session 이름은 두 단어로 제안하며
+  수정할 수 있고, 이름이 없는 기존 session은 provider/model 이름으로 표시한다.
 - Task 행의 **More Actions → Remove Task from Byori…**는 모든 session이 끝난 뒤
   task/session metadata를 `~/.byori/archived-tasks`로 옮긴다. Repository 파일,
   worktree와 branch, ByoriDB context는 변경하지 않는다.
@@ -82,23 +86,30 @@ prototype/호환 경로로 남아 있다.
   **More Actions → Delete Managed Worktree…**에서 제거할 수 있다. 확인창에서 local
   branch를 유지하거나 Git의 안전한 `-d` 삭제를 요청할 수 있으며, merge되지 않은
   branch는 보존한다. Primary checkout과 외부 관리 worktree에는 삭제 동작을 제공하지 않는다.
-- 가운데는 선택한 session의 실제 대화형 PTY를 SwiftTerm으로 바로 표시한다. Claude Code나
-  Codex는 해당 checkout에서 실행되며 인증은 각 CLI가 처리한다. 클립보드 이미지를 붙여넣으면
+- 가운데는 선택한 session의 실제 대화형 PTY를 SwiftTerm으로 바로 표시한다. 50pt 한 줄 헤더에
+  project·작업 이름과 실제 상태를 표시하고, 상태에 따라 정지·재연결·셸·새 세션에 바로 접근한다.
+  긴 제목은 도움말로 확인하며 branch는 공간이 있을 때만 짧게 표시한다. **세션 메뉴**에서
+  세션·checkout·시작 시 선택 정보와 **작업 절차·검증**을 연다. Claude Code나 Codex는 해당
+  checkout에서 실행되며 인증은 각 CLI가 처리한다. 클립보드 이미지를 붙여넣으면
   권한이 제한된 임시 PNG로 저장하고 현재 terminal 입력에 안전하게 인용한 경로를 삽입한다.
-  일반 텍스트 붙여넣기는 그대로 동작한다. **Commands** 메뉴는 설치된 Claude plugin·사용자
+  일반 텍스트 붙여넣기는 그대로 동작한다. **세션 메뉴 → 명령 삽입**은 설치된 Claude plugin·사용자
   Skill 또는 Codex plugin Skill·사용자 Skill의 명령을 읽고, Return을 누르지 않은 채 선택한
   호출문만 terminal에 삽입한다. Session은
   256-color와 truecolor 지원을 알리고 상위 process의 `NO_COLOR` 같은 색상 억제
   환경변수를 제거하므로 provider가 출력한 ANSI 색상을 그대로 표시한다.
-- 오른쪽 inspector는 제한된 **Files** metadata, read-only **Git** status, project
-  범위 ByoriDB **Context**를 제공한다. 한 프로젝트의 모든 Source Tree/Worktree, Task,
+- 오른쪽 inspector는 기본으로 접혀 있으며 toolbar 버튼이나 **Command-Option-I**로 열고 닫는다.
+  하단 Git·Context를 누르면 해당 탭이 열린다. 프로젝트를 추가할 때는 초기 기억 설정을 위해
+  Context를 자동으로 열고, 일반적인 목록 선택은 inspector의 열림·접힘 상태를 유지한다.
+  제한된 **Files** metadata, read-only **Git** status, project 범위 ByoriDB **Context**를 제공한다.
+  한 프로젝트의 모든 Source Tree/Worktree, Task,
   Session, agent 선택은 같은 프로젝트 공유 지식 그래프를 사용한다.
   Focused/Related/Broad는 task·source-tree match와 0/1/2-hop graph 이웃을 최근 project
   record보다 우선한다. Context는 별도로 load하므로 ByoriDB가 느리거나 unavailable이어도
   Files와 Git을 막지 않는다.
-- 하단의 compact status bar는 인증까지 확인한 ByoriDB readiness, 선택 project와 branch, clean/dirty 상태,
-  활성 session 수, Context availability, 선택 session 경과 시간을 실제 로컬 상태로
-  표시한다. 지원되는 provider API가 없는 quota·billing 퍼센트는 만들지 않는다.
+- 하단 28pt 상태바는 인증까지 확인한 ByoriDB readiness, branch와 작업 폴더 상태, 활성 session 수,
+  Context availability, 세션 시작 시 선택과 경과 시간을 표시한다. Git·Context는 해당 inspector
+  탭을, ByoriDB 상태는 Settings를 연다. 중복 project 이름·세로 구분선·새로고침 버튼은 두지 않는다.
+  지원되는 provider API가 없는 quota·billing 퍼센트는 만들지 않는다.
 - Settings는 메인 workspace나 별도 global graph browser가 아니라 관리 보조 화면이다.
   ByoriDB와 agent 관리는 **Settings → 설정 개요, 에이전트 · Skill, ByoriDB, 진단**에
   배치했다. Workspace의 톱니바퀴, 메뉴 막대, **Command-,**는 모두 하나의 보존된
@@ -147,7 +158,7 @@ Homebrew가 없으면 완료할 수 없는 동작을 제공하는 대신 요건�
 - 종료된 session은 선택 중인 경우를 제외하고 목록에서 숨기지만, 상위 작업은 남겨 둔다.
 - ByoriDB 자체는 별도 launchd user service로 계속 실행된다.
 
-**Projects** 옆 보관 아이콘에서 **지난 세션 정리**를 연다. 모든 세션이 종료된 작업만 대상으로,
+사이드바 하단 **보관함 · 정리**에서 **지난 세션 정리**를 연다. 모든 세션이 종료된 작업만 대상으로,
 가장 최근 종료 기록을 기준으로 7일·30일·90일 또는 전체를 선택하고 프로젝트별로 좁힐 수 있다.
 실제 마지막 키보드 입력 시각을 뜻하지 않는다. 처음에는 아무 항목도 선택하지 않는다.
 원하는 작업을 선택해 **보관**하면 작업과 세션 기록을 활성 목록에서 옮긴다. 프로젝트 파일,

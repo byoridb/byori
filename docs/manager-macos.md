@@ -36,7 +36,7 @@ ByoriDB is installed separately, from **Settings → ByoriDB** or with the
 
 ## Workspace model
 
-The main hierarchy is:
+The underlying data relationships are:
 
 ```text
 Project
@@ -44,6 +44,9 @@ Project
     └── Task
         └── Session (one user-selected coding agent + one model choice)
 ```
+
+The sidebar presents these as a project-grouped task/session list. Checkout and branch are
+supporting metadata, so navigating the UI does not require opening every level of this model.
 
 - A project is an explicitly registered and trusted local Git repository. **Create New Project…**
   creates a named folder, initializes a `main` repository, and registers it without adding a
@@ -73,13 +76,14 @@ prototype and compatibility path.
 
 ## Main window
 
-- The left sidebar shows the **Project → Source Tree/Worktree → Task → Session**
-  outline and makes the selected checkout explicit. Its top `+` menu creates a new project or
-  opens an existing folder. A source-tree `+` opens a session sheet
-  for a new task; a task `+` targets that exact task. The sheet proposes an editable two-word
-  session name, while legacy unnamed sessions retain the provider/model fallback.
-  Search by project name below the sidebar header; clearing the search restores the full list
-  and its expanded/collapsed rows without switching the active terminal.
+- The left sidebar starts with project-name search, then groups compact two-line task/session
+  rows by project. A task and its single visible session share a row; branch and agent appear as
+  distinct secondary metadata instead of a separate checkout nesting level. Clearing search
+  restores the full list and its expanded/collapsed rows without switching the active terminal.
+  The heading's `+` menu creates a project or opens a folder. A project row's `+` opens setup for
+  a new task with a recommended checkout; a task/session `+` preserves that exact task and
+  checkout. Rows expose `+` and overflow actions. The sheet proposes an editable two-word session
+  name, while legacy unnamed sessions retain the provider/model fallback.
 - A task row's **More Actions → Remove Task from Byori…** moves its task/session metadata to
   `~/.byori/archived-tasks` after every session has ended. It does not change repository files,
   the worktree or branch, or ByoriDB context.
@@ -88,22 +92,29 @@ prototype and compatibility path.
   Git to delete it with safe `-d` semantics; unmerged branches are retained. Primary and externally
   managed checkouts never expose this deletion action.
 - The center opens directly on the selected session's real interactive PTY rendered by
-  SwiftTerm. Claude Code or Codex runs in that checkout and handles its own login. Pasting a
+  SwiftTerm. One 50pt header shows project/task identity and real state, with direct Stop,
+  reattach, shell, or New Session controls as appropriate. Long titles have help text; a short
+  branch appears only when space allows. The overflow menu contains session/checkout/recorded
+  launch details and **작업 절차·검증**. Claude Code or Codex runs in that checkout and handles its own login. Pasting a
   clipboard image writes a private temporary PNG and inserts its quoted path into the current
-  terminal input; ordinary text paste is unchanged. The **Commands** menu reads installed
+  terminal input; ordinary text paste is unchanged. **세션 메뉴 → 명령 삽입** reads installed
   Claude plugins and user Skills or Codex plugin Skills and user Skills, then inserts the chosen
   invocation without pressing Return. Sessions
   advertise 256-color and truecolor support and discard inherited color-suppression variables
   such as `NO_COLOR`, so provider-emitted ANSI color remains visible.
-- The right inspector provides bounded **Files** metadata, read-only **Git** status, and
+- The right inspector starts collapsed. The toolbar button or **Command-Option-I** toggles it;
+  the bottom Git/Context shortcuts open their respective tab. Adding a project still opens
+  Context for initial memory setup, while ordinary selection preserves the current visibility.
+  The inspector provides bounded **Files** metadata, read-only **Git** status, and
   project-scoped ByoriDB **Context**. All source trees/worktrees, tasks, sessions, and agent
   choices in a project use the same shared project knowledge graph. Focused/Related/Broad rank
   task and source-tree matches plus zero/one/two-hop graph neighbors before recent project
   records. Context loads independently, so a slow or unavailable ByoriDB does not block Files
   or Git.
-- The compact bottom status bar shows verified local state: authenticated ByoriDB readiness, selected project
-  and branch, clean/dirty state, active sessions, Context availability, and selected-session
-  elapsed time. It does not invent provider quota or billing percentages.
+- The 28pt bottom status bar shows verified ByoriDB readiness, branch and working-tree state,
+  active sessions, Context availability, recorded session launch selection, and elapsed time.
+  Git and Context open the inspector; ByoriDB health opens Settings. The row omits a repeated
+  project name, vertical separators, and refresh button. It does not invent quota or billing percentages.
 - Settings is a supporting administration surface, not the main workspace or a separate
   global graph browser. ByoriDB and agent administration are organized in
   **Settings → Setup Overview, Agents & Skill, ByoriDB, Diagnostics**. The workspace gear,
@@ -155,7 +166,7 @@ next session without relaunching Byori:
 - Ended sessions are omitted from the outline unless currently selected; their parent task remains.
 - ByoriDB itself is separate and continues running as a launchd user service.
 
-The archive button beside **Projects** opens **지난 세션 정리**. It lists tasks whose sessions
+The sidebar footer's **보관함 · 정리** opens **지난 세션 정리**. It lists tasks whose sessions
 have all ended, using the most recent recorded end time (not last keyboard activity). Choose
 7, 30, or 90 days, or all ended tasks, and optionally narrow to one project. No rows are selected
 initially. Select rows and choose **보관** to move complete task/session metadata out of the active

@@ -53,7 +53,7 @@ The current workflow is local and Git-centered:
 
 1. The developer signs in through each vendor CLI and explicitly registers a trusted Git
    project with Byori.
-2. They use the source-tree or task `+` action, accept or edit a generated session name,
+2. They use the project or task/session row's `+` action, accept or edit a generated session name,
    and review a prefilled work-location recommendation: use the current checkout, create a
    branch in that checkout, or create an isolated worktree. The sheet explains the recommendation
    and suggests an editable branch name from the task title. They choose one installed agent
@@ -87,11 +87,16 @@ after its sessions have stopped and its tasks have been removed. The user can ke
 ask Git to delete the branch with safe `-d` semantics, which preserves unmerged work. None of these
 actions deletes ByoriDB data or an original/external checkout.
 
-The primary product surface is a workspace layout: a project, source-tree/worktree, task, and
-session hierarchy in the left navigation; the selected session's real interactive terminal in
-the main area; Files, Git, and contextual ByoriDB knowledge in a right inspector; and a compact
-bottom status bar for verified local health, checkout, session, and Context state. Provider quota
-percentages are excluded until a supported provider API can supply them truthfully.
+The primary product surface groups two-line task/session rows by project, with project-name
+search at the top, checkout/branch metadata instead of a separate checkout navigation level,
+and explicit archive/cleanup in the sidebar footer. The underlying project/checkout/task/session
+relationships stay intact. One 50pt session header leaves the real terminal dominant; detailed
+session information, command insertion, and procedure/verification remain in its overflow menu.
+Files, Git, and contextual ByoriDB knowledge occupy an inspector that starts collapsed and opens
+from the toolbar, `Command-Option-I`, or the Git/Context status-bar shortcuts. Adding a project
+still opens Context. A 28pt bottom row reports verified local health, checkout and Context state,
+active sessions, recorded launch selection, and elapsed time without repeating the project name.
+Provider quota percentages are excluded until a supported provider API can supply them truthfully.
 Installation, agent connections, database maintenance, and system diagnostics belong in
 Settings rather than the primary navigation. ByoriDB installation does not implicitly connect
 or alter a provider; MCP and Memory Skill changes remain explicit per-agent actions. Settings
@@ -151,7 +156,7 @@ Current implementation constraints:
 
 - the existing CLI orchestration path is a foreground fan-out prototype and is not the new
   workspace interaction model;
-- the Byori macOS app exposes the project/source-tree/task/session hierarchy, creates managed
+- the Byori macOS app preserves project/source-tree/task/session relationships in a project-grouped work list, creates managed
   worktrees, and retains interactive PTY sessions through its private tmux server;
 - remote UI, automatic patch comparison, winner selection, merge, and automatic worktree cleanup
   are not implemented; managed-worktree deletion remains an explicit user action;
