@@ -68,6 +68,10 @@ The current workflow is local and Git-centered:
 5. At durable boundaries, the configured agent can record compact project and task checkpoints in
    the project's ByoriDB graph space for later recall.
 
+The terminal button opens a plain shell in the selected checkout alongside agent work. It selects
+an existing running shell or reconnects a detached one, and starts a new shell after the previous
+one ends. Shells use their own task, preserving the single open session per task rule.
+
 Ordinary removal from the native workspace is deliberately non-destructive. Removing a project
 archives its exact registry record outside the active project list; adding the same canonical
 repository root again restores the prior project ID, graph space, and task/session linkage. Hiding
