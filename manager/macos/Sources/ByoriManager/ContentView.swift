@@ -2205,50 +2205,60 @@ private struct ActivityView: View {
     @EnvironmentObject private var model: ManagerViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            PageHeader(
-                title: "진단",
-                subtitle: "서비스 원인 진단과 복구 결과, 설치·설정 변경 기록입니다."
-            )
-            RuntimeRecoveryView()
-            if model.activities.isEmpty {
-                VStack(spacing: 12) {
-                    Image(systemName: "list.bullet.rectangle")
-                        .font(.system(size: 38))
-                        .foregroundStyle(.secondary)
-                    Text("아직 실행한 작업이 없습니다.")
-                        .font(.headline)
-                    Text("설치, 연결 또는 유지관리 작업을 실행하면 결과가 여기에 표시됩니다.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List(model.activities) { entry in
-                    HStack(alignment: .top, spacing: 12) {
-                        Image(systemName: icon(entry.level))
-                            .foregroundStyle(color(entry.level))
-                        VStack(alignment: .leading, spacing: 5) {
-                            HStack {
-                                Text(entry.title).font(.headline)
-                                Spacer()
-                                Text(entry.date, style: .time)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+        // Keep the detail's ideal height finite when NavigationSplitView asks
+        // its hosting window to size a newly selected section. An empty state
+        // that expands to infinite height can push the shared sidebar and page
+        // header above the window, making Settings navigation unreachable.
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                PageHeader(
+                    title: "진단",
+                    subtitle: "서비스 원인 진단과 복구 결과, 설치·설정 변경 기록입니다."
+                )
+                RuntimeRecoveryView()
+                if model.activities.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "list.bullet.rectangle")
+                            .font(.system(size: 38))
+                            .foregroundStyle(.secondary)
+                        Text("아직 실행한 작업이 없습니다.")
+                            .font(.headline)
+                        Text("설치, 연결 또는 유지관리 작업을 실행하면 결과가 여기에 표시됩니다.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 48)
+                } else {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        ForEach(model.activities) { entry in
+                            HStack(alignment: .top, spacing: 12) {
+                                Image(systemName: icon(entry.level))
+                                    .foregroundStyle(color(entry.level))
+                                VStack(alignment: .leading, spacing: 5) {
+                                    HStack {
+                                        Text(entry.title).font(.headline)
+                                        Spacer()
+                                        Text(entry.date, style: .time)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    if !entry.detail.isEmpty {
+                                        Text(entry.detail)
+                                            .font(.caption.monospaced())
+                                            .textSelection(.enabled)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
                             }
-                            if !entry.detail.isEmpty {
-                                Text(entry.detail)
-                                    .font(.caption.monospaced())
-                                    .textSelection(.enabled)
-                                    .foregroundStyle(.secondary)
-                            }
+                            .padding(.vertical, 6)
                         }
                     }
-                    .padding(.vertical, 6)
                 }
             }
+            .padding(24)
         }
-        .padding(24)
     }
 
     private func icon(_ level: ActivityEntry.Level) -> String {
