@@ -1,10 +1,10 @@
 /*
  THESIS: The real agent terminal owns attention; Byori keeps lineage, commands, and durable context within reach without interpreting CLI output.
- OWN-WORLD: Native macOS light chrome, one uninterrupted near-black terminal, 1px separators, system UI type, and restrained semantic state accents.
+ OWN-WORLD: Native macOS dynamic neutral chrome, one uninterrupted near-black terminal, 1px separators, system UI type, and restrained semantic state accents.
  STORY: Choose a project and checkout, work directly in its agent terminal, insert an installed Skill or plugin command when useful, then inspect Files, Git, or shared ByoriDB knowledge.
- FIRST VIEWPORT: A 290pt project/checkout outline at left, the selected session's terminal in the center, and a 320pt tabbed inspector at right.
- FORM: Source-tree-first native Operate workspace, option 3 of 3 combined with option 1 Context depth; seed key direct-c+a-20260806.
- FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+ FIRST VIEWPORT: A 280pt searchable project list, one uninterrupted terminal, a compact status bar, and an on-demand Files/Git/Context inspector.
+ FORM: Project-first native Operate workspace; the 2026-11-17 refinement uses two-line session rows, a single session header, and an on-demand inspector.
+ FINISH: Native build, interaction review, and DESIGN.md track the shipped workspace grammar.
  */
 import AppKit
 import ByoriManagerCore
@@ -68,7 +68,7 @@ private struct WorkspaceStatusBar: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { timeline in
-            HStack(spacing: 9) {
+            HStack(spacing: 16) {
                 if manager.isBusy {
                     ProgressView()
                         .controlSize(.mini)
@@ -91,42 +91,32 @@ private struct WorkspaceStatusBar: View {
                         }
                     }
                     .buttonStyle(.plain)
-                    .help("Open Settings")
-
-                    statusDivider
-
-                    if let project = workspace.selectedProject {
-                        Label(project.name, systemImage: "folder")
-                            .lineLimit(1)
-                            .frame(maxWidth: 150, alignment: .leading)
-                    } else {
-                        Label("No project", systemImage: "folder")
-                            .foregroundStyle(.secondary)
-                    }
+                    .help("Open Settings: \(databaseLabel)")
 
                     if let sourceTree = workspace.selectedSourceTree {
-                        statusDivider
-                        HStack(spacing: 5) {
-                            Image(systemName: "arrow.triangle.branch")
-                            Text(sourceTree.branch)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            // No dot for a clean tree: the label beside it
-                            // already says so, and the outline reports the same
-                            // fact the same way.
-                            if let workingTreeColor = WorkspacePalette
-                                .workingTreeColor(sourceTree.workingState) {
-                                Circle()
-                                    .fill(workingTreeColor)
-                                    .frame(width: 6, height: 6)
+                        Button { workspace.showInspector(.git) } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: "arrow.triangle.branch")
+                                Text(sourceTree.branch)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                // No dot for a clean tree: the label beside it
+                                // already says so, and the outline reports the same
+                                // fact the same way.
+                                if let workingTreeColor = WorkspacePalette
+                                    .workingTreeColor(sourceTree.workingState) {
+                                    Circle()
+                                        .fill(workingTreeColor)
+                                        .frame(width: 6, height: 6)
+                                }
+                                Text(workingTreeLabel(sourceTree.workingState))
+                                    .foregroundStyle(.secondary)
                             }
-                            Text(workingTreeLabel(sourceTree.workingState))
-                                .foregroundStyle(.secondary)
+                            .frame(maxWidth: 235, alignment: .leading)
                         }
-                        .frame(maxWidth: 235, alignment: .leading)
+                        .buttonStyle(.plain)
+                        .help("Open Git: \(sourceTree.branch), \(sourceTree.workingState.accessibilityLabel)")
                     }
-
-                    statusDivider
 
                     Label(
                         "\(terminals.activeSessionCount) active",
@@ -134,9 +124,12 @@ private struct WorkspaceStatusBar: View {
                     )
 
                     if let contextLabel {
-                        statusDivider
-                        Label(contextLabel, systemImage: "cylinder.split.1x2")
-                            .foregroundStyle(contextColor)
+                        Button { workspace.showInspector(.context) } label: {
+                            Label(contextLabel, systemImage: "cylinder.split.1x2")
+                                .foregroundStyle(contextColor)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Open ByoriDB Context")
                     }
 
                     Spacer(minLength: 12)
@@ -147,46 +140,28 @@ private struct WorkspaceStatusBar: View {
                             .truncationMode(.middle)
                             .foregroundStyle(.secondary)
                     }
-
-                    Button {
-                        Task {
-                            async let managerRefresh: Void = manager.refresh()
-                            async let workspaceRefresh: Void = workspace.load(force: true)
-                            _ = await (managerRefresh, workspaceRefresh)
-                        }
-                    } label: {
-                        Label("Refresh status", systemImage: "arrow.clockwise")
-                    }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .disabled(manager.isBusy || workspace.isRefreshing)
-                    .help("Refresh workspace and ByoriDB status")
                 }
             }
             .font(.caption)
-            .foregroundStyle(.primary)
+            .foregroundStyle(.secondary)
             .padding(.horizontal, 10)
             .frame(height: 28)
-            .background(Color(nsColor: .windowBackgroundColor))
+            .background(WorkspacePalette.chromeBackground)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Workspace status")
         }
     }
 
-    private var statusDivider: some View {
-        Divider().frame(height: 13)
-    }
-
     private var databaseLabel: String {
         guard let status = manager.snapshot?.byori else { return "ByoriDB checking" }
-        if status.isHealthy { return "ByoriDB ready" }
+        if status.isHealthy { return "ByoriDB" }
         if status.serviceLoaded { return "ByoriDB unavailable" }
         return status.isInstalled ? "ByoriDB stopped" : "ByoriDB setup"
     }
 
     private var databaseColor: Color {
         guard let status = manager.snapshot?.byori else { return .secondary }
-        if status.isHealthy { return .green }
+        if status.isHealthy { return .secondary }
         if status.serviceLoaded { return .red }
         return status.isInstalled ? .orange : .red
     }
@@ -198,7 +173,7 @@ private struct WorkspaceStatusBar: View {
         case .loading:
             return "Context loading"
         case .ready:
-            return "\(workspace.contextSnapshot?.items.count ?? 0) context"
+            return "Context \(workspace.contextSnapshot?.items.count ?? 0)"
         case .failed:
             return "Context unavailable"
         }

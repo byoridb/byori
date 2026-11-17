@@ -44,6 +44,13 @@ Byori should feel like a calm native workbench wrapped around real developer pro
 
 The world is precise, durable, and operational. Native macOS controls carry familiarity, crisp dividers carry structure, and restrained semantic color carries state. Byori does not decorate work with dashboards, fake activity, or simulated terminal content.
 
+The user-approved refinement of 2026-11-17 keeps this identity while simplifying the workspace:
+[Conductor](https://www.conductor.build/docs/first-workspace) informs quiet tone and spacing,
+[Linear](https://linear.app/now/behind-the-latest-design-refresh) informs visual emphasis, and
+[Zed](https://zed.dev/blog/parallel-agents) informs compact work lists. The 2026-08-06 C/A comps
+remain historical references, not the current navigation or pane-visibility contract. Native
+light/dark colors remain dynamic; these references do not introduce fixed chrome colors.
+
 The public product and app name is **Byori**. **ByoriDB** names only the integrated knowledge engine and its Context. **`byori`** names the supporting CLI. Settings is an administration surface within Byori, not a second product or the center of the experience.
 
 **Key Characteristics:**
@@ -108,9 +115,9 @@ The fixed palette is intentionally small. The frontmatter defines only colors th
 
 ## Layout
 
-The primary workspace uses a native three-pane split: hierarchy at left, one flexible working surface in the center, and a tabbed inspector at right. A compact 28pt status bar spans the bottom edge. Exact pane widths belong to the workspace surface brief; other screens should reuse the hierarchy and density, not blindly copy those dimensions.
+The primary workspace uses a native split: a project-grouped work list at left, one flexible working surface in the center, and an on-demand tabbed inspector at right. The inspector starts collapsed. A compact 28pt status bar spans the bottom edge. Exact pane widths belong to the workspace surface brief; other screens should reuse the hierarchy and density, not blindly copy those dimensions.
 
-The left outline keeps Project → Source Tree/Worktree → Task → Session nesting visible. The center either mounts one real terminal or presents a centered, actionable, state-honest empty/error view. The right inspector exposes one of Files, Git, or Context at a time. Administration opens in a separately retained native Settings window.
+The left list groups tasks and sessions by project. A task and its single visible session share one row; checkout and branch identify the work in secondary metadata rather than another navigation level. The underlying Project → Checkout → Task → Session model remains unchanged. The center either mounts one real terminal or presents a centered, actionable, state-honest empty/error view. The right inspector exposes one of Files, Git, or Context at a time. Administration opens in a separately retained native Settings window.
 
 Spacing follows tight functional groups at 8–12pt, inspector and row insets at 12–14pt, pane headers at 16pt, sheets at 20pt, and centered empty states at 28pt. Wide separators and arbitrary card grids are not part of the grammar.
 
@@ -130,11 +137,13 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 
 ### Project Outline
 
-- Use native disclosures and list rows for every hierarchy level.
-- Keep a project-name search field directly below the outline header. Match names without
+- Use native project disclosures and compact two-line task/session rows: title first, distinct
+  branch/provider metadata second. Keep checkout identity available without a separate checkout
+  nesting level. Row actions are a small `+` and overflow menu; further actions live in menus.
+- Keep a project-name search field at the very top of the sidebar, above the project heading. Match names without
   case or accent sensitivity, include Korean names, and provide a clear action and a useful
   no-results state. Filtering never changes the active terminal or discards disclosure choices.
-- Open `지난 세션 정리` from the outline header. Preview inactive tasks by project and most
+- Open `지난 세션 정리` from the sidebar footer's `보관함 · 정리` action. Preview inactive tasks by project and most
   recent session end time, defaulting to 30 days with 7/90-day and all-ended alternatives.
   Do not call this last-use time: terminal input activity is not recorded. Start with no rows
   selected; show excluded active tasks and any incomplete scans. Archive only explicitly
@@ -151,7 +160,7 @@ Status dots stay small and circular. Pills are reserved for compact system contr
   side effect of choosing it.
 - Keep icons in one SF Symbols family and reserve secondary text for genuinely distinct metadata.
 - Show a single semantic status dot for dirty, unavailable, or active state, and leave the slot empty when a checkout is clean; never repeat a long branch as both title and metadata.
-- Keep the checkout kind — Primary, Worktree, External — as identity text in secondary tone. It names where the agent works, so state must not tint it; the status dot already carries the working tree.
+- Keep checkout details — Primary, Worktree, External, branch, and path — available in the launch sheet and session details. Location metadata uses secondary tone; it names where the agent works and does not earn state color.
 - Put removal behind a row context or overflow action with an explicit confirmation; do not place an easy-to-misclick trash control beside the session `+` action.
 - Removing a project archives its exact registration outside the active list. Re-adding the same canonical repository restores its stable project identity, graph space, and task/session linkage.
 - Removing a linked checkout hides that canonical path from the outline until the user restores it. The action must be described as hiding from Byori, not deleting a Git worktree.
@@ -162,7 +171,13 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 ### Terminal Session
 
 - Keep the PTY edge-bound and visually dominant.
-- Put project/source-tree/task lineage, recorded launch provider/model, real session state, and Stop above the terminal in compact native bars.
+- Use one 50pt header above the terminal for project/task identity, real session state, and direct
+  Stop, reattach, or New Session actions. Keep the shell action directly available while attached
+  and active. Truncate long titles with help text; show a short secondary branch only when space
+  allows. Compact controls must remain reachable in a 460pt center pane.
+- Keep session name, checkout details, and recorded launch selection in the header's overflow
+  menu and help text. Put task procedure/verification and command insertion in that menu instead
+  of adding another toolbar row. Preserve stopping and reattaching progress and detached recovery.
 - Mount one retained SwiftTerm view at a time. Never simulate output or silently fall back to a shell when an agent CLI is missing.
 - Open a selected session directly on its terminal; do not interpose a summary or Activity tab.
 - The terminal button opens the shell for the target checkout. Repeated clicks select its running shell or reattach a detached shell; once it has ended, the button starts a new shell in an eligible shell-only task. An agent task supplies the checkout, never the shell's task identity.
@@ -172,14 +187,20 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 
 ### Workspace Status Bar
 
-- Report only local state Byori can verify: ByoriDB health, selected project and branch, working-tree state, active session count, Context availability, selected provider/model, and elapsed session time.
-- Keep the bar one compact native row with literal status separators and truncation for long project, branch, and model names.
+- Report only local state Byori can verify: ByoriDB health, selected branch and working-tree state,
+  active session count, Context availability, recorded session launch selection, and elapsed time.
+- Keep one 28pt native row with spacing and truncation for long branch/model names. Avoid repeating
+  the project name, vertical separators, or a refresh button. Git and Context are shortcuts that
+  open their respective inspector tabs; ByoriDB health opens Settings.
 - Never imitate provider quota percentages or billing windows without a supported provider API.
 - While an installation or management command runs, replace ordinary status with one explicit progress label and a real Cancel action.
 
 ### Inspector
 
 - Use a native segmented picker for Files, Git, and Context.
+- Start collapsed; the toolbar button or `Command-Option-I` toggles visibility. Git and Context
+  status-bar actions reveal the requested tab. Adding a project still opens Context for initial
+  memory setup; ordinary selection does not reopen a deliberately collapsed inspector.
 - Load local Files/Git independently from ByoriDB Context so an unavailable service cannot block repository inspection.
 - Preserve bounded reads and explicit truncation messages.
 
@@ -204,7 +225,7 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 
 ### Task Procedure and Verification
 
-- Open **작업 절차·검증** from the selected task's toolbar or terminal header into a native
+- Open **작업 절차·검증** from the selected task's toolbar or terminal header overflow menu into a native
   sheet with separate procedure and verification tabs. Keep captured task and checkout visible.
 - Offer three optional presets when creating a task: bug fix, feature, and code review. Applying
   a replacement procedure is explicit; saving and copying the handoff are separate actions.
@@ -242,7 +263,8 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 ### New Session Sheet
 
 - Treat session creation as protected focus: location, task, provider, launch model, dirty-tree confirmation, and Context depth belong in one native sheet.
-- Put a small `+` action directly on source-tree and task rows: source-tree `+` starts a new task, while task `+` preserves that exact task target.
+- Put a small `+` action on project and task/session rows: project `+` starts a new task with a
+  recommended checkout, while task/session `+` preserves that exact task and checkout target.
 - Prefill a short two-word session name, keep it editable, and preserve the provider/model label as the fallback for legacy unnamed sessions.
 - Present a work-location recommendation before launch and prefill its strategy, branch name,
   and starting ref. Recommend a new branch for new work on an idle, clean `main`/`master`, a
@@ -291,7 +313,7 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 
 ### Do:
 
-- **Do** keep the project and source-tree lineage visible while a session is selected.
+- **Do** keep project/task identity visible and checkout lineage readily available while a session is selected.
 - **Do** use real runtime state and explicit recovery actions for loading, empty, missing, unavailable, dirty, stopping, and failed conditions.
 - **Do** let native controls, system typography, SF Symbols, and semantic colors provide familiarity and accessibility.
 - **Do** keep ByoriDB knowledge project-scoped, bounded, provenance-bearing, and one inspector tab away.

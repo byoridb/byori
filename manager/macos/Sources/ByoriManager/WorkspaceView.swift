@@ -2,7 +2,7 @@ import AppKit
 import ByoriManagerCore
 import SwiftUI
 
-private enum WorkspaceRemovalRequest: Identifiable {
+enum WorkspaceRemovalRequest: Identifiable {
     case project(WorkspaceProjectItem)
     case sourceTree(WorkspaceSourceTreeItem)
     case task(WorkspaceTaskItem)
@@ -95,7 +95,7 @@ private enum WorkspaceRemovalRequest: Identifiable {
     }
 }
 
-/// Source-tree-first workspace presentation. The terminal content is supplied
+/// Project-first workspace presentation. The terminal content is supplied
 /// by the app's real PTY/session broker; this view never renders simulated output.
 struct WorkspaceView<TerminalHost: View>: View {
     @ObservedObject private var model: WorkspaceViewModel
@@ -131,13 +131,15 @@ struct WorkspaceView<TerminalHost: View>: View {
                     Task { await model.restoreSourceTree(sourceTree) }
                 }
             )
-            .frame(minWidth: 250, idealWidth: 290, maxWidth: 360)
+            .frame(minWidth: 240, idealWidth: 280, maxWidth: 340)
 
             workspaceCenter
                 .frame(minWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
 
-            WorkspaceInspector(model: model)
-                .frame(minWidth: 286, idealWidth: 320, maxWidth: 380)
+            if model.isInspectorPresented {
+                WorkspaceInspector(model: model)
+                    .frame(minWidth: 260, idealWidth: 300, maxWidth: 360)
+            }
         }
         .frame(minWidth: 1_000)
         .toolbar {
@@ -148,22 +150,37 @@ struct WorkspaceView<TerminalHost: View>: View {
                     Label("New Session", systemImage: "plus.rectangle.on.rectangle")
                 }
                 .keyboardShortcut("n", modifiers: .command)
+                .labelStyle(.titleAndIcon)
                 .disabled(model.projects.isEmpty || model.phase != .ready)
                 .accessibilityHint("Creates one session with a recorded launch provider and model")
 
-                Button { model.showTaskWork() } label: {
-                    Label("작업 절차·검증", systemImage: "checklist")
-                }
-                .disabled(model.selectedTask == nil)
-                .help("선택한 작업의 절차와 실제 검증 이력 보기")
-
                 Button {
-                    Task { await model.load(force: true) }
+                    model.isInspectorPresented.toggle()
                 } label: {
-                    Label("Refresh Workspace", systemImage: "arrow.clockwise")
+                    Label("Inspector", systemImage: "sidebar.right")
                 }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
-                .disabled(model.isRefreshing || model.phase == .loading)
+                .keyboardShortcut("i", modifiers: [.command, .option])
+                .help(model.isInspectorPresented ? "Files · Git · Context 접기" : "Files · Git · Context 열기")
+                .accessibilityLabel(model.isInspectorPresented ? "Hide Inspector" : "Show Inspector")
+                .accessibilityValue(model.isInspectorPresented ? "Expanded" : "Collapsed")
+
+                Menu {
+                    Button { model.showTaskWork() } label: {
+                        Label("작업 절차·검증", systemImage: "checklist")
+                    }
+                    .disabled(model.selectedTask == nil)
+                    Divider()
+                    Button {
+                        Task { await model.load(force: true) }
+                    } label: {
+                        Label("Refresh Workspace", systemImage: "arrow.clockwise")
+                    }
+                    .keyboardShortcut("r", modifiers: [.command, .shift])
+                    .disabled(model.isRefreshing || model.phase == .loading)
+                } label: {
+                    Label("Workspace Actions", systemImage: "ellipsis")
+                }
+                .help("작업 절차 및 새로고침")
             }
         }
         .task { await model.load() }
@@ -363,8 +380,8 @@ struct WorkspaceView<TerminalHost: View>: View {
         } else {
             WorkspaceUnavailableView(
                 icon: "sidebar.left",
-                title: "Choose a source tree",
-                detail: "Select a source tree, task, or session from the project outline."
+                title: "Choose a task",
+                detail: "Select a task or session from the project list, or start a new session."
             )
         }
     }
@@ -495,1066 +512,6 @@ struct WorkspaceView<TerminalHost: View>: View {
     }
 }
 
-// MARK: - Project outline
-
-private struct WorkspaceSidebar: View {
-    @ObservedObject var model: WorkspaceViewModel
-    let createProject: () -> Void
-    let openProject: () -> Void
-    let openSettings: () -> Void
-    let requestRemoval: (WorkspaceRemovalRequest) -> Void
-    let restoreSourceTree: (WorkspaceHiddenSourceTreeItem) -> Void
-    @State private var manualExpansions: [String: Bool] = [:]
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text("Projects")
-                    .font(.headline)
-                Spacer()
-                if model.isRegisteringProject {
-                    ProgressView()
-                        .controlSize(.small)
-                        .accessibilityLabel("Adding project")
-                }
-                Button {
-                    Task { await model.prepareSessionCleanup() }
-                } label: {
-                    Image(systemName: "archivebox")
-                }
-                .buttonStyle(.borderless)
-                .help("지난 세션 정리 및 보관한 작업 복원")
-                .accessibilityLabel("지난 세션 정리")
-                .disabled(model.projects.isEmpty || model.phase != .ready)
-
-                Menu {
-                    Button(action: createProject) {
-                        Label("Create New Project…", systemImage: "folder.badge.plus")
-                    }
-                    .keyboardShortcut("n", modifiers: [.command, .shift])
-                    Button(action: openProject) {
-                        Label("Open Folder…", systemImage: "folder")
-                    }
-                    .keyboardShortcut("o", modifiers: [.command, .shift])
-                } label: {
-                    Image(systemName: "plus")
-                        .accessibilityLabel("Add Project")
-                }
-                .buttonStyle(.borderless)
-                .disabled(model.isRegisteringProject || model.isCreatingProject)
-                .help("Create or open a project")
-            }
-            .padding(.horizontal, 14)
-            .frame(height: 48)
-
-            HStack(spacing: 7) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("프로젝트 이름 검색", text: $model.projectSearchQuery)
-                    .textFieldStyle(.plain)
-                    .accessibilityLabel("프로젝트 이름 검색")
-                    .accessibilityHint("프로젝트 이름으로 목록을 좁힙니다. 열려 있는 세션은 유지됩니다")
-                if !model.projectSearchQuery.isEmpty {
-                    Button { model.projectSearchQuery = "" } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("검색 지우기")
-                    .accessibilityLabel("프로젝트 검색 지우기")
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
-            .padding(.horizontal, 12)
-            .padding(.bottom, 10)
-
-            if !model.projectSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text("\(model.filteredProjects.count) / \(model.projects.count)개 프로젝트")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 8)
-            }
-
-            Divider()
-
-            sidebarContent
-
-            Divider()
-
-            Button(action: openSettings) {
-                Label("Settings", systemImage: "gearshape")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut(",", modifiers: .command)
-            .padding(.horizontal, 14)
-            .frame(height: 48)
-            .accessibilityHint("Opens agent, ByoriDB, and diagnostic settings")
-        }
-        .background(Color(nsColor: .controlBackgroundColor))
-    }
-
-    @ViewBuilder
-    private var sidebarContent: some View {
-        switch model.phase {
-        case .idle, .loading:
-            VStack(spacing: 10) {
-                ProgressView()
-                Text("Loading projects…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .failed:
-            VStack(spacing: 10) {
-                Image(systemName: "exclamationmark.triangle")
-                    .foregroundStyle(.secondary)
-                Text("Projects unavailable")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .ready where model.projects.isEmpty:
-            VStack(spacing: 10) {
-                Image(systemName: "folder")
-                    .font(.title2)
-                    .foregroundStyle(.secondary)
-                Text("No projects")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .ready where model.filteredProjects.isEmpty:
-            VStack(spacing: 10) {
-                Image(systemName: "magnifyingglass").font(.title2).foregroundStyle(.secondary)
-                Text("일치하는 프로젝트가 없습니다").font(.callout)
-                Button("검색 지우기") { model.projectSearchQuery = "" }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .ready:
-            List(selection: selectionBinding) {
-                ForEach(sidebarNodes) { node in
-                    WorkspaceSidebarBranch(
-                        node: node,
-                        newSession: { target in
-                            Task { await model.prepareNewSession(target: target) }
-                        },
-                        newTerminal: { target in
-                            Task { await model.startShellSession(target: target) }
-                        },
-                        buildMemory: { projectID in
-                            Task {
-                                model.select(.project(projectID))
-                                await model.buildProjectMemory()
-                            }
-                        },
-                        showCodeIndex: { model.showCodeIndex(projectID: $0) },
-                        addSourceTree: { projectID in
-                            Task { await model.prepareNewSourceTree(projectID: projectID) }
-                        },
-                        requestRemoval: requestRemoval,
-                        restoreSourceTree: restoreSourceTree,
-                        isMutatingWorkspace: model.isMutatingWorkspace,
-                        depth: 0,
-                        selection: model.selection,
-                        manualExpansions: $manualExpansions
-                    )
-                }
-            }
-            .listStyle(.sidebar)
-            .accessibilityLabel("Project, source tree, task, and session outline")
-        }
-    }
-
-    private var selectionBinding: Binding<WorkspaceSelection?> {
-        Binding(get: { model.selection }, set: { selection in
-            // Filtering rows must not detach the session currently being read.
-            if selection != nil || model.projectSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                model.select(selection)
-            }
-        })
-    }
-
-    /// project → task → session. The checkout a task runs in is not a level here.
-    ///
-    /// It used to be: every task hung under its source tree, so the outline made
-    /// the user navigate Git plumbing to reach their work, and a project with two
-    /// concurrent sessions looked like two projects. A checkout is *where* a task
-    /// runs — Byori chooses it, carries the local config into it, and prunes it —
-    /// so it belongs on the task's row as a detail, not in the path to it.
-    private var sidebarNodes: [WorkspaceSidebarNode] {
-        model.filteredProjects.map { project in
-            let taskNodes = project.sourceTrees.flatMap { sourceTree -> [WorkspaceSidebarNode] in
-                let activeSessionReason = sourceTree.hasActiveWritingSession
-                    ? "A writing session is already active in this checkout."
-                    : nil
-                // Named on the row only when it is not the project's own checkout:
-                // "which branch is this task on" is worth seeing, "it is in the
-                // primary checkout" is the default and needs no words.
-                let locationLabel = sourceTree.kind == .primary ? nil : sourceTree.branch
-                return sourceTree.tasks.map { task in
-                    let taskDisabledReason = activeSessionReason ?? (!task.status.allowsNewSession
-                        ? "This \(task.status.label.lowercased()) task cannot start another session."
-                        : nil)
-                    // An ended session has nothing left to show: the PTY is gone
-                    // and no transcript is kept, so its row would only ever open
-                    // an "ended" placeholder. Keep the selected one so the pane
-                    // the user is reading does not vanish under them.
-                    let visibleSessions = task.sessions.filter {
-                        $0.state.isActive || model.selection == .session($0.id)
-                    }
-                    // A source tree runs one session at a time, so a task can
-                    // hold at most one live one. Nesting it under its own row
-                    // spent a level of the outline on a container that could
-                    // never gain a sibling; the pair shares a line instead.
-                    // Removing the last task of a worktree Byori cut leaves an
-                    // empty checkout nobody asked for, so that worktree's own
-                    // removal is offered on the row that produced it.
-                    var removalRequests: [WorkspaceRemovalRequest] = [.task(task)]
-                    if sourceTree.kind == .managedWorktree, sourceTree.tasks.count == 1 {
-                        removalRequests.append(.managedWorktree(sourceTree))
-                    }
-                    if visibleSessions.count == 1, let session = visibleSessions.first {
-                        return WorkspaceSidebarNode(
-                            id: "task-session:\(task.id)",
-                            selection: .session(session.id),
-                            kind: .session(session),
-                            title: task.title,
-                            subtitle: [locationLabel, session.displayName]
-                                .compactMap { $0 }
-                                .joined(separator: " · "),
-                            children: nil,
-                            quickSessionTarget: WorkspaceNewSessionTarget(
-                                projectID: project.id,
-                                sourceTreeID: sourceTree.id,
-                                existingTaskID: task.id
-                            ),
-                            quickSessionDisabledReason: taskDisabledReason,
-                            removalRequests: removalRequests
-                        )
-                    }
-                    let sessions = visibleSessions.map { session in
-                        WorkspaceSidebarNode(
-                            id: "session:\(session.id)",
-                            selection: .session(session.id),
-                            kind: .session(session),
-                            title: session.displayName,
-                            children: nil
-                        )
-                    }
-                    return WorkspaceSidebarNode(
-                        id: "task:\(task.id)",
-                        selection: .task(task.id),
-                        kind: .task(task),
-                        title: task.title,
-                        subtitle: locationLabel,
-                        children: sessions.isEmpty ? nil : sessions,
-                        quickSessionTarget: WorkspaceNewSessionTarget(
-                            projectID: project.id,
-                            sourceTreeID: sourceTree.id,
-                            existingTaskID: task.id
-                        ),
-                        quickSessionDisabledReason: taskDisabledReason,
-                        removalRequests: removalRequests
-                    )
-                }
-            }
-            return WorkspaceSidebarNode(
-                id: "project:\(project.id)",
-                selection: .project(project.id),
-                kind: .project(project),
-                title: project.name,
-                children: taskNodes.isEmpty ? nil : taskNodes,
-                // Starting a session on the project row is the ordinary path now:
-                // Byori resolves the checkout, so the row does not name one.
-                quickSessionTarget: WorkspaceNewSessionTarget(
-                    projectID: project.id,
-                    sourceTreeID: "",
-                    existingTaskID: nil
-                ),
-                removalRequests: [.project(project)],
-                restorableSourceTrees: project.hiddenSourceTrees,
-                addSourceTreeProjectID: project.id
-            )
-        }
-    }
-
-}
-
-private struct WorkspaceSidebarNode: Identifiable {
-    enum Kind {
-        case project(WorkspaceProjectItem)
-        case sourceTree(WorkspaceSourceTreeItem)
-        case task(WorkspaceTaskItem)
-        case session(WorkspaceSessionItem)
-    }
-
-    let id: String
-    let selection: WorkspaceSelection?
-    let kind: Kind
-    let title: String
-    /// Set only on a merged row: the task holds exactly one session, so the two
-    /// share a line rather than nesting a level that can hold nothing else.
-    let subtitle: String?
-    let children: [WorkspaceSidebarNode]?
-    let quickSessionTarget: WorkspaceNewSessionTarget?
-    let quickSessionDisabledReason: String?
-    let removalRequests: [WorkspaceRemovalRequest]
-    let restorableSourceTrees: [WorkspaceHiddenSourceTreeItem]
-    /// Set on projects: the row's + opens the branch picker instead of a session.
-    let addSourceTreeProjectID: String?
-
-    /// Whether the selected row is this one or somewhere beneath it. Drives which
-    /// branches open on their own, so the outline shows the path being worked in
-    /// rather than every path at once.
-    func contains(_ selection: WorkspaceSelection?) -> Bool {
-        guard let selection else { return false }
-        if self.selection == selection { return true }
-        return children?.contains { $0.contains(selection) } ?? false
-    }
-
-    init(
-        id: String,
-        selection: WorkspaceSelection?,
-        kind: Kind,
-        title: String,
-        subtitle: String? = nil,
-        children: [WorkspaceSidebarNode]?,
-        quickSessionTarget: WorkspaceNewSessionTarget? = nil,
-        quickSessionDisabledReason: String? = nil,
-        removalRequests: [WorkspaceRemovalRequest] = [],
-        restorableSourceTrees: [WorkspaceHiddenSourceTreeItem] = [],
-        addSourceTreeProjectID: String? = nil
-    ) {
-        self.id = id
-        self.selection = selection
-        self.kind = kind
-        self.title = title
-        self.subtitle = subtitle
-        self.children = children
-        self.quickSessionTarget = quickSessionTarget
-        self.quickSessionDisabledReason = quickSessionDisabledReason
-        self.removalRequests = removalRequests
-        self.restorableSourceTrees = restorableSourceTrees
-        self.addSourceTreeProjectID = addSourceTreeProjectID
-    }
-}
-
-private struct WorkspaceSidebarBranch: View {
-    let node: WorkspaceSidebarNode
-    let newSession: (WorkspaceNewSessionTarget) -> Void
-    let newTerminal: (WorkspaceNewSessionTarget) -> Void
-    let buildMemory: (String) -> Void
-    let showCodeIndex: (String) -> Void
-    let addSourceTree: (String) -> Void
-    let requestRemoval: (WorkspaceRemovalRequest) -> Void
-    let restoreSourceTree: (WorkspaceHiddenSourceTreeItem) -> Void
-    let isMutatingWorkspace: Bool
-    let depth: Int
-    let selection: WorkspaceSelection?
-
-    /// Nil until the user opens or closes this branch themselves, after which
-    /// their choice is kept. Everything was expanded to the leaves before, so a
-    /// few projects filled the pane with sessions nobody was looking at.
-    @Binding var manualExpansions: [String: Bool]
-
-    var body: some View {
-        if let children = node.children, !children.isEmpty {
-            DisclosureGroup(isExpanded: expansion) {
-                ForEach(children) { child in
-                    WorkspaceSidebarBranch(
-                        node: child,
-                        newSession: newSession,
-                        newTerminal: newTerminal,
-                        buildMemory: buildMemory,
-                        showCodeIndex: showCodeIndex,
-                        addSourceTree: addSourceTree,
-                        requestRemoval: requestRemoval,
-                        restoreSourceTree: restoreSourceTree,
-                        isMutatingWorkspace: isMutatingWorkspace,
-                        depth: depth + 1,
-                        selection: selection,
-                        manualExpansions: $manualExpansions
-                    )
-                }
-            } label: {
-                taggedRow
-            }
-        } else {
-            taggedRow
-        }
-    }
-
-    private var expansion: Binding<Bool> {
-        Binding(
-            get: { manualExpansions[node.id] ?? (depth == 0 || node.contains(selection)) },
-            set: { manualExpansions[node.id] = $0 }
-        )
-    }
-
-    @ViewBuilder
-    private var taggedRow: some View {
-        if let selection = node.selection {
-            row.tag(selection)
-        } else {
-            row
-        }
-    }
-
-    private var row: some View {
-        WorkspaceSidebarRow(
-            node: node,
-            newSession: newSession,
-            newTerminal: newTerminal,
-            buildMemory: buildMemory,
-            showCodeIndex: showCodeIndex,
-            addSourceTree: addSourceTree,
-            requestRemoval: requestRemoval,
-            restoreSourceTree: restoreSourceTree,
-            isMutatingWorkspace: isMutatingWorkspace,
-            isSelected: node.selection != nil && node.selection == selection,
-        )
-    }
-}
-
-private struct WorkspaceSidebarRow: View {
-    let node: WorkspaceSidebarNode
-    let newSession: (WorkspaceNewSessionTarget) -> Void
-    let newTerminal: (WorkspaceNewSessionTarget) -> Void
-    let buildMemory: (String) -> Void
-    let showCodeIndex: (String) -> Void
-    let addSourceTree: (String) -> Void
-    let requestRemoval: (WorkspaceRemovalRequest) -> Void
-    let restoreSourceTree: (WorkspaceHiddenSourceTreeItem) -> Void
-    let isMutatingWorkspace: Bool
-    let isSelected: Bool
-
-    /// Row actions are revealed rather than resident. Four levels of always-on
-    /// buttons turned the trailing edge into a column of repeated glyphs, and
-    /// the state dot — the one thing worth scanning — landed at a different
-    /// offset on every row.
-    @State private var isHovered = false
-
-    private static let actionSlotWidth: CGFloat = 42
-    private static let statusSlotWidth: CGFloat = 8
-
-    var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: icon)
-                .foregroundStyle(iconColor)
-                .frame(width: 16)
-                .accessibilityHidden(true)
-
-            Text(node.title)
-                .font(rowFont)
-                .foregroundStyle(textColor)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .accessibilityLabel(accessibilityLabel)
-
-            if let subtitle = node.subtitle {
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .accessibilityHidden(true)
-            }
-
-            Spacer(minLength: 4)
-
-            if let metadata {
-                Text(metadata)
-                    .font(.caption2)
-                    .foregroundStyle(metadataColor)
-                    .lineLimit(1)
-                    .accessibilityHidden(true)
-            }
-
-            // Held open whether or not anything is showing, so the status column
-            // below stays put as the pointer moves down the outline.
-            HStack(spacing: 2) {
-                if showsActions {
-                    actions
-                }
-            }
-            .frame(width: Self.actionSlotWidth, alignment: .trailing)
-
-            Circle()
-                .fill(statusColor ?? .clear)
-                .frame(width: Self.statusSlotWidth, height: Self.statusSlotWidth)
-                .accessibilityHidden(true)
-        }
-        .onHover { isHovered = $0 }
-        .contextMenu {
-            if node.quickSessionTarget != nil || node.addSourceTreeProjectID != nil {
-                primaryActionMenuItems
-                if hasRowActions {
-                    Divider()
-                }
-            }
-            if hasRowActions {
-                rowActions
-            }
-        }
-    }
-
-    /// Hover reaches the row under the pointer; selection covers the row being
-    /// worked in, which is the one the keyboard is on.
-    private var showsActions: Bool { isHovered || isSelected }
-
-    @ViewBuilder
-    private var actions: some View {
-        if let projectID = node.addSourceTreeProjectID {
-            Button {
-                addSourceTree(projectID)
-            } label: {
-                // Not another bare plus: on a project this checks out a branch
-                // into a new source tree, which is a different act from starting
-                // a session, and the same glyph for both taught neither.
-                Label("Add Source Tree", systemImage: "folder.badge.plus")
-            }
-            .labelStyle(.iconOnly)
-            .buttonStyle(.borderless)
-            .controlSize(.small)
-            .disabled(isMutatingWorkspace)
-            .help("Check out a branch as a new source tree")
-            .accessibilityHint("Opens the branch picker for \(node.title)")
-        }
-
-        if let quickSessionTarget = node.quickSessionTarget {
-            Button {
-                newSession(quickSessionTarget)
-            } label: {
-                Label(quickActionLabel, systemImage: "plus")
-            }
-            .labelStyle(.iconOnly)
-            .buttonStyle(.borderless)
-            .controlSize(.small)
-            .disabled(node.quickSessionDisabledReason != nil)
-            .help(node.quickSessionDisabledReason ?? quickActionHelp)
-            .accessibilityHint(node.quickSessionDisabledReason ?? quickActionHelp)
-        }
-
-        if let quickSessionTarget = node.quickSessionTarget {
-            Button {
-                newTerminal(quickSessionTarget)
-            } label: {
-                // A shell needs no provider, model or flag, so it gets a button
-                // rather than the sheet the agent launch opens.
-                Label("터미널", systemImage: "apple.terminal")
-            }
-            .labelStyle(.iconOnly)
-            .buttonStyle(.borderless)
-            .controlSize(.small)
-            .disabled(isMutatingWorkspace)
-            .help(terminalActionHelp)
-            .accessibilityHint(terminalActionHelp)
-        }
-
-        if hasRowActions {
-            Menu {
-                rowActions
-            } label: {
-                Label("More Actions", systemImage: "ellipsis")
-            }
-            .labelStyle(.iconOnly)
-            .menuStyle(.borderlessButton)
-            // Without this the ellipsis renders as "···⌄": the style draws its
-            // own indicator, so the row gained a glyph next to the one control
-            // that is supposed to stand for all the others.
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .disabled(isMutatingWorkspace)
-            .help("Actions for \(node.title)")
-            .accessibilityLabel("More actions for \(node.title)")
-        }
-    }
-
-    /// The revealed buttons are the fast path, not the only one: right-clicking
-    /// a row reaches the same actions without hunting for the moment they appear.
-    @ViewBuilder
-    private var primaryActionMenuItems: some View {
-        if let projectID = node.addSourceTreeProjectID {
-            // Reachable without opening the Context tab: someone who already knows
-            // what this does should not have to go looking for the empty state.
-            Button("프로젝트 분석") { buildMemory(projectID) }
-                .disabled(isMutatingWorkspace)
-            Button("코드 인덱스 보기") { showCodeIndex(projectID) }
-            Button("Add Source Tree…") { addSourceTree(projectID) }
-                .disabled(isMutatingWorkspace)
-        }
-        if let quickSessionTarget = node.quickSessionTarget {
-            Button(quickActionLabel) { newSession(quickSessionTarget) }
-                .disabled(node.quickSessionDisabledReason != nil)
-            // Not disabled by an active writing session: a terminal beside a
-            // running agent is the case this exists for.
-            Button("터미널") { newTerminal(quickSessionTarget) }
-                .disabled(isMutatingWorkspace)
-        }
-    }
-
-    private var hasRowActions: Bool {
-        !node.removalRequests.isEmpty || !node.restorableSourceTrees.isEmpty
-    }
-
-    @ViewBuilder
-    private var rowActions: some View {
-        if !node.restorableSourceTrees.isEmpty {
-            Menu {
-                ForEach(node.restorableSourceTrees) { sourceTree in
-                    Button {
-                        restoreSourceTree(sourceTree)
-                    } label: {
-                        Label(sourceTree.name, systemImage: "arrow.uturn.backward.circle")
-                    }
-                    .disabled(isMutatingWorkspace)
-                    .help(sourceTree.url.path)
-                }
-            } label: {
-                Label("Restore Source Tree", systemImage: "arrow.uturn.backward.circle")
-            }
-        }
-
-        if !node.restorableSourceTrees.isEmpty, !node.removalRequests.isEmpty {
-            Divider()
-        }
-
-        ForEach(node.removalRequests) { request in
-            Button(role: .destructive) {
-                requestRemoval(request)
-            } label: {
-                Label(
-                    removalMenuTitle(for: request),
-                    systemImage: removalMenuIcon(for: request)
-                )
-            }
-            .disabled(isMutatingWorkspace || request.disabledReason != nil)
-            .help(request.disabledReason ?? removalMenuHelp(for: request))
-        }
-    }
-
-
-    private func removalMenuTitle(for request: WorkspaceRemovalRequest) -> String {
-        switch request {
-        case .project: return "Remove Project from Byori…"
-        case let .sourceTree(sourceTree): return "Hide \(sourceTree.kind.removalLabel) from Byori…"
-        case .task: return "Remove Task from Byori…"
-        case .managedWorktree: return "Delete Managed Worktree…"
-        }
-    }
-
-    private func removalMenuIcon(for request: WorkspaceRemovalRequest) -> String {
-        switch request {
-        case .project, .sourceTree, .task: return "minus.circle"
-        case .managedWorktree: return "trash"
-        }
-    }
-
-    private func removalMenuHelp(for request: WorkspaceRemovalRequest) -> String {
-        switch request {
-        case .project, .sourceTree:
-            return "Keeps files, Git branches, history, and ByoriDB context"
-        case .task:
-            return "Archives task and session metadata without changing Git files"
-        case .managedWorktree:
-            return "Deletes this clean Byori-managed worktree after confirmation"
-        }
-    }
-
-    private var icon: String {
-        switch node.kind {
-        case .project: return "folder"
-        case .sourceTree: return "arrow.triangle.branch"
-        // A task is a piece of work with sessions under it; the crosshair read as
-        // a target or a locator, neither of which a task is.
-        case .task: return "checklist"
-        case let .session(session): return session.providerSystemImage
-        }
-    }
-
-    private var quickActionLabel: String {
-        if case .sourceTree = node.kind { return "New Task and Session" }
-        return "New Session"
-    }
-
-    private var quickActionHelp: String {
-        switch node.kind {
-        case let .sourceTree(sourceTree):
-            return "Create a new task and session in \(sourceTree.name)"
-        case let .task(task):
-            return "Start a new session for \(task.title)"
-        default:
-            return quickActionLabel
-        }
-    }
-
-    private var terminalActionHelp: String {
-        switch node.kind {
-        case let .task(task):
-            return "\(task.title)의 체크아웃에서 셸을 엽니다"
-        case let .session(session):
-            return "\(session.displayName)와 같은 체크아웃에서 셸을 엽니다"
-        default:
-            return "이 프로젝트의 체크아웃에서 셸을 엽니다"
-        }
-    }
-
-    /// The four levels were one weight, one colour and one size, so the outline
-    /// read as a flat list and "where am I" had to be answered by counting
-    /// indents. Structure now comes from weight and tone, which is what this
-    /// world uses instead of badges.
-    private var iconColor: Color {
-        switch node.kind {
-        case .project: return .primary
-        case .sourceTree: return .secondary
-        case .task: return .secondary
-        // The provider mark is identity, not decoration: it says which agent
-        // owns this session, so it keeps full contrast at the smallest level.
-        case .session: return .primary
-        }
-    }
-
-    /// A merged row is a task, so it reads at task prominence even though it
-    /// carries the session's icon, state and selection.
-    private var isMergedTaskRow: Bool { node.subtitle != nil }
-
-    private var rowFont: Font {
-        if isMergedTaskRow { return .body }
-        switch node.kind {
-        case .project: return .headline
-        case .sourceTree: return .body.weight(.medium)
-        case .task: return .body
-        case .session: return .callout
-        }
-    }
-
-    private var textColor: Color {
-        if isMergedTaskRow { return .primary }
-        switch node.kind {
-        // Sessions are the most numerous rows and the ones already named by the
-        // row above them, so they recede until selected.
-        case .session: return isSelected ? .primary : .secondary
-        default: return .primary
-        }
-    }
-
-    private var metadata: String? {
-        switch node.kind {
-        case let .project(project):
-            return project.registration == .trusted ? nil : project.registration.label
-        case let .sourceTree(sourceTree):
-            return sourceTree.kind.label
-        case .task, .session:
-            return nil
-        }
-    }
-
-    /// The checkout kind — Primary, Worktree, External — is identity, not state,
-    /// so it is not tinted by the working tree. Colouring it left the same word
-    /// orange on one row and grey on the next for a reason the word itself never
-    /// mentions, and it reported uncommitted changes a second time next to the
-    /// dot that already carries them.
-    private var metadataColor: Color {
-        switch node.kind {
-        case let .project(project) where project.registration != .trusted: return .orange
-        default: return .secondary
-        }
-    }
-
-    private var statusColor: Color? {
-        switch node.kind {
-        case let .sourceTree(sourceTree):
-            return WorkspacePalette.workingTreeColor(sourceTree.workingState)
-        case let .session(session):
-            return WorkspacePalette.statusColor(session.state)
-        default:
-            return nil
-        }
-    }
-
-    private var accessibilityLabel: String {
-        switch node.kind {
-        case let .project(project):
-            return "Project \(project.name), \(project.registration.label)"
-        case let .sourceTree(sourceTree):
-            return "\(sourceTree.kind.label) \(sourceTree.name), branch \(sourceTree.branch), \(sourceTree.workingState.accessibilityLabel)"
-        case let .task(task):
-            return "Task \(task.title)"
-        case let .session(session):
-            if let subtitle = node.subtitle {
-                return "Task \(node.title), session \(subtitle), \(session.state.label)"
-            }
-            if session.hasCustomName {
-                return "Session \(session.displayName), launched with \(session.launchSelectionDisplayName), \(session.state.label)"
-            }
-            return "Session \(session.displayName), \(session.state.label)"
-        }
-    }
-}
-
-// MARK: - Session pane
-
-private struct WorkspaceSessionPane<TerminalHost: View>: View {
-    let project: WorkspaceProjectItem
-    let sourceTree: WorkspaceSourceTreeItem
-    let task: WorkspaceTaskItem
-    let session: WorkspaceSessionItem
-    let isStopping: Bool
-    let isReattaching: Bool
-    let stop: () -> Void
-    let reattach: () -> Void
-    let newSession: () -> Void
-    let showTaskWork: () -> Void
-    let newTerminal: () -> Void
-    let commandGroups: [AgentCommandGroup]
-    let insertTerminalText: (String) -> Void
-    let terminalHost: (WorkspaceSessionItem) -> TerminalHost
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                breadcrumb(project.name)
-                breadcrumb("\(sourceTree.name) · \(sourceTree.kind.label)")
-                Text(task.title)
-                    .fontWeight(.medium)
-                    .lineLimit(1)
-                Spacer(minLength: 12)
-                sessionStatus
-                Button(action: showTaskWork) {
-                    Label("작업 절차·검증", systemImage: "checklist")
-                }
-                .labelStyle(.iconOnly)
-                .help("이 작업의 절차와 검증 이력")
-                if session.isDetached {
-                    Divider().frame(height: 18)
-                    Button(action: reattach) {
-                        if isReattaching {
-                            ProgressView()
-                                .controlSize(.small)
-                                .accessibilityLabel("Reattaching session")
-                        } else {
-                            Label("다시 연결", systemImage: "arrow.uturn.backward.circle")
-                        }
-                    }
-                    .disabled(isReattaching)
-                    .help("tmux에서 실행 중인 세션에 다시 연결")
-                    Button(action: stop) {
-                        if isStopping {
-                            ProgressView()
-                                .controlSize(.small)
-                                .accessibilityLabel("Stopping session")
-                        } else {
-                            Label("Stop", systemImage: "stop.circle")
-                        }
-                    }
-                    .keyboardShortcut(".", modifiers: .command)
-                    .disabled(isStopping)
-                    .help("Stop Session")
-                } else if session.state.isActive {
-                    Divider().frame(height: 18)
-                    Button(action: stop) {
-                        if isStopping {
-                            ProgressView()
-                                .controlSize(.small)
-                                .accessibilityLabel("Stopping session")
-                        } else {
-                            Label("Stop", systemImage: "stop.circle")
-                        }
-                    }
-                    .keyboardShortcut(".", modifiers: .command)
-                    .disabled(isStopping)
-                    .help("Stop Session")
-
-                    // While an agent runs, the thing most often wanted next to it
-                    // is a shell in the same checkout — git status, a build, a
-                    // quick look. It does not stop or displace the agent.
-                    Button(action: newTerminal) {
-                        Label("터미널", systemImage: "apple.terminal")
-                    }
-                    .labelStyle(.iconOnly)
-                    .help("같은 체크아웃에서 셸 열기")
-                    .accessibilityLabel("Open a shell in this checkout")
-                } else {
-                    Divider().frame(height: 18)
-                    Button(action: newSession) {
-                        Label("New Session", systemImage: "plus.rectangle.on.rectangle")
-                    }
-                    .help("Start another session for \(task.title)")
-                    .accessibilityLabel("New session for task \(task.title)")
-                    .accessibilityHint(
-                        "Opens session setup for this task and keeps the ended session in history"
-                    )
-
-                }
-            }
-            .padding(.horizontal, 16)
-            .frame(height: 48)
-            .background(Color(nsColor: .windowBackgroundColor))
-
-            Divider()
-
-            HStack(spacing: 8) {
-                Image(systemName: session.providerSystemImage)
-                Text(session.displayName)
-                    .fontWeight(.medium)
-                    .lineLimit(1)
-                if session.hasCustomName {
-                    Text(session.launchSelectionDisplayName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Image(systemName: "arrow.up.right.square")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("Byori launch selection")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if !commandGroups.isEmpty {
-                    Menu {
-                        ForEach(commandGroups) { group in
-                            Menu {
-                                ForEach(group.commands) { command in
-                                    Button(command.title) {
-                                        insertTerminalText(command.insertion)
-                                    }
-                                }
-                            } label: {
-                                Label(
-                                    group.name,
-                                    systemImage: group.source == .plugin
-                                        ? "puzzlepiece.extension" : "wand.and.stars"
-                                )
-                            }
-                        }
-                    } label: {
-                        Label("Commands", systemImage: "chevron.left.forwardslash.chevron.right")
-                    }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .disabled(!canInsertCommands)
-                    .help(commandMenuHelp)
-                    .accessibilityHint("Inserts the selected command without running it")
-                }
-            }
-            .padding(.horizontal, 16)
-            .frame(height: 42)
-            .background(Color(nsColor: .windowBackgroundColor))
-
-            Divider()
-
-            terminalContent
-        }
-    }
-
-    @ViewBuilder
-    private var terminalContent: some View {
-        if session.isDetached {
-            // The CLI is running, but under the tmux server rather than this
-            // app, so there is no terminal view to mount until it reattaches.
-            detachedSessionView
-        } else {
-            // TerminalSessionController retains SwiftTerm after process exit.
-            // Keep that final buffer visible; historical sessions without a
-            // retained view render ContentView's TerminalUnavailableView.
-            terminalHost(session)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(WorkspacePalette.terminalBackground)
-                .accessibilityElement(children: .contain)
-                .accessibilityLabel(terminalAccessibilityLabel)
-                .accessibilityHint("Byori keeps the original launch selection; changes made inside the provider terminal are provider-controlled")
-        }
-    }
-
-    /// Shown only while the automatic reattach is in flight, or after it failed.
-    /// Selecting a session attaches it, so the button here is a fallback for the
-    /// case where the CLI is gone and the error is worth seeing — not the normal
-    /// way back into a session.
-    private var detachedSessionView: some View {
-        VStack(spacing: 12) {
-            if isReattaching {
-                ProgressView()
-                    .controlSize(.large)
-                    .accessibilityHidden(true)
-                Text("세션에 연결하는 중입니다")
-                    .font(.title3.weight(.semibold))
-                Text("Byori를 닫는 동안에도 이 CLI는 tmux에서 실행되고 있었습니다. 중단된 지점 그대로 이어집니다.")
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 460)
-            } else {
-                Image(systemName: "bolt.horizontal.circle")
-                    .font(.system(size: 32))
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-                Text("세션이 계속 실행 중입니다")
-                    .font(.title3.weight(.semibold))
-                Text("이 CLI는 tmux에서 실행되고 있었지만 자동 연결이 되지 않았습니다. 다시 연결하면 중단된 지점 그대로 이어집니다.")
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 460)
-
-                Button(action: reattach) {
-                    Label("세션에 다시 연결", systemImage: "arrow.uturn.backward.circle")
-                }
-                .buttonStyle(.borderedProminent)
-                .padding(.top, 4)
-                .accessibilityLabel("Reattach to session \(session.displayName)")
-                .accessibilityHint("Reopens the terminal for the CLI still running in tmux")
-            }
-        }
-        .padding(28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(WorkspacePalette.terminalBackground)
-    }
-
-    private func breadcrumb(_ text: String) -> some View {
-        Group {
-            Text(text)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Image(systemName: "chevron.right")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-        }
-    }
-
-    private var terminalAccessibilityLabel: String {
-        guard session.hasCustomName else {
-            return "Interactive terminal for \(session.displayName)"
-        }
-        return "Interactive terminal for \(session.displayName), launched with \(session.launchSelectionDisplayName)"
-    }
-
-    private var sessionStatus: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(WorkspacePalette.statusColor(session.state))
-                .frame(width: 7, height: 7)
-            Text(session.state.label)
-                .font(.callout.weight(.medium))
-                .foregroundStyle(WorkspacePalette.statusColor(session.state))
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Session status: \(session.state.label)")
-    }
-
-    private var commandMenuHelp: String {
-        if session.isDetached { return "Reattach this session before inserting a command" }
-        if session.state == .preparing { return "Wait for the terminal to finish starting" }
-        if !canInsertCommands { return "Commands can only be inserted into a running session" }
-        return "Insert a Skill or plugin command into the terminal"
-    }
-
-    private var canInsertCommands: Bool {
-        !session.isDetached && (session.state == .running || session.state == .waitingForUser)
-    }
-}
-
 // MARK: - Inspector
 
 private struct WorkspaceInspector: View {
@@ -1570,39 +527,15 @@ private struct WorkspaceInspector: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .padding(.horizontal, 12)
-            .frame(height: 48)
+            .frame(height: 50)
             .accessibilityLabel("Inspector section")
 
             Divider()
 
             inspectorContent
 
-            if model.inspectorTab != .context {
-                Divider()
-                Button {
-                    model.inspectorTab = .context
-                } label: {
-                    HStack {
-                        Label("ByoriDB context", systemImage: "cylinder.split.1x2")
-                        Spacer()
-                        if case .ready = model.contextPhase {
-                            Text("\(model.contextSnapshot?.items.count ?? 0)")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        }
-                        Image(systemName: "chevron.right")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 14)
-                .frame(height: 48)
-                .accessibilityHint("Opens project knowledge for the selected work")
-            }
         }
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(WorkspacePalette.chromeBackground)
     }
 
     @ViewBuilder
@@ -1616,8 +549,8 @@ private struct WorkspaceInspector: View {
         } else if model.selectedSourceTree == nil {
             WorkspaceUnavailableView(
                 icon: "sidebar.right",
-                title: "No source tree",
-                detail: "Select a source tree to inspect its files and Git state."
+                title: "Select a task",
+                detail: "Select a task or session to inspect its files and Git state."
             )
         } else {
             switch model.inspectorPhase {
@@ -2572,7 +1505,7 @@ private struct NewWorkspaceSessionSheet: View {
 
 // MARK: - Shared state presentation
 
-private struct WorkspaceUnavailableView: View {
+struct WorkspaceUnavailableView: View {
     let icon: String
     let title: String
     let detail: String
@@ -2630,6 +1563,8 @@ private struct WorkspaceUnavailableView: View {
 /// bar report the same facts. While each owned its own mapping they disagreed: a
 /// clean checkout was teal in the sidebar and green in the status bar.
 enum WorkspacePalette {
+    static let chromeBackground = Color(nsColor: .windowBackgroundColor)
+    static let sidebarBackground = chromeBackground
     static let running = Color(nsColor: .systemTeal)
     static let terminalBackground = Color(
         red: 0.055,

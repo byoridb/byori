@@ -901,6 +901,7 @@ final class WorkspaceViewModel: ObservableObject {
     private var cleanupReferenceDate = Date()
     private var cleanupRequestToken = UUID()
     @Published var inspectorTab: WorkspaceInspectorTab = .files
+    @Published var isInspectorPresented = false
     @Published private(set) var contextDepth: WorkspaceContextDepth = .related
     @Published private(set) var memoryView: MemoryView = .current
     @Published private(set) var memoryScope: WorkspaceMemoryScope?
@@ -1189,6 +1190,13 @@ final class WorkspaceViewModel: ObservableObject {
             await loadInspector()
             await autoReattachSelectedSessionIfNeeded()
         }
+    }
+
+    /// Opening a particular section also reveals a collapsed inspector. Ordinary
+    /// selection and refresh keep the user's visibility choice unchanged.
+    func showInspector(_ tab: WorkspaceInspectorTab) {
+        inspectorTab = tab
+        isInspectorPresented = true
     }
 
     func setContextDepth(_ depth: WorkspaceContextDepth) {
@@ -2057,7 +2065,7 @@ final class WorkspaceViewModel: ObservableObject {
         }) else { return }
 
         selection = .project(project.id)
-        inspectorTab = .context
+        showInspector(.context)
         await loadInspector()
         guard case .ready = contextPhase,
               contextSnapshot?.items.isEmpty ?? true,
