@@ -588,32 +588,45 @@ private struct IntegrationsView: View {
                     subtitle: "에이전트별 사용자 MCP 등록과 Skill을 확인하고 관리합니다."
                 )
 
-                HStack(spacing: 12) {
-                    Picker("에이전트", selection: $selectedAgent) {
-                        ForEach(AgentKind.allCases) { kind in
-                            Text(kind.displayName).tag(kind)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) {
+                        Picker("에이전트", selection: $selectedAgent) {
+                            ForEach(AgentKind.allCases) { kind in
+                                Text(kind.displayName).tag(kind)
+                            }
                         }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        // A native segmented control cannot wrap its labels.
+                        // Measure its full width before choosing this layout.
+                        .fixedSize(horizontal: true, vertical: false)
+
+                        Spacer(minLength: 16)
+                        refreshButton
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(maxWidth: 340)
 
-                    Spacer()
+                    HStack(spacing: 12) {
+                        Picker("에이전트", selection: $selectedAgent) {
+                            ForEach(AgentKind.allCases) { kind in
+                                Text(kind.displayName).tag(kind)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: 260)
 
-                    if model.isRefreshingIntegrations {
+                        Spacer(minLength: 16)
+                        refreshButton
+                    }
+                }
+
+                if model.isRefreshingIntegrations {
+                    HStack(spacing: 8) {
                         ProgressView()
                             .controlSize(.small)
                         Text("MCP·Skill 확인 중…")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Button {
-                        Task { await model.refreshIntegrations() }
-                    } label: {
-                        Label("목록 새로고침", systemImage: "arrow.clockwise")
-                    }
-                    .controlSize(.small)
-                    .disabled(model.isBusy || model.isRefreshingIntegrations)
                 }
 
                 AgentInventoryPane(
@@ -644,6 +657,17 @@ private struct IntegrationsView: View {
                 secondaryButton: .cancel(Text("취소"))
             )
         }
+    }
+
+    private var refreshButton: some View {
+        Button {
+            Task { await model.refreshIntegrations() }
+        } label: {
+            Label("목록 새로고침", systemImage: "arrow.clockwise")
+        }
+        .controlSize(.small)
+        .fixedSize(horizontal: true, vertical: false)
+        .disabled(model.isBusy || model.isRefreshingIntegrations)
     }
 }
 
