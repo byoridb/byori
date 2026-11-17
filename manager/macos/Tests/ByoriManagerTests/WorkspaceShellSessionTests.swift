@@ -34,6 +34,7 @@ final class WorkspaceShellSessionTests: XCTestCase {
 
         let request = try! XCTUnwrap(dataSource.startedRequests.first)
         XCTAssertEqual(request.sourceTreeID, "primary123")
+        XCTAssertNil(request.existingTaskID, "The agent task does not own the shell")
         XCTAssertTrue(dataSource.createdWorktrees.isEmpty)
     }
 
@@ -48,6 +49,7 @@ final class WorkspaceShellSessionTests: XCTestCase {
         XCTAssertFalse(sourceTree.hasActiveWritingSession)
 
         await model.prepareNewSession()
+        model.newSessionDraft.taskChoice = .newTask
         model.newSessionDraft.newTaskTitle = "Fix the parser"
         model.chooseSessionLocationStrategy(.currentCheckout)
         model.chooseProvider("claude")
@@ -58,8 +60,9 @@ final class WorkspaceShellSessionTests: XCTestCase {
         XCTAssertTrue(dataSource.createdWorktrees.isEmpty)
     }
 
-    /// Opening a terminal repeatedly must not leave a task behind each time.
-    func testRepeatedTerminalsReuseTheShellTask() async {
+    /// Reopening an active terminal focuses it instead of violating the task's
+    /// one-open-session invariant or leaving another task behind.
+    func testRepeatedTerminalOpenFocusesTheExistingSession() async {
         let dataSource = ShellDataSource(snapshot: makeSnapshot())
         let model = WorkspaceViewModel(dataSource: dataSource)
         await model.load()
@@ -67,10 +70,191 @@ final class WorkspaceShellSessionTests: XCTestCase {
         await model.startShellSession()
         await model.startShellSession()
 
-        XCTAssertEqual(dataSource.startedRequests.count, 2)
+        XCTAssertEqual(dataSource.startedRequests.count, 1)
         XCTAssertEqual(dataSource.startedRequests[0].newTaskTitle, WorkspaceViewModel.shellTaskTitle)
-        XCTAssertNil(dataSource.startedRequests[1].newTaskTitle, "The second terminal joins the first one's task")
-        XCTAssertNotNil(dataSource.startedRequests[1].existingTaskID)
+        XCTAssertEqual(model.selection, .session("session-1"))
+        XCTAssertEqual(dataSource.snapshot.projects[0].sourceTrees[0].tasks.count, 1)
+        XCTAssertEqual(dataSource.snapshot.projects[0].sourceTrees[0].tasks[0].sessions.count, 1)
+        XCTAssertNil(model.alert)
+    }
+
+    func testExplicitActiveAgentTargetCreatesASeparateShellTask() async {
+        let dataSource = ShellDataSource(snapshot: makeSnapshot(withRunningAgent: true))
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+
+        await model.startShellSession(target: .init(
+            projectID: "project123", sourceTreeID: "primary123", existingTaskID: "task-agent"
+        ))
+
+        XCTAssertEqual(dataSource.startedRequests.count, 1)
+        XCTAssertNil(dataSource.startedRequests.first?.existingTaskID)
+        XCTAssertEqual(dataSource.snapshot.projects[0].sourceTrees[0].tasks[0].sessions.count, 1)
+        XCTAssertEqual(dataSource.snapshot.projects[0].sourceTrees[0].tasks.count, 2)
+        XCTAssertNil(model.alert)
+    }
+
+    func testEndedAgentTaskIsNeverReusedEvenWhenNamedTerminal() async {
+        var snapshot = makeSnapshot(withRunningAgent: true)
+        snapshot.projects[0].sourceTrees[0].tasks[0].title = WorkspaceViewModel.shellTaskTitle
+        snapshot.projects[0].sourceTrees[0].tasks[0].sessions[0].state = .completed
+        let dataSource = ShellDataSource(snapshot: snapshot)
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+
+        await model.startShellSession(target: .init(
+            projectID: "project123", sourceTreeID: "primary123", existingTaskID: "task-agent"
+        ))
+
+        XCTAssertNil(dataSource.startedRequests.first?.existingTaskID)
+        XCTAssertEqual(dataSource.snapshot.projects[0].sourceTrees[0].tasks[0].sessions.count, 1)
+        XCTAssertNil(model.alert)
+    }
+
+    func testEndedShellSessionReusesItsTaskWithoutDiscardingHistory() async {
+        var snapshot = makeSnapshot(withRunningShell: true)
+        snapshot.projects[0].sourceTrees[0].tasks[0].sessions[0].state = .completed
+        snapshot.projects[0].sourceTrees[0].tasks[0].title = "Build terminal"
+        let dataSource = ShellDataSource(snapshot: snapshot)
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+
+        await model.startShellSession()
+
+        XCTAssertEqual(dataSource.startedRequests.first?.existingTaskID, "task-shell")
+        XCTAssertNil(dataSource.startedRequests.first?.newTaskTitle)
+        XCTAssertEqual(dataSource.snapshot.projects[0].sourceTrees[0].tasks.count, 1)
+        XCTAssertEqual(dataSource.snapshot.projects[0].sourceTrees[0].tasks[0].sessions.count, 2)
+        XCTAssertNil(model.alert)
+    }
+
+    func testCompletedShellTaskIsNotReopened() async {
+        var snapshot = makeSnapshot(withRunningShell: true)
+        snapshot.projects[0].sourceTrees[0].tasks[0].status = .completed
+        snapshot.projects[0].sourceTrees[0].tasks[0].sessions[0].state = .completed
+        let dataSource = ShellDataSource(snapshot: snapshot)
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+
+        await model.startShellSession()
+
+        XCTAssertNil(dataSource.startedRequests.first?.existingTaskID)
+        XCTAssertEqual(dataSource.snapshot.projects[0].sourceTrees[0].tasks.count, 2)
+        XCTAssertNil(model.alert)
+    }
+
+    func testFreshSnapshotFindsShellCreatedAfterTheLastRefresh() async {
+        let dataSource = ShellDataSource(snapshot: makeSnapshot())
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+        dataSource.snapshot = makeSnapshot(withRunningShell: true)
+
+        await model.startShellSession()
+
+        XCTAssertTrue(dataSource.startedRequests.isEmpty)
+        XCTAssertEqual(model.selection, .session("session-shell"))
+        XCTAssertNil(model.alert)
+    }
+
+    func testDetachedShellReattachesWithoutCreatingASession() async {
+        let dataSource = ShellDataSource(snapshot: makeSnapshot(withRunningAgent: true))
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+        dataSource.snapshot = makeSnapshot(withRunningAgent: true, withRunningShell: true)
+        dataSource.snapshot.projects[0].sourceTrees[0].tasks[1].sessions[0].isDetached = true
+
+        await model.startShellSession()
+
+        XCTAssertEqual(dataSource.reattachedIDs, ["session-shell"])
+        XCTAssertTrue(dataSource.startedRequests.isEmpty)
+        XCTAssertEqual(model.selection, .session("session-shell"))
+        XCTAssertEqual(model.selectedSession?.isDetached, false)
+        XCTAssertNil(model.alert)
+    }
+
+    func testFailedDetachedShellReattachDoesNotStartAnotherShell() async {
+        let dataSource = ShellDataSource(snapshot: makeSnapshot())
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+        dataSource.snapshot = makeSnapshot(withRunningShell: true)
+        dataSource.snapshot.projects[0].sourceTrees[0].tasks[0].sessions[0].isDetached = true
+        dataSource.reattachFailure = WorkspaceAdapterError.invalidState("Lost terminal")
+
+        await model.startShellSession()
+
+        XCTAssertTrue(dataSource.startedRequests.isEmpty)
+        XCTAssertEqual(model.alert?.title, "세션에 다시 연결하지 못했습니다")
+        XCTAssertFalse(model.isStartingSession)
+    }
+
+    func testShellInAnotherCheckoutDoesNotCaptureTheRequestedLocation() async {
+        var snapshot = makeSnapshot(withRunningShell: true)
+        let otherTree = WorkspaceSourceTreeItem(
+            id: "worktree456", projectID: "project123", name: "feature/work",
+            url: URL(fileURLWithPath: "/tmp/byori-worktree"), kind: .managedWorktree,
+            branch: "feature/work", headRevision: String(repeating: "a", count: 40),
+            workingState: .clean, tasks: []
+        )
+        snapshot.projects[0].sourceTrees.append(otherTree)
+        let dataSource = ShellDataSource(snapshot: snapshot)
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+
+        await model.startShellSession(target: .init(
+            projectID: "project123", sourceTreeID: "worktree456", existingTaskID: nil
+        ))
+
+        XCTAssertEqual(dataSource.startedRequests.first?.sourceTreeID, "worktree456")
+        XCTAssertNil(dataSource.startedRequests.first?.existingTaskID)
+        XCTAssertEqual(model.selection, .session("session-1"))
+        XCTAssertTrue(dataSource.createdWorktrees.isEmpty)
+    }
+
+    func testRefreshFailureDoesNotLaunchUsingTheOldSnapshot() async {
+        let dataSource = ShellDataSource(snapshot: makeSnapshot())
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+        let selection = model.selection
+        dataSource.loadFailure = WorkspaceAdapterError.invalidState("Refresh unavailable")
+
+        await model.startShellSession()
+
+        XCTAssertTrue(dataSource.startedRequests.isEmpty)
+        XCTAssertEqual(model.selection, selection)
+        XCTAssertNotNil(model.alert)
+        XCTAssertFalse(model.isStartingSession)
+    }
+
+    func testRemovedCheckoutDoesNotFallBackToAnotherOrCreateWorktree() async {
+        let dataSource = ShellDataSource(snapshot: makeSnapshot())
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+        dataSource.snapshot.projects[0].sourceTrees = []
+
+        await model.startShellSession()
+
+        XCTAssertTrue(dataSource.startedRequests.isEmpty)
+        XCTAssertTrue(dataSource.createdWorktrees.isEmpty)
+        XCTAssertNotNil(model.alert)
+    }
+
+    func testRepeatedClicksDuringRefreshStartOnlyOneShell() async {
+        let dataSource = ShellDataSource(snapshot: makeSnapshot())
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+        dataSource.suspendsLoad = true
+        let first = Task { await model.startShellSession() }
+        for _ in 0..<20 where !dataSource.hasPendingLoad { await Task.yield() }
+        XCTAssertTrue(dataSource.hasPendingLoad)
+        XCTAssertTrue(model.isStartingSession)
+
+        await model.startShellSession()
+        dataSource.resumeLoad()
+        await first.value
+
+        XCTAssertEqual(dataSource.startedRequests.count, 1)
+        XCTAssertFalse(model.isStartingSession)
+        XCTAssertNil(model.alert)
     }
 
     private func makeSnapshot(
@@ -154,12 +338,28 @@ private final class ShellDataSource: WorkspaceDataSource {
     var snapshot: WorkspacePresentationSnapshot
     var startedRequests: [WorkspaceSessionLaunchRequest] = []
     var createdWorktrees: [CreatedWorktree] = []
+    var reattachedIDs: [String] = []
+    var loadFailure: Error?
+    var reattachFailure: Error?
+    var suspendsLoad = false
+    private var pendingLoad: CheckedContinuation<Void, Never>?
+    var hasPendingLoad: Bool { pendingLoad != nil }
 
     init(snapshot: WorkspacePresentationSnapshot) {
         self.snapshot = snapshot
     }
 
-    func loadWorkspace() async throws -> WorkspacePresentationSnapshot { snapshot }
+    func loadWorkspace() async throws -> WorkspacePresentationSnapshot {
+        if let loadFailure { throw loadFailure }
+        if suspendsLoad { await withCheckedContinuation { pendingLoad = $0 } }
+        return snapshot
+    }
+
+    func resumeLoad() {
+        suspendsLoad = false
+        pendingLoad?.resume()
+        pendingLoad = nil
+    }
 
     func loadSessionOptions(projectID: String) async throws -> [WorkspaceProviderOption] {
         [
@@ -203,6 +403,20 @@ private final class ShellDataSource: WorkspaceDataSource {
         _ request: WorkspaceSessionLaunchRequest
     ) async throws -> WorkspaceSessionLaunchResult {
         startedRequests.append(request)
+        guard let projectIndex = snapshot.projects.firstIndex(where: { $0.id == request.projectID }),
+              let treeIndex = snapshot.projects[projectIndex].sourceTrees
+                .firstIndex(where: { $0.id == request.sourceTreeID }) else {
+            throw WorkspaceAdapterError.invalidState("Unknown checkout \(request.sourceTreeID)")
+        }
+        if let taskID = request.existingTaskID {
+            guard let task = snapshot.projects[projectIndex].sourceTrees[treeIndex].tasks.first(where: { $0.id == taskID }),
+                  task.status.allowsNewSession else {
+                throw WorkspaceAdapterError.invalidState("Task is missing or ended")
+            }
+            guard task.sessions.allSatisfy({ !$0.state.isActive && !$0.isDetached }) else {
+                throw WorkspaceError.openSessionExists(taskID)
+            }
+        }
         let index = startedRequests.count
         let session = WorkspaceSessionItem(
             id: "session-\(index)",
@@ -220,15 +434,11 @@ private final class ShellDataSource: WorkspaceDataSource {
             nativeSessionID: UUID().uuidString
         )
         let taskID = session.taskID
-        guard let treeIndex = snapshot.projects[0].sourceTrees
-            .firstIndex(where: { $0.id == request.sourceTreeID }) else {
-            throw WorkspaceAdapterError.invalidState("Unknown checkout \(request.sourceTreeID)")
-        }
-        if let existingIndex = snapshot.projects[0].sourceTrees[treeIndex].tasks
+        if let existingIndex = snapshot.projects[projectIndex].sourceTrees[treeIndex].tasks
             .firstIndex(where: { $0.id == taskID }) {
-            snapshot.projects[0].sourceTrees[treeIndex].tasks[existingIndex].sessions.append(session)
+            snapshot.projects[projectIndex].sourceTrees[treeIndex].tasks[existingIndex].sessions.append(session)
         } else {
-            snapshot.projects[0].sourceTrees[treeIndex].tasks.append(WorkspaceTaskItem(
+            snapshot.projects[projectIndex].sourceTrees[treeIndex].tasks.append(WorkspaceTaskItem(
                 id: taskID,
                 sourceTreeID: request.sourceTreeID,
                 title: request.newTaskTitle ?? "Task",
@@ -237,7 +447,7 @@ private final class ShellDataSource: WorkspaceDataSource {
                 sessions: [session]
             ))
         }
-        let task = snapshot.projects[0].sourceTrees[treeIndex].tasks
+        let task = snapshot.projects[projectIndex].sourceTrees[treeIndex].tasks
             .first { $0.id == taskID }!
         return WorkspaceSessionLaunchResult(
             projectID: request.projectID,
@@ -245,6 +455,27 @@ private final class ShellDataSource: WorkspaceDataSource {
             task: task,
             session: session
         )
+    }
+
+    func reattachSession(id: String) async throws -> WorkspaceSessionLaunchResult {
+        reattachedIDs.append(id)
+        if let reattachFailure { throw reattachFailure }
+        for projectIndex in snapshot.projects.indices {
+            for treeIndex in snapshot.projects[projectIndex].sourceTrees.indices {
+                for taskIndex in snapshot.projects[projectIndex].sourceTrees[treeIndex].tasks.indices {
+                    guard let sessionIndex = snapshot.projects[projectIndex].sourceTrees[treeIndex]
+                        .tasks[taskIndex].sessions.firstIndex(where: { $0.id == id }) else { continue }
+                    snapshot.projects[projectIndex].sourceTrees[treeIndex].tasks[taskIndex].sessions[sessionIndex].isDetached = false
+                    let task = snapshot.projects[projectIndex].sourceTrees[treeIndex].tasks[taskIndex]
+                    return WorkspaceSessionLaunchResult(
+                        projectID: snapshot.projects[projectIndex].id,
+                        sourceTreeID: snapshot.projects[projectIndex].sourceTrees[treeIndex].id,
+                        task: task, session: task.sessions[sessionIndex]
+                    )
+                }
+            }
+        }
+        throw WorkspaceAdapterError.invalidState("Unknown shell session")
     }
 
     func sessionPersistenceWarning() async -> String? { nil }

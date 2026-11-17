@@ -2115,57 +2115,63 @@ final class WorkspaceViewModel: ObservableObject {
         } else {
             resolved = newSessionTarget()
         }
-        guard let target = resolved else {
+        guard let target = resolved,
+              let sourceTree = target.sourceTree ?? primarySourceTree(in: target.project) else {
             alert = WorkspaceAlert(
                 title: "터미널을 열 수 없습니다",
-                message: "먼저 프로젝트를 선택해 주세요."
+                message: "먼저 사용할 프로젝트와 작업 위치를 선택해 주세요."
             )
             return
         }
 
+        // Capture the exact checkout before refreshing. An explicit task target
+        // supplies a location, never permission to add a shell to that task.
+        let projectID = target.project.id
+        let sourceTreeID = sourceTree.id
         isStartingSession = true
         defer { isStartingSession = false }
 
-        // A shell wants the checkout the user is looking at, not a fresh worktree:
-        // it is where their files and their build already are. Only when no
-        // checkout exists at all does the ordinary resolution run.
-        let sourceTreeID: String
-        if let sourceTree = target.sourceTree ?? target.project.sourceTrees.first {
-            sourceTreeID = sourceTree.id
-        } else {
-            do {
-                sourceTreeID = try await resolvedSessionSourceTreeID(
-                    projectID: target.project.id,
-                    existingTaskID: target.task?.id,
-                    taskTitle: Self.shellTaskTitle
+        do {
+            // Like the session launch plan, this bypasses the presentation
+            // refresh gate: choosing a reusable task needs a current snapshot.
+            projects = try await dataSource.loadWorkspace().projects
+            guard let project = projects.first(where: { $0.id == projectID }),
+                  let checkout = project.sourceTrees.first(where: { $0.id == sourceTreeID }) else {
+                throw WorkspaceAdapterError.invalidState(
+                    "선택한 작업 위치를 찾을 수 없습니다. 프로젝트를 새로고침해 주세요."
                 )
-            } catch {
-                alert = WorkspaceAlert(
-                    title: "터미널을 열 수 없습니다",
-                    message: error.localizedDescription
-                )
+            }
+            guard project.registration == .trusted else {
+                throw WorkspaceAdapterError.invalidState("사용 가능한 신뢰된 프로젝트에서 터미널을 열어 주세요.")
+            }
+            if case let .unavailable(reason) = checkout.workingState {
+                throw WorkspaceAdapterError.invalidState(reason)
+            }
+            let shells = checkout.tasks.flatMap(\.sessions).filter {
+                !$0.isWritingSession && ($0.state.isActive || $0.isDetached)
+            }
+            if let existing = shells.first(where: { selection == .session($0.id) }) ?? shells.first {
+                selection = .session(existing.id)
+                if existing.isDetached {
+                    await reattachSession(existing)
+                } else {
+                    await loadInspector()
+                }
                 return
             }
-        }
 
-        // Reuse the shell task of that checkout when the caller named no task, so
-        // opening a terminal five times does not leave five tasks behind.
-        let existingTaskID = target.task?.id
-            ?? existingShellTaskID(projectID: target.project.id, sourceTreeID: sourceTreeID)
-
-        let request = WorkspaceSessionLaunchRequest(
-            projectID: target.project.id,
-            sourceTreeID: sourceTreeID,
-            existingTaskID: existingTaskID,
-            newTaskTitle: existingTaskID == nil ? Self.shellTaskTitle : nil,
-            sessionName: Self.shellSessionName,
-            providerID: ByoriManagerCore.WorkspaceProvider.shell.rawValue,
-            modelChoice: .cliDefault,
-            contextDepth: contextDepth,
-            additionalArguments: []
-        )
-
-        do {
+            let existingTaskID = existingShellTaskID(projectID: projectID, sourceTreeID: sourceTreeID)
+            let request = WorkspaceSessionLaunchRequest(
+                projectID: projectID,
+                sourceTreeID: sourceTreeID,
+                existingTaskID: existingTaskID,
+                newTaskTitle: existingTaskID == nil ? Self.shellTaskTitle : nil,
+                sessionName: Self.shellSessionName,
+                providerID: ByoriManagerCore.WorkspaceProvider.shell.rawValue,
+                modelChoice: .cliDefault,
+                contextDepth: contextDepth,
+                additionalArguments: []
+            )
             let result = try await dataSource.startSession(request)
             upsert(result)
             selection = .session(result.session.id)
@@ -2181,7 +2187,8 @@ final class WorkspaceViewModel: ObservableObject {
     static let shellTaskTitle = "터미널"
     private static let shellSessionName = "터미널"
 
-    /// The open shell task in that checkout, if there is one.
+    /// Only an inactive shell-only task can hold a new shell session. An active
+    /// shell was focused above; an agent task is never reused for this purpose.
     private func existingShellTaskID(projectID: String, sourceTreeID: String) -> String? {
         projects
             .first { $0.id == projectID }?
@@ -2189,9 +2196,11 @@ final class WorkspaceViewModel: ObservableObject {
             .first { $0.id == sourceTreeID }?
             .tasks
             .first { task in
-                task.title == Self.shellTaskTitle
-                    && task.status.allowsNewSession
-                    && task.sessions.allSatisfy { !$0.isWritingSession }
+                task.status.allowsNewSession
+                    && (task.title == Self.shellTaskTitle || !task.sessions.isEmpty)
+                    && task.sessions.allSatisfy {
+                        !$0.isWritingSession && !$0.state.isActive && !$0.isDetached
+                    }
             }?
             .id
     }

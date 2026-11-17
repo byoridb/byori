@@ -134,6 +134,11 @@ is created until **Start Session**, which checks the chosen location again befor
 
 ## Session lifetime
 
+**터미널** opens a shell in the target checkout. If that checkout already has a running shell,
+the button selects it; a detached shell is reconnected. After a shell ends, the button starts a
+new session in its eligible shell task. Opening it from an agent's task uses the same checkout
+and keeps the shell in a separate task.
+
 Closing the workspace window detaches it from the terminal view without ending active sessions.
 With tmux 3.2 or later, Byori uses its private tmux server so sessions can also survive a full app
 quit. Existing sessions created by older Byori builds on the default tmux server remain

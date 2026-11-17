@@ -165,6 +165,7 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 - Put project/source-tree/task lineage, recorded launch provider/model, real session state, and Stop above the terminal in compact native bars.
 - Mount one retained SwiftTerm view at a time. Never simulate output or silently fall back to a shell when an agent CLI is missing.
 - Open a selected session directly on its terminal; do not interpose a summary or Activity tab.
+- The terminal button opens the shell for the target checkout. Repeated clicks select its running shell or reattach a detached shell; once it has ended, the button starts a new shell in an eligible shell-only task. An agent task supplies the checkout, never the shell's task identity.
 - Keep installed Skill and plugin commands in one compact native menu. Choosing one inserts editable text into the running terminal and never executes it.
 - When the clipboard contains an image, persist a private session-temporary PNG and insert its shell-quoted path. Preserve SwiftTerm's ordinary text paste behavior.
 - Keep one user-selected coding agent per session. Another agent means another explicitly created session, not an automatic fan-out.
