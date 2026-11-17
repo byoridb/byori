@@ -103,6 +103,12 @@ or alter a provider; MCP and Memory Skill changes remain explicit per-agent acti
 may inventory user-scoped MCP registrations and Skills, but it never presents secret-bearing
 command arguments, headers, environment values, or tokens.
 
+Antigravity CLI (`agy`) is the built-in Google coding agent. It replaces the retired Gemini CLI
+choice for new sessions and Settings. Existing Gemini session identities and vendor configuration
+remain intact; Byori does not convert old conversations or import credentials. Antigravity owns
+its login and optional migration flow. Its MCP and Memory Skill connections remain explicit
+user actions, like those of the other supported agents.
+
 Claude Code may optionally be launched through Upstage's official Solar integration or a
 user-configured Anthropic-compatible gateway. Byori stores the API credential in macOS Keychain,
 stores only non-secret routing metadata in its preferences, and injects that configuration only

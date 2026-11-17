@@ -8,7 +8,7 @@ import Foundation
 public enum AgentKind: String, CaseIterable, Identifiable, Sendable {
     case claude
     case codex
-    case gemini
+    case antigravity
     case cursorAgent = "cursor-agent"
     case opencode
 

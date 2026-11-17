@@ -141,8 +141,9 @@ public actor ManagerService: CodeIndexProviding {
     public func integrationInventories() async -> [AgentIntegrationInventory] {
         async let claude = integrationInventory(.claude)
         async let codex = integrationInventory(.codex)
-        let pair = await (claude, codex)
-        return [pair.0, pair.1]
+        async let antigravity = integrationInventory(.antigravity)
+        let inventories = await (claude, codex, antigravity)
+        return [inventories.0, inventories.1, inventories.2]
     }
 
     /// Read-only terminal command hints from installed Skills and plugins.
@@ -268,12 +269,26 @@ public actor ManagerService: CodeIndexProviding {
                 "Byori는 \(descriptor.displayName)를 설치하지 않습니다. 직접 설치한 뒤 다시 확인해 주세요."
             )
         }
-        let result = await runner.run(CommandSpec(
-            executable: "/bin/bash",
-            arguments: ["-o", "pipefail", "-c", install.command],
-            environment: commonEnvironment,
-            timeout: 900
-        ))
+        let command: CommandSpec
+        if let arguments = descriptor.updateArguments,
+           let executable = paths.executable(named: descriptor.executableName) {
+            // Antigravity's installer intentionally skips an existing binary.
+            // Its verified updater is a direct invocation of that binary.
+            command = CommandSpec(
+                executable: executable.path,
+                arguments: arguments,
+                environment: commonEnvironment,
+                timeout: 900
+            )
+        } else {
+            command = CommandSpec(
+                executable: "/bin/bash",
+                arguments: ["-o", "pipefail", "-c", install.command],
+                environment: commonEnvironment,
+                timeout: 900
+            )
+        }
+        let result = await runner.run(command)
         try require(result, label: "\(kind.displayName) 설치/업데이트")
         guard paths.executable(named: kind.executableName) != nil else {
             throw ManagerError.verificationFailed("설치 후 \(kind.executableName) 실행 파일을 찾지 못했습니다.")
@@ -578,13 +593,15 @@ public actor ManagerService: CodeIndexProviding {
             _ = await runner.run(CommandSpec(
                 executable: cli.path,
                 arguments: removeArguments,
-                environment: commonEnvironment
+                environment: commonEnvironment,
+                workingDirectory: kind == .antigravity ? paths.home.path : nil
             ))
             try Task.checkCancellation()
             let result = await runner.run(CommandSpec(
                 executable: cli.path,
                 arguments: addArguments,
-                environment: commonEnvironment
+                environment: commonEnvironment,
+                workingDirectory: kind == .antigravity ? paths.home.path : nil
             ))
             try requireWithoutSensitiveOutput(result, label: "\(kind.displayName) MCP 연결")
             try Task.checkCancellation()
@@ -625,7 +642,8 @@ public actor ManagerService: CodeIndexProviding {
             let result = await runner.run(CommandSpec(
                 executable: cli.path,
                 arguments: arguments,
-                environment: commonEnvironment
+                environment: commonEnvironment,
+                workingDirectory: kind == .antigravity ? paths.home.path : nil
             ))
             try Task.checkCancellation()
             // A failed official removal is never success merely because a
@@ -634,7 +652,17 @@ public actor ManagerService: CodeIndexProviding {
                 result,
                 label: "\(kind.displayName) MCP 연결 해제"
             )
-            if await isMCPConnected(kind, cli: cli) {
+            if kind == .antigravity {
+                // A disabled or differently configured entry is still present.
+                // Verify removal by name, not just the managed command probe.
+                guard MCPInventoryParser.antigravityServerIsPresent(
+                    name: "byoridb", in: paths.antigravityConfig
+                ) == false else {
+                    throw ManagerError.verificationFailed(
+                        "Antigravity의 사용자 설정에서 byoridb MCP 제거를 확인하지 못했습니다."
+                    )
+                }
+            } else if await isMCPConnected(kind, cli: cli) {
                 throw ManagerError.verificationFailed(
                     "\(kind.displayName)에 \(paths.mcpRunner.path)를 사용하는 byoridb MCP가 남아 있습니다."
                 )
@@ -666,6 +694,12 @@ public actor ManagerService: CodeIndexProviding {
             )
         }
         guard let verified = current.servers.first(where: { $0.name == server.name }) else {
+            if server.agent == .antigravity,
+               MCPInventoryParser.antigravityServerIsPresent(name: server.name, in: paths.antigravityConfig) != false {
+                throw ManagerError.verificationFailed(
+                    "이 MCP 서버를 현재 목록에서 확인하지 못했습니다. 설정 파일에서 확인해 주세요."
+                )
+            }
             return OperationResult(summary: "\(server.name) MCP는 이미 제거되어 있습니다.")
         }
         guard verified.management != .claudeCloudReadOnly else {
@@ -714,6 +748,10 @@ public actor ManagerService: CodeIndexProviding {
                     throw ManagerError.verificationFailed(
                         "Claude Code user scope에 \(safeName) MCP가 남아 있습니다."
                     )
+                }
+            } else if server.agent == .antigravity {
+                guard MCPInventoryParser.antigravityServerIsPresent(name: safeName, in: paths.antigravityConfig) == false else {
+                    throw ManagerError.verificationFailed("Antigravity에 \(safeName) MCP가 남아 있습니다.")
                 }
             } else {
                 let verification = await discoverMCPServers(server.agent, cli: cli)
@@ -1046,7 +1084,7 @@ public actor ManagerService: CodeIndexProviding {
         switch kind {
         case .claude: return paths.claudeConfig
         case .codex: return paths.codexConfig
-        case .gemini: return paths.geminiConfig
+        case .antigravity: return paths.antigravityConfig
         case .cursorAgent, .opencode: return nil
         }
     }
@@ -1169,15 +1207,14 @@ public actor ManagerService: CodeIndexProviding {
                 }
                 parsed = codex
             }
-        case .gemini:
-            // `gemini mcp list` prints nothing even with servers configured
-            // (0.37), so the settings file is read instead of shelling out to a
-            // command whose silence is indistinguishable from "none".
-            guard let config = configFile(kind) else { return (.unavailable, []) }
-            parsed = MCPInventoryParser.settingsServers(
-                in: config,
-                serversKey: "mcpServers"
-            )
+        case .antigravity:
+            // `agy mcp list` has no JSON format and `mcp get` is unavailable.
+            // Read only names and disabled status from its documented global
+            // config; malformed input must not be reported as an empty list.
+            guard let inventory = MCPInventoryParser.antigravityServers(in: paths.antigravityConfig) else {
+                return (.unavailable, [])
+            }
+            parsed = inventory
         case .cursorAgent, .opencode:
             // Byori does not manage MCP for these, so it reports nothing rather
             // than guessing at a config location.
@@ -1290,6 +1327,7 @@ public actor ManagerService: CodeIndexProviding {
               let entry = servers[name] as? [String: Any] else {
             return nil
         }
+        guard entry["disabled"] as? Bool != true else { return nil }
         return entry[commandKey] as? String
     }
 

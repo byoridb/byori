@@ -42,6 +42,8 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
     static let cliDefaultModelID = "cli-default"
     static let cliDefaultModelName = "CLI default"
     static let customModelOptionID = "custom-model"
+    private static let retiredGeminiMessage =
+        "Gemini CLI는 더 이상 지원하지 않습니다. 기존 기록은 유지됩니다. Antigravity CLI로 새 세션을 시작해 주세요."
 
     var workspaceChanged: (() -> Void)?
 
@@ -812,6 +814,8 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
             resolvedProvider = .builtIn(agent)
         } else if let custom = await customProviders.provider(id: request.providerID) {
             resolvedProvider = .custom(custom)
+        } else if request.providerID == "gemini" {
+            throw WorkspaceAdapterError.invalidState(Self.retiredGeminiMessage)
         } else {
             throw WorkspaceAdapterError.invalidState("The selected coding provider is not supported.")
         }
@@ -1110,6 +1114,8 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
             resolvedProvider = .builtIn(agent)
         } else if let custom = await customProviders.provider(id: session.provider.rawValue) {
             resolvedProvider = .custom(custom)
+        } else if session.provider.rawValue == "gemini" {
+            throw WorkspaceAdapterError.invalidState(Self.retiredGeminiMessage)
         } else {
             throw WorkspaceAdapterError.invalidState("The session's coding provider is no longer available.")
         }
@@ -1404,7 +1410,8 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
             taskID: taskID,
             name: session.name,
             providerID: session.provider.rawValue,
-            providerName: kind?.displayName ?? session.provider.rawValue,
+            providerName: kind?.displayName
+                ?? (session.provider.rawValue == "gemini" ? "Gemini CLI (이전)" : session.provider.rawValue),
             providerSystemImage: kind?.descriptor.systemImage ?? "terminal",
             modelID: session.model == Self.cliDefaultModelName ? Self.cliDefaultModelID : session.model,
             modelName: session.model,

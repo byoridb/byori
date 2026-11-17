@@ -23,39 +23,30 @@ final class AgentMCPCommandStyleTests: XCTestCase {
         )
     }
 
-    /// Gemini takes the command as a positional, so a `--` separator would be
-    /// consumed as the command itself.
-    func testGeminiPassesTheCommandPositionally() {
+    /// Antigravity takes the stdio command as a positional argument; it does
+    /// not accept Gemini's `--scope` or `--transport` options.
+    func testAntigravityPassesTheCommandPositionally() {
         XCTAssertEqual(
-            AgentMCPCommandStyle.gemini.addArguments(name: "byoridb", command: "/run-mcp.sh"),
-            ["mcp", "add", "--scope", "user", "--transport", "stdio", "byoridb", "/run-mcp.sh"]
+            AgentMCPCommandStyle.antigravity.addArguments(name: "byoridb", command: "/run-mcp.sh"),
+            ["mcp", "add", "--type", "stdio", "byoridb", "/run-mcp.sh"]
         )
     }
 
-    /// `gemini mcp remove` defaults to project scope. Omitting the scope would
-    /// leave the user-scope registration in place while reporting success.
-    func testGeminiRemovesFromTheSameScopeItAddedTo() {
-        let remove = AgentMCPCommandStyle.gemini.removeArguments(name: "byoridb")
-        XCTAssertEqual(remove, ["mcp", "remove", "--scope", "user", "byoridb"])
-        let add = AgentMCPCommandStyle.gemini.addArguments(name: "byoridb", command: "/x")
-        XCTAssertEqual(scope(in: remove), scope(in: add))
+    func testAntigravityRemovesItsGlobalRegistrationWithoutUnsupportedScopeFlags() {
+        XCTAssertEqual(
+            AgentMCPCommandStyle.antigravity.removeArguments(name: "byoridb"),
+            ["mcp", "remove", "byoridb"]
+        )
     }
 
-    func testOnlyClaudeVerifiesScopeAndOnlyGeminiReadsItsSettingsFile() {
+    func testOnlyClaudeVerifiesScopeAndAntigravityReadsItsSettingsFile() {
         XCTAssertEqual(AgentMCPCommandStyle.claude.verification, .cliGet(requiresUserScope: true))
         XCTAssertEqual(AgentMCPCommandStyle.codex.verification, .cliGet(requiresUserScope: false))
-        // Gemini CLI 0.37 has no `mcp get` at all, so a CLI-based check would
-        // always fail and the connect flow would never confirm.
+        // Antigravity has no `mcp get`; a CLI get check cannot confirm it.
         XCTAssertEqual(
-            AgentMCPCommandStyle.gemini.verification,
+            AgentMCPCommandStyle.antigravity.verification,
             .settingsJSON(serversKey: "mcpServers", commandKey: "command")
         )
-    }
-
-    private func scope(in arguments: [String]) -> String? {
-        arguments.firstIndex(of: "--scope").flatMap { index in
-            index + 1 < arguments.count ? arguments[index + 1] : nil
-        }
     }
 }
 
@@ -68,17 +59,26 @@ final class AgentProviderCatalogTests: XCTestCase {
         XCTAssertTrue(descriptors.allSatisfy { !$0.displayName.isEmpty })
     }
 
-    /// The rawValue is what Byori looks up on `PATH` and what a persisted
-    /// session records, so the two must not drift apart.
-    func testExecutableNameMatchesTheRawValue() {
+    /// Persisted provider IDs are stable even when the executable has a
+    /// different name, as Antigravity's `agy` does.
+    func testDescriptorIdentityMatchesThePersistedProviderID() {
         for kind in AgentKind.allCases {
-            XCTAssertEqual(kind.descriptor.executableName, kind.rawValue, "\(kind)")
+            XCTAssertEqual(kind.descriptor.id, kind.rawValue, "\(kind)")
         }
         XCTAssertEqual(AgentKind.cursorAgent.rawValue, "cursor-agent")
     }
 
-    func testClaudeAndCodexRemainFullyIntegrated() {
-        for kind in [AgentKind.claude, .codex] {
+    func testAntigravityReplacesGeminiWithoutReinterpretingItsProviderID() {
+        XCTAssertEqual(AgentKind.allCases.map(\.rawValue), [
+            "claude", "codex", "antigravity", "cursor-agent", "opencode",
+        ])
+        XCTAssertNil(AgentKind(rawValue: "gemini"))
+        XCTAssertEqual(AgentKind.antigravity.executableName, "agy")
+        XCTAssertEqual(AgentKind.antigravity.displayName, "Antigravity CLI")
+    }
+
+    func testVerifiedProvidersAreFullyIntegrated() {
+        for kind in [AgentKind.claude, .codex, .antigravity] {
             XCTAssertTrue(kind.descriptor.isFullyIntegrated, "\(kind)")
             XCTAssertNil(kind.descriptor.limitations, "\(kind)")
         }
@@ -87,7 +87,7 @@ final class AgentProviderCatalogTests: XCTestCase {
     /// A capability Byori does not have must be declared missing *and*
     /// explained. A silent nil would surface as a button that does nothing.
     func testPartiallySupportedProvidersDeclareTheirLimits() {
-        for kind in [AgentKind.gemini, .cursorAgent, .opencode] {
+        for kind in [AgentKind.cursorAgent, .opencode] {
             let descriptor = kind.descriptor
             XCTAssertFalse(descriptor.isFullyIntegrated, "\(kind)")
             XCTAssertNotNil(descriptor.limitations, "\(kind) must explain what it cannot do")
@@ -97,8 +97,8 @@ final class AgentProviderCatalogTests: XCTestCase {
 
     func testAdditionalProvidersUseTheirOfficialInstallCommands() {
         XCTAssertEqual(
-            AgentKind.gemini.descriptor.install?.command,
-            "/usr/bin/env brew install gemini-cli"
+            AgentKind.antigravity.descriptor.install?.command,
+            "/usr/bin/curl -fsSL https://antigravity.google/cli/install.sh | /bin/bash"
         )
         XCTAssertEqual(
             AgentKind.cursorAgent.descriptor.install?.command,
@@ -110,10 +110,9 @@ final class AgentProviderCatalogTests: XCTestCase {
         )
     }
 
-    /// Gemini's MCP registration was verified against the real CLI; the other
-    /// two were not, and inventing flags for them would corrupt a user's config.
+    /// Only verified vendor commands can be used to mutate MCP registrations.
     func testOnlyVerifiedProvidersClaimMCPSupport() {
-        XCTAssertTrue(AgentKind.gemini.descriptor.managesMCP)
+        XCTAssertTrue(AgentKind.antigravity.descriptor.managesMCP)
         XCTAssertFalse(AgentKind.cursorAgent.descriptor.managesMCP)
         XCTAssertFalse(AgentKind.opencode.descriptor.managesMCP)
     }
@@ -121,7 +120,19 @@ final class AgentProviderCatalogTests: XCTestCase {
     func testProvidersWithoutAVerifiedModelFlagDoNotAcceptOne() {
         XCTAssertFalse(AgentKind.cursorAgent.descriptor.supportsModelFlag)
         XCTAssertFalse(AgentKind.opencode.descriptor.supportsModelFlag)
-        XCTAssertTrue(AgentKind.gemini.descriptor.supportsModelFlag)
+        XCTAssertTrue(AgentKind.antigravity.descriptor.supportsModelFlag)
+    }
+
+    func testAntigravitySyncsSkillsIntoTheDocumentedSharedRoot() {
+        XCTAssertEqual(AgentKind.antigravity.descriptor.skillsRootRelativePath, ".gemini/config/skills")
+        XCTAssertTrue(AgentKind.antigravity.descriptor.managesSkill)
+    }
+
+    func testAntigravityUsesItsNativeUpdaterInsteadOfRepeatingTheInstaller() {
+        XCTAssertEqual(AgentKind.antigravity.descriptor.updateArguments, ["update"])
+        for kind in [AgentKind.claude, .codex, .cursorAgent, .opencode] {
+            XCTAssertNil(kind.descriptor.updateArguments)
+        }
     }
 }
 
@@ -133,8 +144,8 @@ final class SettingsMCPParsingTests: XCTestCase {
         return url
     }
 
-    /// The shape below is exactly what `gemini mcp add --scope user` wrote in a
-    /// sandboxed home.
+    /// Antigravity's global MCP configuration keeps stdio commands under
+    /// `mcpServers`, independently of the legacy Gemini settings file.
     func testReadsTheRegisteredCommand() throws {
         let file = try write("""
         {"mcpServers":{"byoridb":{"command":"/run-mcp.sh","args":[]}}}

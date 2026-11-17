@@ -1542,8 +1542,8 @@ private struct ManagedSkillInventoryRow: View {
     }
 
     private var skillDetail: String {
-        kind == .claude ? "~/.claude/skills/\(definition.rawValue)/SKILL.md"
-            : "~/.agents/skills/\(definition.rawValue)/SKILL.md"
+        guard let root = kind.descriptor.skillsRootRelativePath else { return "" }
+        return "~/\(root)/\(definition.rawValue)/SKILL.md"
     }
 
     private var stateIcon: String {
@@ -1570,6 +1570,9 @@ private struct ManagedSkillInventoryRow: View {
         case .claudeUser: origin = "Claude 사용자"
         case .codexShared: origin = "공유 사용자"
         case .codexLegacy: origin = "Codex 이전 경로"
+        case .antigravityShared: origin = "Antigravity 공유 사용자"
+        case .antigravityCLI: origin = "Antigravity CLI 사용자"
+        case .antigravityLegacy: origin = "Gemini 이전 경로"
         }
         return "\(skillStateLabel) · \(origin)"
     }
@@ -1620,6 +1623,9 @@ private struct UserSkillInventoryRow: View {
         case .claudeUser: return "Claude 사용자"
         case .codexShared: return "공유 사용자"
         case .codexLegacy: return "Codex 이전 경로"
+        case .antigravityShared: return "Antigravity 공유 사용자"
+        case .antigravityCLI: return "Antigravity CLI 사용자"
+        case .antigravityLegacy: return "Gemini 이전 경로"
         }
     }
 }

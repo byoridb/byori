@@ -4,6 +4,43 @@ import XCTest
 
 @MainActor
 final class WorkspaceCleanupAdapterTests: XCTestCase {
+    func testRetiredGeminiHistorySurvivesLoadArchiveAndRestoreWithoutRelabelingProvider() async throws {
+        let fixture = try await makeFixture()
+        defer { fixture.cleanUp() }
+        let original = try await fixture.makeEndedTask(provider: .init(rawValue: "gemini"))
+        let snapshot = try await fixture.source.loadWorkspace()
+        let session = try XCTUnwrap(snapshot.projects.first?.sourceTrees.first?.tasks.first?.sessions.first)
+        XCTAssertEqual(session.providerID, "gemini")
+        XCTAssertEqual(session.providerName, "Gemini CLI (이전)")
+        let options = try await fixture.source.loadSessionOptions(projectID: fixture.project.id)
+        XCTAssertTrue(options.contains { $0.id == "antigravity" })
+        XCTAssertFalse(options.contains { $0.id == "gemini" })
+
+        try await fixture.source.archiveTask(id: original.id)
+        try await fixture.source.restoreTask(id: original.id)
+        let restored = try await fixture.tasks.task(id: original.id)
+        XCTAssertEqual(restored, original)
+        XCTAssertEqual(restored?.sessions.first?.provider.rawValue, "gemini")
+    }
+
+    func testStaleGeminiLaunchRequestExplainsReplacementWithoutCreatingTask() async throws {
+        let fixture = try await makeFixture()
+        defer { fixture.cleanUp() }
+        do {
+            _ = try await fixture.source.startSession(.init(
+                projectID: fixture.project.id, sourceTreeID: fixture.checkoutID,
+                existingTaskID: nil, newTaskTitle: "Old provider", sessionName: "Old Finch",
+                providerID: "gemini", modelChoice: .cliDefault, contextDepth: .focused,
+                additionalArguments: []
+            ))
+            XCTFail("A retired provider must not launch or silently become Antigravity")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Antigravity CLI"))
+        }
+        let tasks = try await fixture.tasks.tasks(projectID: fixture.project.id, limit: 100)
+        XCTAssertTrue(tasks.tasks.isEmpty)
+    }
+
     func testArchivedTaskCanBeListedAndRestoredWithoutChangingSessions() async throws {
         let fixture = try await makeFixture()
         defer { fixture.cleanUp() }
@@ -118,10 +155,10 @@ private struct CleanupAdapterFixture {
     let defaults: UserDefaults
     let suite: String
 
-    func makeEndedTask() async throws -> WorkspaceTask {
+    func makeEndedTask(provider: WorkspaceProvider = .claude) async throws -> WorkspaceTask {
         let task = try await tasks.createTask(projectID: project.id,
                                               checkout: .init(kind: .sourceTree, id: checkoutID), title: "Ended task")
-        let session = try await tasks.createSession(taskID: task.id, provider: .claude, model: "default")
+        let session = try await tasks.createSession(taskID: task.id, provider: provider, model: "default")
         _ = try await tasks.updateSessionStatus(taskID: task.id, sessionID: session.id, status: .active)
         _ = try await tasks.updateSessionStatus(taskID: task.id, sessionID: session.id, status: .completed)
         let ended = try await tasks.task(id: task.id)
