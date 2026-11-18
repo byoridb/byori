@@ -157,10 +157,15 @@ uninstall() {
   log "uninstalling the ByoriDB runtime and agent integrations"
   if [ "$SERVICE" = launchd ]; then
     plist="${HOME}/Library/LaunchAgents/${LABEL}.plist"
+    # Only when this $HOME installed the job: the label lives in the user's one
+    # launchd domain whatever $HOME says, so without this guard an uninstall run
+    # against another home (a test, a second install) boots out the real service.
     # bootout rather than `unload -w`: the latter also leaves the label disabled,
     # and a later bootstrap of a disabled job fails.
-    launchd_unload
-    rm -f "$plist"
+    if [ -f "$plist" ]; then
+      launchd_unload
+      rm -f "$plist"
+    fi
   else
     systemctl --user disable --now "${LABEL}.service" 2>/dev/null || true
     rm -f "${HOME}/.config/systemd/user/${LABEL}.service"

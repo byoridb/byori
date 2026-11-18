@@ -148,6 +148,37 @@ class InstallerLaunchdTests(unittest.TestCase):
         self.assertIn("gui/", result.stdout)
         self.assertIn("is not loaded", result.stdout)
 
+    def test_uninstall_leaves_a_job_this_home_did_not_install_alone(self):
+        """The label is the user's, not the home's: an uninstall run with another
+        $HOME (as the installer tests do) must not boot out the real service.
+        Measured: before this guard, a local test run stopped the live engine."""
+        home = self.root / "home"
+        home.mkdir()
+        self.state_path.write_text(json.dumps({
+            "loaded": True, "disabled": False, "linger": 0,
+            "unloading": False, "refuse": False, "calls": [],
+        }))
+        environment = {
+            # Only the fake launchctl and the base system: no agent CLIs whose
+            # MCP configuration an uninstall would edit.
+            "PATH": f"{self.root / 'bin'}{os.pathsep}/usr/bin{os.pathsep}/bin",
+            "HOME": str(home),
+            "BYORIDB_HOME": str(self.root / "byoridb-home"),
+            "FAKE_LAUNCHD": str(self.state_path),
+        }
+        subprocess.run(
+            ["bash", str(ROOT / "install.sh"), "--uninstall"],
+            env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, timeout=120,
+        )
+
+        state = json.loads(self.state_path.read_text())
+        self.assertTrue(state["loaded"])
+        self.assertFalse(
+            [call for call in state["calls"] if call.startswith("bootout")],
+            state["calls"],
+        )
+
     def test_unloading_a_job_that_is_not_loaded_is_quiet(self):
         result, state, verbs = self.run_functions('launchd_unload; echo "rc=$?"')
 
