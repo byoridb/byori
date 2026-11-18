@@ -34,6 +34,10 @@ public struct ServerLogTail: Equatable, Sendable {
         case missing
         /// The file exists and holds nothing. Normal for `server.err`.
         case empty
+        /// The file exists but could not be read: its permissions, a directory in
+        /// its place, or an I/O error part way through. Reported apart from
+        /// `missing` and `empty`, which would tell the user there is nothing to see.
+        case unreadable
         case text(String)
     }
 
@@ -102,12 +106,13 @@ public struct ServerLogReader {
         let modifiedAt = attributes?.contentModificationDate
 
         guard let handle = try? FileHandle(forReadingFrom: url) else {
+            let exists = FileManager.default.fileExists(atPath: url.path)
             return ServerLogTail(
                 file: file,
                 path: url.path,
-                content: .missing,
+                content: exists ? .unreadable : .missing,
                 byteSize: 0,
-                modifiedAt: nil,
+                modifiedAt: exists ? modifiedAt : nil,
                 isTruncated: false,
                 lineCount: 0
             )
@@ -121,7 +126,7 @@ public struct ServerLogReader {
             return ServerLogTail(
                 file: file,
                 path: url.path,
-                content: .missing,
+                content: .unreadable,
                 byteSize: 0,
                 modifiedAt: modifiedAt,
                 isTruncated: false,
@@ -148,7 +153,7 @@ public struct ServerLogReader {
             return ServerLogTail(
                 file: file,
                 path: url.path,
-                content: .empty,
+                content: .unreadable,
                 byteSize: byteSize,
                 modifiedAt: modifiedAt,
                 isTruncated: offset > 0,
