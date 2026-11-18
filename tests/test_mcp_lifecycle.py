@@ -55,6 +55,15 @@ class _Spawned:
         if self.process.poll() is None:
             self.process.kill()
             self.process.wait(timeout=5)
+        # Closed whether the test passed, failed, or the child had already gone;
+        # an unclosed pipe is a ResourceWarning per test otherwise.
+        for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
+            if stream is None:
+                continue
+            try:
+                stream.close()
+            except OSError:
+                pass  # a stdin flush into a child that already exited
         return False
 
 
