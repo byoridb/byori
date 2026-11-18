@@ -530,34 +530,25 @@ class MemoryBridge:
             )
 
         loaded = self._read_env_file(self.byoridb_home / "env")
-        previous: Dict[str, Optional[str]] = {}
-        for key, value in loaded.items():
-            previous[key] = os.environ.get(key)
-            os.environ[key] = value
-        previous["BYORIDB_MEMORY_SPACE"] = os.environ.get("BYORIDB_MEMORY_SPACE")
-        os.environ["BYORIDB_MEMORY_SPACE"] = self.space
-        previous["BYORIDB_MCP_PROFILE"] = os.environ.get("BYORIDB_MCP_PROFILE")
-        os.environ["BYORIDB_MCP_PROFILE"] = "legacy"
-        try:
-            spec = importlib.util.spec_from_file_location(
-                "byoridb_mcp_for_byori_%s" % uuid.uuid4().hex, source
-            )
-            if spec is None or spec.loader is None:
-                raise ByoriError("could not load ByoriDB MCP runtime: %s" % source)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            module._validate_profile("readonly")
-        except Exception as exc:
-            raise ByoriError(
-                "could not initialize a readonly-capable ByoriDB client; "
-                "update the installed Byori runtime: %s" % exc
-            )
-        finally:
-            for key, value in previous.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
+        explicit = {
+            "BYORIDB_MEMORY_SPACE": self.space,
+            "BYORIDB_MCP_PROFILE": "legacy",
+        }
+        with runtime_env_overlay(loaded, explicit):
+            try:
+                spec = importlib.util.spec_from_file_location(
+                    "byoridb_mcp_for_byori_%s" % uuid.uuid4().hex, source
+                )
+                if spec is None or spec.loader is None:
+                    raise ByoriError("could not load ByoriDB MCP runtime: %s" % source)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                module._validate_profile("readonly")
+            except Exception as exc:
+                raise ByoriError(
+                    "could not initialize a readonly-capable ByoriDB client; "
+                    "update the installed Byori runtime: %s" % exc
+                )
         return module
 
     @staticmethod
@@ -1193,36 +1184,25 @@ class MemoryWriter:
                 "ByoriDB MCP runtime not found; install Byori before running init"
             )
         loaded = read_runtime_env(self.byoridb_home / "env")
-        previous: Dict[str, Optional[str]] = {}
-        for key, value in loaded.items():
-            previous[key] = os.environ.get(key)
-            os.environ[key] = value
-        for key, value in (
-            ("BYORIDB_MEMORY_SPACE", self.space),
+        explicit = {
+            "BYORIDB_MEMORY_SPACE": self.space,
             # Writing needs the full tool surface; `safe` still hides the
             # unrestricted raw-query escape hatch, which init never needs.
-            ("BYORIDB_MCP_PROFILE", self.profile),
-        ):
-            previous[key] = os.environ.get(key)
-            os.environ[key] = value
-        try:
-            spec = importlib.util.spec_from_file_location(
-                "byoridb_mcp_for_init_%s" % uuid.uuid4().hex, source
-            )
-            if spec is None or spec.loader is None:
-                raise ByoriError("could not load ByoriDB MCP runtime: %s" % source)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-        except ByoriError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - report the runtime, not a traceback
-            raise ByoriError("could not initialize the ByoriDB client: %s" % exc)
-        finally:
-            for key, value in previous.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
+            "BYORIDB_MCP_PROFILE": self.profile,
+        }
+        with runtime_env_overlay(loaded, explicit):
+            try:
+                spec = importlib.util.spec_from_file_location(
+                    "byoridb_mcp_for_init_%s" % uuid.uuid4().hex, source
+                )
+                if spec is None or spec.loader is None:
+                    raise ByoriError("could not load ByoriDB MCP runtime: %s" % source)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+            except ByoriError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - report the runtime, not a traceback
+                raise ByoriError("could not initialize the ByoriDB client: %s" % exc)
         return module
 
     def write(self, plan) -> Dict[str, int]:
@@ -1282,6 +1262,28 @@ def read_runtime_env(path: pathlib.Path) -> Dict[str, str]:
     except OSError as exc:
         raise ByoriError("could not read %s: %s" % (path, exc))
     return values
+
+
+@contextlib.contextmanager
+def runtime_env_overlay(*layers: Dict[str, str]):
+    """Applies env layers in order and restores the caller's environment.
+
+    Every key is snapshotted once, before any layer touches it: a key set by
+    the env file and again by the caller must restore to the value the caller
+    had, not to the env file's.
+    """
+    keys = {key for layer in layers for key in layer}
+    previous = {key: os.environ.get(key) for key in keys}
+    try:
+        for layer in layers:
+            os.environ.update(layer)
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def is_unborn_branch(root: pathlib.Path) -> bool:

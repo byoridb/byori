@@ -638,5 +638,83 @@ class MemoryScopeTests(unittest.TestCase):
                 self.assertEqual(item["env"]["BYORIDB_MEMORY_SPACE"], "project_b")
 
 
+class RuntimeLoaderEnvironmentTests(unittest.TestCase):
+    """Loading the MCP runtime must leave the caller's environment as it was (#95)."""
+
+    STUB = (
+        "import os\n"
+        "SEEN = {k: os.environ.get(k) for k in "
+        "('BYORIDB_MCP_PROFILE', 'BYORIDB_MEMORY_SPACE', 'BYORIDB_USER')}\n"
+        "if os.environ.get('BYORIDB_USER') == 'explode':\n"
+        "    raise RuntimeError('import failed')\n"
+        "def _validate_profile(profile):\n"
+        "    if os.environ.get('BYORIDB_USER') == 'no-readonly':\n"
+        "        raise ValueError('readonly unsupported')\n"
+    )
+    KEYS = ("BYORIDB_MCP_PROFILE", "BYORIDB_MEMORY_SPACE", "BYORIDB_USER")
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = pathlib.Path(temporary.name) / "byoridb"
+        self.home.mkdir()
+        (self.home / "byoridb_mcp.py").write_text(self.STUB, encoding="utf-8")
+        # MemoryWriter prefers the source tree's runtime; point the CLI at a
+        # checkout without one so both loaders import the stub above.
+        detached_cli = pathlib.Path(temporary.name) / "checkout" / "cli" / "byori.py"
+        patcher = mock.patch.object(CLI, "__file__", str(detached_cli))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def write_env(self, user="root"):
+        (self.home / "env").write_text(
+            "BYORIDB_MCP_PROFILE=project\n"
+            "BYORIDB_MEMORY_SPACE=from_env_file\n"
+            "BYORIDB_USER=%s\n" % user,
+            encoding="utf-8",
+        )
+
+    def loaders(self):
+        return (
+            ("MemoryBridge", lambda: CLI.MemoryBridge("caller_load", self.home), "legacy"),
+            ("MemoryWriter", lambda: CLI.MemoryWriter("caller_load", self.home), "safe"),
+        )
+
+    def caller_environment(self):
+        return {key: os.environ.get(key) for key in self.KEYS}
+
+    def test_overlapping_keys_restore_to_the_callers_values(self):
+        self.write_env()
+        for name, load, profile in self.loaders():
+            with self.subTest(loader=name), mock.patch.dict(os.environ, {"BYORIDB_MEMORY_SPACE": "caller_space"}):
+                os.environ.pop("BYORIDB_MCP_PROFILE", None)
+                os.environ.pop("BYORIDB_USER", None)
+                before = self.caller_environment()
+                module = load().module
+                # The explicit space/profile win over the env file while loading.
+                self.assertEqual(module.SEEN, {
+                    "BYORIDB_MCP_PROFILE": profile,
+                    "BYORIDB_MEMORY_SPACE": "caller_load",
+                    "BYORIDB_USER": "root",
+                })
+                self.assertEqual(self.caller_environment(), before)
+
+    def test_failed_loads_restore_the_callers_values(self):
+        for name, load, _ in self.loaders():
+            for user in ("explode", "no-readonly"):
+                if name == "MemoryWriter" and user == "no-readonly":
+                    continue  # only the bridge checks readonly capability
+                self.write_env(user)
+                with self.subTest(loader=name, failure=user), mock.patch.dict(
+                    os.environ, {"BYORIDB_MCP_PROFILE": "caller_profile"}
+                ):
+                    os.environ.pop("BYORIDB_MEMORY_SPACE", None)
+                    os.environ.pop("BYORIDB_USER", None)
+                    before = self.caller_environment()
+                    with self.assertRaises(CLI.ByoriError):
+                        load()
+                    self.assertEqual(self.caller_environment(), before)
+
+
 if __name__ == "__main__":
     unittest.main()
