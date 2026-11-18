@@ -290,7 +290,7 @@ ordinary Claude environment for future sessions.
 ### `byori` foreground CLI prototype
 
 Prerequisites are `curl`, `tar`, and `python3`. Prebuilt ByoriDB binaries support macOS
-(Apple Silicon and Intel) and Linux x86_64.
+(Apple Silicon and Intel) and Linux (x86_64 and ARM64/aarch64).
 
 The installer includes a separate compatibility prototype that can run supported coding CLIs in
 the foreground. A single-agent run is explicit:

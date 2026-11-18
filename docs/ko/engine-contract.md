@@ -353,7 +353,8 @@ instance와 credential을 분리한다.
 
 - 엔진 릴리스 asset 이름: `byoridb-<tag>-<target>.tar.gz`, 내용물에
   `byoridb-server` 필수(+선택 `byoridb-cli`).
-- target: `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`.
+- target: `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`,
+  `aarch64-unknown-linux-gnu`(Linux `aarch64`와 `arm64` 모두 이것을 고른다).
 - 이 규칙이 바뀌면 `install.sh`의 다운로드 URL 조립이 깨진다.
 
 ## 7. 최소 엔진 버전과 빌드 식별

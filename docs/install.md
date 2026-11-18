@@ -15,7 +15,7 @@ the skills automatically (use `--no-claude` or `--no-codex` to skip either integ
 curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh | bash
 ```
 
-> Supports macOS (Apple Silicon and Intel) and Linux x86_64. Windows is not supported.
+> Supports macOS (Apple Silicon and Intel) and Linux (x86_64 and ARM64/aarch64). Windows is not supported.
 > Requirements: `curl`, `tar`, and `python3` (to run the MCP server). If the Claude
 > Code CLI is installed, the installer registers the MCP server automatically.
 

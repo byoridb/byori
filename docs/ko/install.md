@@ -14,7 +14,7 @@ MCP를 등록하고 Skill들을 설치한다(`--no-claude`/`--no-codex`로 건�
 curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh | bash
 ```
 
-> macOS(Apple Silicon/Intel) · Linux x86_64 지원. Windows 미지원.
+> macOS(Apple Silicon/Intel) · Linux(x86_64, ARM64/aarch64) 지원. Windows 미지원.
 > 요구: `curl`, `tar`, `python3`(MCP 서버 실행용). Claude Code CLI가 있으면 MCP 서버를 자동 등록한다.
 
 ## Byori macOS 앱

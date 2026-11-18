@@ -154,7 +154,7 @@ DB 연결에는 별도의 통신 제한 시간이 더해질 수 있습니다.
 의존성 라이선스 본문을 생성합니다. 교차 빌드할 대상은 `rustup target add`로
 준비합니다. universal macOS 앱은 `aarch64-apple-darwin`, `x86_64-apple-darwin`
 두 결과를 결합하고 앱 서명 전에 인덱서를 서명합니다. 릴리스에는 두 macOS 대상과
-Ubuntu 24.04에서 빌드한 Linux x86_64 실행 파일을 제공합니다.
+Ubuntu 24.04에서 네이티브로 빌드한 Linux x86_64, ARM64(aarch64) 실행 파일을 제공합니다.
 
 온라인 설치는 릴리스의 SHA-256 파일로 다운로드를 검증합니다. `--assets`는 번들의
 `bin/byori-indexer` 또는 소스 빌드의 `indexer/target/release/byori-indexer`를 사용합니다.

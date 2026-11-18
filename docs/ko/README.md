@@ -270,7 +270,7 @@ Claude 환경으로 돌아갑니다.
 ### `byori` foreground CLI 프로토타입
 
 사전 요구사항은 `curl`, `tar`, `python3`입니다. 사전 빌드 ByoriDB 바이너리는 macOS
-(Apple Silicon/Intel)와 Linux x86_64를 지원합니다.
+(Apple Silicon/Intel)와 Linux(x86_64, ARM64/aarch64)를 지원합니다.
 
 설치기는 지원되는 코딩 CLI를 foreground에서 실행하는 별도의 호환 프로토타입을 포함합니다.
 단일 에이전트 실행은 다음처럼 명시합니다.

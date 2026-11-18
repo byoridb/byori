@@ -44,8 +44,19 @@ jobs:
           python -m unittest discover -s tests -p 'test_*.py'
 
   smoke:
-    name: Engine contract smoke
-    runs-on: ubuntu-latest
+    name: Engine contract smoke (${{ matrix.target }})
+    # Both Linux targets the installer supports, each on its own hardware: the
+    # ARM leg is the only place the aarch64 engine, indexer, and MCP roundtrip
+    # are exercised before a release ships them.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
 
@@ -65,6 +76,7 @@ jobs:
           test -n "$ENGINE_TAG"
           echo "pinned engine tag: $ENGINE_TAG"
           ./install.sh --assets . --engine-tag "$ENGINE_TAG" --no-claude --no-codex --no-service
+          python3 -c 'import json, os, sys; m = json.load(open(os.environ["BYORIDB_HOME"] + "/engine.json")); assert sys.argv[1] in m["source"], m' "${{ matrix.target }}"
           "$BYORIDB_HOME/bin/byori" --help
           # The engine binary answers no version question, so the installer's
           # record is the only build identity there is. Assert it was written.

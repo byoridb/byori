@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Byori — local workspace runtime installer.
 # Sets up ByoriDB, MCP, the `byori` CLI, and Claude/Codex Skills that provide
-# shared project knowledge across coding-agent sessions. macOS / Linux x86_64.
+# shared project knowledge across coding-agent sessions. macOS / Linux (x86_64, aarch64).
 # Windows unsupported.
 #
 #   curl -fsSL https://github.com/byoridb/byori/releases/latest/download/install.sh | bash
@@ -167,6 +167,8 @@ detect_target() {
     Darwin/arm64)        echo aarch64-apple-darwin ;;
     Darwin/x86_64)       echo x86_64-apple-darwin ;;
     Linux/x86_64)        echo x86_64-unknown-linux-gnu ;;
+    # Most ARM kernels report aarch64; some report arm64.
+    Linux/aarch64|Linux/arm64) echo aarch64-unknown-linux-gnu ;;
     *) die "no prebuilt binary for $OS/$arch — build from source (cargo build --release --bin byoridb-server)" ;;
   esac
 }

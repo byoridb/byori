@@ -371,8 +371,8 @@ and credentials across trust boundaries.
 
 - Engine release asset name: `byoridb-<tag>-<target>.tar.gz`; its contents must include
   `byoridb-server` and may optionally include `byoridb-cli`.
-- Targets: `aarch64-apple-darwin`, `x86_64-apple-darwin`, and
-  `x86_64-unknown-linux-gnu`.
+- Targets: `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, and
+  `aarch64-unknown-linux-gnu` (selected for Linux `aarch64` and `arm64`).
 - Changing this convention breaks download URL construction in `install.sh`.
 
 ## 7. Minimum Engine Version and Build Identity
