@@ -230,6 +230,7 @@ final class ManagerViewModel: ObservableObject {
     @Published var pendingAction: ManagerAction?
     @Published var pendingIntegrationRemoval: IntegrationRemovalRequest?
     @Published private(set) var activities: [ActivityEntry] = []
+    private let folderOpener = FolderOpener()
     @Published private(set) var integrationInventories: [AgentIntegrationInventory] = []
     @Published private(set) var agentCommandCatalog: [AgentCommandGroup] = []
     @Published private(set) var isRefreshingIntegrations = false
@@ -565,26 +566,16 @@ final class ManagerViewModel: ObservableObject {
     }
 
     func openLogs() {
-        let url = service.paths.logs
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        NSWorkspace.shared.open(url)
+        recordOpenFailure(folderOpener.openDirectory(service.paths.logs), title: "로그 폴더 열기 실패")
     }
 
     func openBackups() {
-        let url = service.paths.backups
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        NSWorkspace.shared.open(url)
+        recordOpenFailure(folderOpener.openDirectory(service.paths.backups), title: "백업 폴더 열기 실패")
     }
 
     func openAgentConfig(_ kind: AgentKind) {
         let url = kind == .claude ? service.paths.claudeConfig : service.paths.codexConfig
-        if FileManager.default.fileExists(atPath: url.path) {
-            NSWorkspace.shared.open(url)
-        } else {
-            let directory = url.deletingLastPathComponent()
-            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            NSWorkspace.shared.activateFileViewerSelecting([directory])
-        }
+        recordOpenFailure(folderOpener.openFileOrRevealFolder(url), title: "설정 열기 실패")
     }
 
     func openSkill(_ skill: UserSkillSummary) {
@@ -592,16 +583,21 @@ final class ManagerViewModel: ObservableObject {
             guard let self else { return }
             do {
                 let url = try await service.validatedUserSkillFile(skill)
-                NSWorkspace.shared.open(url)
+                recordOpenFailure(folderOpener.openItem(url), title: "Skill 열기 실패")
             } catch {
-                activities.insert(ActivityEntry(
-                    date: Date(),
-                    title: "Skill 열기 실패",
-                    detail: error.localizedDescription,
-                    level: .failure
-                ), at: 0)
+                recordOpenFailure(error.localizedDescription, title: "Skill 열기 실패")
             }
         }
+    }
+
+    private func recordOpenFailure(_ detail: String?, title: String) {
+        guard let detail else { return }
+        activities.insert(ActivityEntry(
+            date: Date(),
+            title: title,
+            detail: detail,
+            level: .failure
+        ), at: 0)
     }
 
     private func perform(_ action: ManagerAction, activityID: UUID) async {
