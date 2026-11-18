@@ -484,7 +484,23 @@ def _login():
     # A new session starts pinned to no space; `_raw_query` re-pins before the
     # first statement that needs it.
     _session["space"] = None
-    log(f"authenticated, session={sid}")
+    log(f"authenticated, session {_session_ref(sid)}")
+
+
+def _session_ref(session_id):
+    """Names a session in the log without writing the session id itself.
+
+    The id is the bearer of an authenticated engine session until it is signed
+    out or expires, so it does not belong in a log the host keeps. A short digest
+    still matches the login line to the exit line of the same process.
+    """
+    return "#" + hashlib.sha256(str(session_id).encode()).hexdigest()[:12]
+
+
+def _exit_line(reason, held, outcome):
+    if held is None:
+        return f"exiting ({reason}); no ByoriDB session was opened"
+    return f"exiting ({reason}); ByoriDB session {_session_ref(held)}: {outcome}"
 
 
 def _logout():
@@ -2758,19 +2774,13 @@ def main():
     except KeyboardInterrupt:
         reason = "interrupted"
     finally:
-        # Release the session rather than leaving it for its TTL. The id is named
-        # in the log either way, so a session that outlives its process stays
-        # traceable to the process that held it.
+        # Release the session rather than leaving it for its TTL. The session is
+        # named in the log either way (by digest, see `_session_ref`), so a
+        # session that outlives its process stays traceable to the process that
+        # held it.
         held = _session["id"]
         outcome = _logout()
-        log(
-            f"exiting ({reason}); "
-            + (
-                f"ByoriDB session {held}: {outcome}"
-                if held is not None
-                else "no ByoriDB session was opened"
-            )
-        )
+        log(_exit_line(reason, held, outcome))
 
 
 if __name__ == "__main__":

@@ -424,6 +424,47 @@ class SignOutTests(unittest.TestCase):
         self.assertIn("sign-out failed", outcome)
 
 
+class SessionLoggingTests(unittest.TestCase):
+    """The session id authenticates whoever holds it, and stderr ends up in the
+    host's MCP log. The log names a session by digest, never by id."""
+
+    SESSION_ID = "734817462937615829"
+    PASSWORD = "fixture-root-password"
+
+    def setUp(self):
+        MCP._session["id"] = None
+        MCP._session["ready"] = False
+        self.addCleanup(lambda: MCP._session.update({"id": None, "ready": False, "space": None}))
+
+    def test_login_logs_the_event_without_the_session_id_or_credential(self):
+        stderr = io.StringIO()
+        with mock.patch.object(MCP, "PASSWORD", self.PASSWORD), \
+                mock.patch.object(MCP, "_post", return_value=(200, {"session_id": self.SESSION_ID})), \
+                contextlib.redirect_stderr(stderr):
+            MCP._login()
+
+        logged = stderr.getvalue()
+        self.assertIn("authenticated", logged)
+        self.assertIn(MCP._session_ref(self.SESSION_ID), logged)
+        self.assertNotIn(self.SESSION_ID, logged)
+        self.assertNotIn(self.PASSWORD, logged)
+        self.assertEqual(MCP._session["id"], self.SESSION_ID, "the session itself is still kept")
+
+    def test_exit_line_matches_the_login_line_without_the_session_id(self):
+        line = MCP._exit_line("stdin closed", self.SESSION_ID, "signed out")
+
+        self.assertIn(MCP._session_ref(self.SESSION_ID), line)
+        self.assertNotIn(self.SESSION_ID, line)
+        self.assertIn("signed out", line)
+
+    def test_a_numeric_session_id_gets_the_same_reference_as_its_string(self):
+        """The engine may return the id as a signed INT64 or a decimal string."""
+        self.assertEqual(
+            MCP._session_ref(int(self.SESSION_ID)),
+            MCP._session_ref(self.SESSION_ID),
+        )
+
+
 class ReadOnlyRequestTests(unittest.TestCase):
     def test_read_only_queries_ask_the_engine_to_enforce_it(self):
         """The Python gate still has to be right, but on 0.4.0 a statement that
