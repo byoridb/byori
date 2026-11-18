@@ -247,30 +247,24 @@ build_arch() {
   local destination="$2"
   local scratch="$WORK_DIR/swift-$target_arch"
   local bin_dir
+  # The build and the bin-path query must name the same scratch path, SDK,
+  # configuration, and architecture, or the query reports a directory the
+  # build did not write. One array keeps them from drifting apart.
+  local swiftpm_args=(
+    --package-path "$PACKAGE_DIR"
+    --cache-path "$WORK_DIR/swiftpm-cache"
+    --config-path "$WORK_DIR/swiftpm-config"
+    --security-path "$WORK_DIR/swiftpm-security"
+    --scratch-path "$scratch"
+    --disable-sandbox
+    "${SWIFT_SDK_ARGS[@]}"
+    --configuration release
+    --arch "$target_arch"
+  )
 
   log "Building $PRODUCT_NAME for $target_arch"
-  "$SWIFT" build \
-    --package-path "$PACKAGE_DIR" \
-    --cache-path "$WORK_DIR/swiftpm-cache" \
-    --config-path "$WORK_DIR/swiftpm-config" \
-    --security-path "$WORK_DIR/swiftpm-security" \
-    --scratch-path "$scratch" \
-    --disable-sandbox \
-    "${SWIFT_SDK_ARGS[@]}" \
-    --configuration release \
-    --arch "$target_arch" \
-    --product "$PRODUCT_NAME"
-  bin_dir="$("$SWIFT" build \
-    --package-path "$PACKAGE_DIR" \
-    --cache-path "$WORK_DIR/swiftpm-cache" \
-    --config-path "$WORK_DIR/swiftpm-config" \
-    --security-path "$WORK_DIR/swiftpm-security" \
-    --scratch-path "$scratch" \
-    --disable-sandbox \
-    "${SWIFT_SDK_ARGS[@]}" \
-    --configuration release \
-    --arch "$target_arch" \
-    --show-bin-path)"
+  "$SWIFT" build "${swiftpm_args[@]}" --product "$PRODUCT_NAME"
+  bin_dir="$("$SWIFT" build "${swiftpm_args[@]}" --show-bin-path)"
   [ -x "$bin_dir/$PRODUCT_NAME" ] || die "SwiftPM did not produce $bin_dir/$PRODUCT_NAME"
   install -m 755 "$bin_dir/$PRODUCT_NAME" "$destination"
   # Release sharing should not expose the builder's username or checkout path
