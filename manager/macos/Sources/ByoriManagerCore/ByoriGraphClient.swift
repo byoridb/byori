@@ -273,7 +273,13 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
     private let encoder = JSONEncoder()
 
     public init(serviceVerifier: LocalServiceVerifier = LocalServiceVerifier()) {
+        self.init(serviceVerifier: serviceVerifier, protocolClasses: nil)
+    }
+
+    /// `protocolClasses` lets tests answer the engine's HTTP surface in-process.
+    init(serviceVerifier: LocalServiceVerifier, protocolClasses: [AnyClass]?) {
         let configuration = URLSessionConfiguration.ephemeral
+        if let protocolClasses { configuration.protocolClasses = protocolClasses }
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
         configuration.httpCookieStorage = nil
@@ -289,17 +295,12 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
         }
         let credentials = try credentials(at: paths.byoriHome.appendingPathComponent("env"))
         let baseURL = try localBaseURL(port: paths.httpPort)
-        let sessionID = try await createSession(baseURL: baseURL, password: credentials.password)
-        do {
+        try await withSession(baseURL: baseURL, password: credentials.password) { sessionID in
             // Login alone cannot verify a working graph engine. SHOW SPACES is
             // read-only and does not assume that any project space exists yet.
-            let response = try await query(baseURL: baseURL, sessionID: sessionID, statement: "SHOW SPACES")
+            let response = try await self.query(baseURL: baseURL, sessionID: sessionID, statement: "SHOW SPACES")
             guard response.hasResultRows else { throw KnowledgeGraphClientError.invalidResponse }
-        } catch {
-            await deleteSession(baseURL: baseURL, sessionID: sessionID)
-            throw error
         }
-        await deleteSession(baseURL: baseURL, sessionID: sessionID)
     }
 
     public func loadGraph(
@@ -315,9 +316,24 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
         let credentials = try credentials(at: paths.byoriHome.appendingPathComponent("env"))
         let selectedSpace = try validatedSpace(space)
         let baseURL = try localBaseURL(port: paths.httpPort)
-        let sessionID = try await createSession(baseURL: baseURL, password: credentials.password)
-        defer { Task { await deleteSession(baseURL: baseURL, sessionID: sessionID) } }
+        return try await withSession(baseURL: baseURL, password: credentials.password) { sessionID in
+            try await self.readGraph(
+                baseURL: baseURL,
+                sessionID: sessionID,
+                space: selectedSpace,
+                limit: limit,
+                edgeLimit: edgeLimit
+            )
+        }
+    }
 
+    private func readGraph(
+        baseURL: URL,
+        sessionID: SessionIdentifier,
+        space selectedSpace: String,
+        limit: Int,
+        edgeLimit: Int
+    ) async throws -> KnowledgeGraphSnapshot {
         _ = try await query(
             baseURL: baseURL,
             sessionID: sessionID,
@@ -487,8 +503,22 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
         let credentials = try credentials(at: paths.byoriHome.appendingPathComponent("env"))
         let selectedSpace = try validatedSpace(space)
         let baseURL = try localBaseURL(port: paths.httpPort)
-        let sessionID = try await createSession(baseURL: baseURL, password: credentials.password)
-        defer { Task { await deleteSession(baseURL: baseURL, sessionID: sessionID) } }
+        return try await withSession(baseURL: baseURL, password: credentials.password) { sessionID in
+            try await self.readBodies(
+                requests,
+                baseURL: baseURL,
+                sessionID: sessionID,
+                space: selectedSpace
+            )
+        }
+    }
+
+    private func readBodies(
+        _ requests: [KnowledgeBodyRequest],
+        baseURL: URL,
+        sessionID: SessionIdentifier,
+        space selectedSpace: String
+    ) async throws -> [Int64: String] {
         _ = try await query(
             baseURL: baseURL,
             sessionID: sessionID,
@@ -655,12 +685,34 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
         return decoded
     }
 
+    /// Runs `body` on a fresh session and signs it out afterwards, whether
+    /// `body` returned or threw. The sign-out is awaited rather than spawned, so
+    /// the engine has dropped the session by the time the caller sees a result.
+    private func withSession<T: Sendable>(
+        baseURL: URL,
+        password: String,
+        _ body: (SessionIdentifier) async throws -> T
+    ) async throws -> T {
+        let sessionID = try await createSession(baseURL: baseURL, password: password)
+        let result: T
+        do {
+            result = try await body(sessionID)
+        } catch {
+            await deleteSession(baseURL: baseURL, sessionID: sessionID)
+            throw error
+        }
+        await deleteSession(baseURL: baseURL, sessionID: sessionID)
+        return result
+    }
+
+    /// `DELETE /api/v1/session` with the id in `X-ByoriDB-Session-Id`, as
+    /// `docs/engine-contract.md` defines it. Best effort: engines before 0.4.0
+    /// answer 405 and the session falls back to its TTL.
     private func deleteSession(baseURL: URL, sessionID: SessionIdentifier) async {
         guard sessionID.isValid else { return }
-        var request = URLRequest(
-            url: baseURL.appendingPathComponent("api/v1/session/\(sessionID.decimalString)")
-        )
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/v1/session"))
         request.httpMethod = "DELETE"
+        request.setValue(sessionID.decimalString, forHTTPHeaderField: "X-ByoriDB-Session-Id")
         _ = try? await session.data(for: request)
     }
 }
