@@ -230,13 +230,24 @@ class LoginFailureClassTests(unittest.TestCase):
         error = _http_error(
             429, "Retry in 42s", {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}
         )
+        self.addCleanup(error.close)
         self.assertEqual(MCP._retry_after_seconds(error, "Retry in 42s"), 42.0)
 
     def test_with_no_hint_at_all_the_budget_window_is_assumed(self):
+        error = _http_error(429, "no numbers here")
+        self.addCleanup(error.close)
         self.assertEqual(
-            MCP._retry_after_seconds(_http_error(429, "no numbers here"), "no numbers here"),
+            MCP._retry_after_seconds(error, "no numbers here"),
             MCP.LOGIN_THROTTLE_DEFAULT_WAIT,
         )
+
+    def test_a_classified_failure_reads_the_body_then_closes_the_response(self):
+        error = _http_error(401, '{"code":"AUTH_FAILED"}')
+        with mock.patch.object(MCP, "_post", side_effect=error):
+            with self.assertRaises(MCP.LoginRefused) as raised:
+                MCP._login()
+        self.assertIn("AUTH_FAILED", str(raised.exception))
+        self.assertTrue(error.fp.closed)
 
     def test_a_status_that_is_not_an_auth_class_still_propagates(self):
         """503 while the server is starting must stay retryable, not be reclassified
@@ -422,6 +433,19 @@ class SignOutTests(unittest.TestCase):
             outcome = MCP._logout()
         self.assertIn("405", outcome)
         self.assertIn("TTL", outcome)
+
+    def test_a_refused_sign_out_closes_the_response(self):
+        error = MCP.urllib.error.HTTPError(
+            "http://127.0.0.1:19669/api/v1/session", 405, "Method Not Allowed", {}, io.BytesIO(b"")
+        )
+
+        def refuse(request, timeout=None):
+            raise error
+
+        MCP._session["id"] = "1"
+        with mock.patch.object(MCP.urllib.request, "urlopen", refuse):
+            MCP._logout()
+        self.assertTrue(error.fp.closed)
 
     def test_an_unreachable_engine_is_reported_not_raised(self):
         def fail(request, timeout=None):
