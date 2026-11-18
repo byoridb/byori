@@ -161,6 +161,14 @@ class ArchaeologyTests(unittest.TestCase):
         self.assertEqual(self.plan.stats["decision_documents"], 1)
         self.assertEqual(self.plan.stats["nodes"], len(self.plan.nodes))
 
+    def test_stats_say_how_many_modules_were_left_out(self):
+        self.assertEqual(self.plan.stats["modules"], 2)
+        self.assertEqual(self.plan.stats["modules_below_the_cut"], 0)
+
+        cut = ARCHAEOLOGY.excavate(self.repository, "shop", limit=200, max_modules=1)
+        self.assertEqual(cut.stats["modules"], 1)
+        self.assertEqual(cut.stats["modules_below_the_cut"], 1)
+
 
 class SlugTests(unittest.TestCase):
     def test_names_stay_inside_the_canonical_charset(self):
