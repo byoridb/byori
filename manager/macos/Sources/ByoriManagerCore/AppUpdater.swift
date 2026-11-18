@@ -343,15 +343,20 @@ public actor AppUpdater {
         let directory = fileManager.temporaryDirectory
             .appendingPathComponent("byori-update-\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        let image = directory.appendingPathComponent(update.assetName)
-        progress?(.downloading)
-        try await fetcher.download(from: update.downloadURL, to: image)
-
-        progress?(.verifyingImage)
-        try await verifySignature(path: image.path, label: "다운로드한 디스크 이미지")
-
-        let mountPoint = try await attach(image: image)
+        // Everything after the directory exists is covered, not only what follows
+        // the mount: a failed download or a rejected signature would otherwise
+        // leave the partial image behind in the temporary directory.
+        var mounted: String?
         do {
+            let image = directory.appendingPathComponent(update.assetName)
+            progress?(.downloading)
+            try await fetcher.download(from: update.downloadURL, to: image)
+
+            progress?(.verifyingImage)
+            try await verifySignature(path: image.path, label: "다운로드한 디스크 이미지")
+
+            let mountPoint = try await attach(image: image)
+            mounted = mountPoint
             let app = try locateApp(inside: mountPoint)
             progress?(.verifyingApp)
             try await verifySignature(path: app, label: "업데이트할 앱")
@@ -364,7 +369,9 @@ public actor AppUpdater {
                 imagePath: image.path
             )
         } catch {
-            await detach(mountPoint: mountPoint)
+            // Only an image this attempt mounted is detached; a failed attach has
+            // nothing of ours to release.
+            if let mounted { await detach(mountPoint: mounted) }
             try? fileManager.removeItem(at: directory)
             throw error
         }

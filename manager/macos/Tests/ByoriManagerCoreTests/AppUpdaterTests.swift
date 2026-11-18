@@ -308,3 +308,142 @@ final class AppUpdaterHelperScriptTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: target.path + ".byori-new"))
     }
 }
+
+/// A staging attempt that fails must take its temporary directory with it, and
+/// must detach only an image it mounted itself.
+final class AppUpdaterStagingCleanupTests: XCTestCase {
+    /// Never created: `hdiutil attach` reports a `/Volumes` path, and an empty
+    /// one is exactly a volume that holds no app.
+    private let fakeVolume = "/Volumes/Byori-test-\(UUID().uuidString)"
+    private let update = AvailableUpdate(
+        version: AppVersion("0.4.0")!,
+        assetName: "Byori-0.4.0-universal.dmg",
+        downloadURL: URL(string: "https://example.invalid/Byori.dmg")!
+    )
+
+    func testAFailedDownloadLeavesNoStagingDirectory() async {
+        let fetcher = PartialImageFetcher(fails: true)
+        let runner = StagingRunner(mountPoint: fakeVolume)
+
+        await assertStagingFails(fetcher: fetcher, runner: runner)
+
+        let image = fetcher.destination()
+        XCTAssertNotNil(image, "the fetcher should have been asked to download")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: image!.deletingLastPathComponent().path))
+        XCTAssertEqual(runner.hdiutilVerbs(), [])
+    }
+
+    func testARejectedImageSignatureLeavesNoStagingDirectory() async {
+        let fetcher = PartialImageFetcher(fails: false)
+        let runner = StagingRunner(mountPoint: fakeVolume, signed: false)
+
+        await assertStagingFails(fetcher: fetcher, runner: runner)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fetcher.destination()!.deletingLastPathComponent().path))
+        XCTAssertEqual(runner.hdiutilVerbs(), [])
+    }
+
+    func testAFailedAttachDetachesNothing() async {
+        let fetcher = PartialImageFetcher(fails: false)
+        let runner = StagingRunner(mountPoint: nil)
+
+        await assertStagingFails(fetcher: fetcher, runner: runner)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fetcher.destination()!.deletingLastPathComponent().path))
+        XCTAssertEqual(runner.hdiutilVerbs(), ["attach"])
+    }
+
+    func testAFailureAfterMountingDetachesThatImage() async {
+        // The volume holds no app, so locating it fails after the attach.
+        let fetcher = PartialImageFetcher(fails: false)
+        let runner = StagingRunner(mountPoint: fakeVolume)
+
+        await assertStagingFails(fetcher: fetcher, runner: runner)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fetcher.destination()!.deletingLastPathComponent().path))
+        XCTAssertEqual(runner.hdiutilVerbs(), ["attach", "detach"])
+        XCTAssertEqual(runner.detachedMountPoints(), [fakeVolume])
+    }
+
+    private func updater(fetcher: PartialImageFetcher, runner: StagingRunner) -> AppUpdater {
+        AppUpdater(
+            bundleURL: URL(fileURLWithPath: "/Applications/Byori.app"),
+            currentVersion: AppVersion("0.3.0")!,
+            runner: runner,
+            fetcher: fetcher
+        )
+    }
+
+    private func assertStagingFails(
+        fetcher: PartialImageFetcher,
+        runner: StagingRunner,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        do {
+            _ = try await updater(fetcher: fetcher, runner: runner).stage(update)
+            XCTFail("staging should have failed", file: file, line: line)
+        } catch {}
+    }
+}
+
+/// Writes a partial image before failing, as an interrupted download does.
+private final class PartialImageFetcher: ReleaseFetching, @unchecked Sendable {
+    private let fails: Bool
+    private let lock = NSLock()
+    private var recorded: URL?
+
+    init(fails: Bool) { self.fails = fails }
+
+    func destination() -> URL? {
+        lock.withLock { recorded }
+    }
+
+    func data(from url: URL) async throws -> Data { Data() }
+
+    func download(from url: URL, to destination: URL) async throws {
+        lock.withLock { recorded = destination }
+        try Data("partial".utf8).write(to: destination)
+        if fails { throw ManagerError.prerequisite("다운로드가 중간에 끊겼습니다.") }
+    }
+}
+
+/// Answers codesign, spctl, and hdiutil. `mountPoint: nil` makes the attach fail.
+private final class StagingRunner: CommandRunning, @unchecked Sendable {
+    private let mountPoint: String?
+    private let signed: Bool
+    private let lock = NSLock()
+    private var commands: [CommandSpec] = []
+
+    init(mountPoint: String?, signed: Bool = true) {
+        self.mountPoint = mountPoint
+        self.signed = signed
+    }
+
+    func hdiutilVerbs() -> [String] {
+        lock.withLock { commands }.filter { $0.executable == "/usr/bin/hdiutil" }.compactMap(\.arguments.first)
+    }
+
+    func detachedMountPoints() -> [String] {
+        lock.withLock { commands }
+            .filter { $0.executable == "/usr/bin/hdiutil" && $0.arguments.first == "detach" }
+            .map { $0.arguments[1] }
+    }
+
+    func run(_ command: CommandSpec) async -> CommandResult {
+        lock.withLock { commands.append(command) }
+        switch (command.executable, command.arguments.first) {
+        case ("/usr/bin/codesign", "-dv"):
+            return signed
+                ? CommandResult(exitCode: 0, output: "TeamIdentifier=4J8MZGZJ2B\n")
+                : CommandResult(exitCode: 1, output: "code object is not signed at all")
+        case ("/usr/sbin/spctl", _):
+            return CommandResult(exitCode: 0, output: "accepted\nsource=Notarized Developer ID\n")
+        case ("/usr/bin/hdiutil", "attach"):
+            guard let mountPoint else { return CommandResult(exitCode: 1, output: "hdiutil: attach failed") }
+            return CommandResult(exitCode: 0, output: "/dev/disk9s1\tApple_HFS\t\(mountPoint)\n")
+        default:
+            return CommandResult(exitCode: 0, output: "")
+        }
+    }
+}
