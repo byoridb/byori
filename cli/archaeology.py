@@ -407,7 +407,7 @@ def build_plan(
         key=lambda item: (-len(touched.get(item[0], [])), -item[1], item[0]),
     )
     kept = dict(ranked_modules[:max_modules])
-    plan.stats["modules_below_the_cut"] = max(len(modules) - len(kept), 0)
+    modules_below_the_cut = max(len(modules) - len(kept), 0)
 
     for path, file_count in sorted(kept.items()):
         history = touched.get(path, [])
@@ -532,10 +532,9 @@ def build_plan(
             ),
         ))
 
-    below_the_cut = plan.stats.get("modules_below_the_cut", 0)
     plan.stats = {
         "commits_scanned": len(commits),
-        "modules_below_the_cut": below_the_cut,
+        "modules_below_the_cut": modules_below_the_cut,
         "commits_with_a_pull_request": len(merge_pull_requests),
         "tracked_files": len(tracked_paths),
         "modules": len(kept),
