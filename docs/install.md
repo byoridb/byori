@@ -279,9 +279,11 @@ the reclaimed process it is.
 curl -s localhost:19669/health          # Status
 claude mcp list                         # Verify that byoridb is ✔ Connected
 tail -f ~/.byoridb/logs/server.err      # Logs
-# Stop/start on macOS
-launchctl unload -w ~/Library/LaunchAgents/com.byoridb.local.plist
-launchctl load -w ~/Library/LaunchAgents/com.byoridb.local.plist
+# Stop/start on macOS (the same launchctl verbs the installer and the app use;
+# avoid `unload -w`, which also leaves the job disabled for later bootstraps)
+launchctl bootout gui/$(id -u)/com.byoridb.local
+launchctl enable gui/$(id -u)/com.byoridb.local
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.byoridb.local.plist
 # Linux (when using the default BYORIDB_LABEL)
 systemctl --user stop com.byoridb.local.service
 systemctl --user start com.byoridb.local.service

@@ -252,9 +252,11 @@ scripts/migrate-legacy-memory.py --name-prefix module:my-project --apply
 curl -s localhost:19669/health          # 상태
 claude mcp list                         # byoridb ✔ Connected 확인
 tail -f ~/.byoridb/logs/server.err      # 로그
-# macOS 중지/시작
-launchctl unload -w ~/Library/LaunchAgents/com.byoridb.local.plist
-launchctl load -w ~/Library/LaunchAgents/com.byoridb.local.plist
+# macOS 중지/시작 (설치기·앱과 같은 launchctl 명령. `unload -w`는 job을
+# disabled로 남겨 이후 bootstrap이 실패하므로 쓰지 않는다)
+launchctl bootout gui/$(id -u)/com.byoridb.local
+launchctl enable gui/$(id -u)/com.byoridb.local
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.byoridb.local.plist
 # Linux (기본 BYORIDB_LABEL 사용 시)
 systemctl --user stop com.byoridb.local.service
 systemctl --user start com.byoridb.local.service

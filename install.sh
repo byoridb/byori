@@ -101,12 +101,66 @@ done
 OS="$(uname -s)"
 case "$OS" in Darwin) SERVICE=launchd ;; Linux) SERVICE=systemd ;; *) die "unsupported OS: $OS (macOS/Linux only)" ;; esac
 
+# ---- launchd ---------------------------------------------------------------
+# One vocabulary for the job, the same one the app uses: `bootstrap`/`bootout`/
+# `kickstart` in the explicit gui/<uid> domain. The legacy `load -w` reports
+# "Load failed: 5: Input/output error" for a job that is already loaded and
+# still exits 0, so a service step could fail with nothing to show for it
+# (byori#58).
+launchd_domain() { echo "gui/$(id -u)"; }
+launchd_target() { echo "$(launchd_domain)/${LABEL}"; }
+
+launchd_loaded() { launchctl print "$(launchd_target)" >/dev/null 2>&1; }
+
+# Removes the job and waits until launchd agrees it is gone: a bootstrap while
+# it is still loaded fails with error 5.
+launchd_unload() {
+  launchd_loaded || return 0
+  launchctl bootout "$(launchd_target)" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    launchd_loaded || return 0
+    sleep 0.5
+  done
+  warn "launchd still lists $(launchd_target) after bootout"
+}
+
+# Loads the job from its plist whatever state it was in. `enable` first: a job
+# left disabled (the old uninstall's `unload -w` did that) fails to bootstrap
+# with the same error 5. A bootstrap refused because the job is loaded after all
+# is fine, and a restart gives it the new definition's process.
+launchd_load() {
+  launchctl enable "$(launchd_target)" 2>/dev/null || true
+  if launchctl bootstrap "$(launchd_domain)" "$1" 2>"$WORK/launchctl.err"; then
+    return 0
+  fi
+  if launchd_loaded; then
+    launchctl kickstart -k "$(launchd_target)" >/dev/null 2>&1 && return 0
+  fi
+  warn "launchctl bootstrap failed: $(tr '\n' ' ' < "$WORK/launchctl.err")"
+  launchd_report
+  return 1
+}
+
+# What launchd itself says about the job. Neither server.log nor server.err can
+# explain a process that never started or was killed for its code signature.
+launchd_report() {
+  if launchd_loaded; then
+    launchctl print "$(launchd_target)" 2>/dev/null \
+      | grep -E "state = |last exit (reason|code) = |path = " | sed 's/^/    /' || true
+  else
+    echo "    $(launchd_target) is not loaded"
+  fi
+}
+
 # ---- uninstall -------------------------------------------------------------
 uninstall() {
   log "uninstalling the ByoriDB runtime and agent integrations"
   if [ "$SERVICE" = launchd ]; then
     plist="${HOME}/Library/LaunchAgents/${LABEL}.plist"
-    [ -f "$plist" ] && { launchctl unload -w "$plist" 2>/dev/null || true; rm -f "$plist"; }
+    # bootout rather than `unload -w`: the latter also leaves the label disabled,
+    # and a later bootstrap of a disabled job fails.
+    launchd_unload
+    rm -f "$plist"
   else
     systemctl --user disable --now "${LABEL}.service" 2>/dev/null || true
     rm -f "${HOME}/.config/systemd/user/${LABEL}.service"
@@ -379,8 +433,7 @@ stop_service_for_replacement() {
   if [ "$SERVICE" = launchd ]; then
     plist="${HOME}/Library/LaunchAgents/${LABEL}.plist"
     [ -f "$plist" ] || return 0
-    launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null \
-      || launchctl unload "$plist" 2>/dev/null || true
+    launchd_unload
   else
     systemctl --user stop "${LABEL}.service" 2>/dev/null || true
   fi
@@ -581,8 +634,8 @@ start_service() {
     fi
     mkdir -p "${HOME}/Library/LaunchAgents"
     cp "$WORK/svc.rendered" "$plist"
-    launchctl unload "$plist" 2>/dev/null || true
-    launchctl load -w "$plist"
+    launchd_unload
+    launchd_load "$plist" || die "could not load the launchd service $(launchd_target)"
   else
     unit="${HOME}/.config/systemd/user/${LABEL}.service"
     cp "$WORK/service.template" "$WORK/svc.service"
@@ -625,7 +678,7 @@ elif [ "$NO_SERVICE" != 1 ] && [ "$SERVICE" = launchd ]; then
   # matched. Both recover from one deliberate restart, so ask for one before
   # declaring an install failed and leaving MCP unregistered.
   warn "not healthy yet — restarting the service once"
-  launchctl kickstart -k "gui/$(id -u)/${LABEL}" >/dev/null 2>&1 || true
+  launchctl kickstart -k "$(launchd_target)" >/dev/null 2>&1 || true
   wait_for_health 30 && ok=1
 fi
 
@@ -635,8 +688,7 @@ if [ "$ok" != 1 ]; then
   # reason lives in launchd's own record, so print that too.
   warn "diagnosis for http://${HTTP_ADDR}:"
   if [ "$SERVICE" = launchd ]; then
-    launchctl print "gui/$(id -u)/${LABEL}" 2>/dev/null \
-      | grep -E "state = |last exit (reason|code) = |path = " | sed 's/^/    /' || true
+    launchd_report
   else
     systemctl --user status "${LABEL}.service" --no-pager 2>&1 | tail -5 | sed 's/^/    /' || true
   fi
