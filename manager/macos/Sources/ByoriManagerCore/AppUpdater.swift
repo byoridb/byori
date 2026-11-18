@@ -405,9 +405,8 @@ public actor AppUpdater {
             )
         }
 
-        let script = URL(fileURLWithPath: staged.imagePath)
-            .deletingLastPathComponent()
-            .appendingPathComponent("apply-update.sh")
+        let stagingDirectory = URL(fileURLWithPath: staged.imagePath).deletingLastPathComponent()
+        let script = stagingDirectory.appendingPathComponent("apply-update.sh")
         try Data(Self.applyScript.utf8).write(to: script)
 
         let process = Process()
@@ -418,6 +417,7 @@ public actor AppUpdater {
             staged.appPath,
             target,
             staged.mountPoint,
+            stagingDirectory.path,
         ]
         try process.run()
         progress?(.relaunching)
@@ -431,6 +431,10 @@ public actor AppUpdater {
     /// Waits for the app to exit, then swaps the bundle. The old bundle is moved
     /// aside rather than deleted first, so a failed move can be put back instead
     /// of leaving no app at all.
+    ///
+    /// The staging directory (the image and this script) is removed once the
+    /// swap succeeds, and when the helper gives up because nothing was changed.
+    /// A swap that failed keeps it: the image is how the user installs by hand.
     static let applyScript = """
     #!/bin/sh
     set -e
@@ -438,9 +442,17 @@ public actor AppUpdater {
     source="$2"
     target="$3"
     mount_point="$4"
+    staging_dir="$5"
     # Iterations of 0.2s to wait for the app; overridable so the bound itself
     # can be tested without a three-minute test.
-    max_wait="${5:-900}"
+    max_wait="${6:-900}"
+
+    # Only a directory the updater created is removed, whatever the argument.
+    remove_staging() {
+      case "$(/usr/bin/basename "$staging_dir")" in
+        byori-update-*) /bin/rm -rf "$staging_dir" ;;
+      esac
+    }
 
     # Bounded: if the app refuses to quit, clean up rather than waiting forever.
     waited=0
@@ -449,6 +461,7 @@ public actor AppUpdater {
       waited=$((waited + 1))
       if [ "$waited" -gt "$max_wait" ]; then
         /usr/bin/hdiutil detach "$mount_point" -quiet || true
+        remove_staging
         exit 1
       fi
     done
@@ -464,6 +477,7 @@ public actor AppUpdater {
     fi
     /bin/rm -rf "$target.byori-old"
     /usr/bin/hdiutil detach "$mount_point" -quiet || true
+    remove_staging
     /usr/bin/open "$target"
 
     """
