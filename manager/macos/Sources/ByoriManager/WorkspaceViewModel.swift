@@ -211,29 +211,6 @@ enum WorkspaceAdapterError: LocalizedError, Equatable {
     }
 }
 
-/// An honest integration placeholder for previews or app wiring that lands
-/// before a runtime adapter. It never manufactures projects or sessions.
-@MainActor
-final class UnavailableWorkspaceDataSource: WorkspaceDataSource {
-    private let message: String
-
-    init(message: String = "The workspace runtime adapter is not connected.") {
-        self.message = message
-    }
-
-    func loadWorkspace() async throws -> WorkspacePresentationSnapshot {
-        throw WorkspaceAdapterError.unsupported(message)
-    }
-
-    func loadSessionOptions(projectID: String) async throws -> [WorkspaceProviderOption] {
-        throw WorkspaceAdapterError.unsupported(message)
-    }
-
-    func startSession(_ request: WorkspaceSessionLaunchRequest) async throws -> WorkspaceSessionLaunchResult {
-        throw WorkspaceAdapterError.unsupported(message)
-    }
-}
-
 // MARK: - Presentation models
 
 struct WorkspacePresentationSnapshot: Hashable {
