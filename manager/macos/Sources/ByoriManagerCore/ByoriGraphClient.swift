@@ -631,22 +631,7 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(SessionRequest(username: "root", password: password))
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await session.data(for: request)
-        } catch {
-            throw KnowledgeGraphClientError.unavailable
-        }
-        guard let status = (response as? HTTPURLResponse)?.statusCode else {
-            throw KnowledgeGraphClientError.invalidResponse
-        }
-        if status == 401 || status == 403 {
-            throw KnowledgeGraphClientError.authenticationFailed
-        }
-        guard (200..<300).contains(status) else {
-            throw KnowledgeGraphClientError.unavailable
-        }
+        let data = try await send(request, otherFailure: .unavailable)
         guard let decoded = try? decoder.decode(SessionResponse.self, from: data),
               decoded.sessionID.isValid else {
             throw KnowledgeGraphClientError.invalidResponse
@@ -663,6 +648,20 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(QueryRequest(sessionID: sessionID, query: statement))
+        let data = try await send(request, otherFailure: .queryFailed)
+        guard let decoded = try? decoder.decode(QueryResponse.self, from: data) else {
+            throw KnowledgeGraphClientError.invalidResponse
+        }
+        return decoded
+    }
+
+    /// Sends `request` and returns the body of a 2xx answer. A transport failure
+    /// is `unavailable`, 401/403 is `authenticationFailed`, and any other status
+    /// is `otherFailure`, which differs between login and query.
+    private func send(
+        _ request: URLRequest,
+        otherFailure: KnowledgeGraphClientError
+    ) async throws -> Data {
         let data: Data
         let response: URLResponse
         do {
@@ -677,12 +676,9 @@ public actor ByoriGraphClient: KnowledgeGraphProviding {
             throw KnowledgeGraphClientError.authenticationFailed
         }
         guard (200..<300).contains(status) else {
-            throw KnowledgeGraphClientError.queryFailed
+            throw otherFailure
         }
-        guard let decoded = try? decoder.decode(QueryResponse.self, from: data) else {
-            throw KnowledgeGraphClientError.invalidResponse
-        }
-        return decoded
+        return data
     }
 
     /// Runs `body` on a fresh session and signs it out afterwards, whether
