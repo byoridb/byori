@@ -168,7 +168,8 @@ binary and writes dependency license texts beside it. Install the requested Rust
 target before cross-compiling. Universal macOS app builds require both
 `aarch64-apple-darwin` and `x86_64-apple-darwin`; the packager combines and signs the
 indexer before signing the app. Release archives are provided for those two macOS
-targets and `x86_64-unknown-linux-gnu` (built on Ubuntu 24.04).
+targets, `x86_64-unknown-linux-gnu`, and `aarch64-unknown-linux-gnu` (both built natively
+on Ubuntu 24.04).
 
 The online installer verifies the archive against the matching release SHA-256
 file. `--assets` uses `bin/byori-indexer` from a bundle or

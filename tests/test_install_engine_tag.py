@@ -44,6 +44,14 @@ esac
 echo "curl: (22) stubbed failure for $url" >&2; exit 22
 """
 
+# Names the URL it refused, so a test can see which archive was chosen.
+FAILING_URL_CURL = """#!/bin/sh
+for argument in "$@"; do
+  case "$argument" in http*) url="$argument" ;; esac
+done
+echo "curl: (22) stubbed failure for $url" >&2; exit 22
+"""
+
 FAILING_CURL = """#!/bin/sh
 echo "curl: (22) stubbed failure" >&2; exit 22
 """
@@ -135,6 +143,27 @@ class InstallEngineTagTests(unittest.TestCase):
 
         self.assertIn(f"downloading engine {PINNED_TAG}", output)
         self.assertNotIn("v9.9.9", output)
+
+    def test_arm_linux_downloads_the_aarch64_engine(self):
+        """The engine ships an ARM Linux archive; the installer must pick it under
+        either name an ARM kernel reports for itself."""
+        for machine in ("aarch64", "arm64"):
+            with self.subTest(machine=machine):
+                uname = self.stub_directory / "uname"
+                uname.write_text(
+                    "#!/bin/sh\n"
+                    'case "$1" in -s) echo Linux ;; -m) echo %s ;; *) exec /usr/bin/uname "$@" ;; esac\n'
+                    % machine,
+                    encoding="utf-8",
+                )
+                uname.chmod(0o755)
+
+                output = self.install(FAILING_URL_CURL, "--engine-tag", PINNED_TAG)
+
+                self.assertIn(
+                    f"byoridb-{PINNED_TAG}-aarch64-unknown-linux-gnu.tar.gz", output
+                )
+                self.assertNotIn("no prebuilt binary", output)
 
     def install_engine_record(self, tag):
         """Pretend an engine is already installed, the way a real machine would."""
