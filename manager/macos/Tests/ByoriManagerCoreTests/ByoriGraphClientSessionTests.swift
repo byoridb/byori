@@ -78,6 +78,31 @@ final class ByoriGraphClientSessionTests: XCTestCase {
         XCTAssertEqual(EngineFixture.signOuts().count, 1)
     }
 
+    /// Login and query share their transport but not their non-2xx error: an
+    /// engine that refuses a login is unavailable, a refused query failed.
+    func testStatusesMapToTheErrorTheCallerReports() async {
+        let cases: [(String, () -> Void, KnowledgeGraphClientError)] = [
+            ("login 500", { EngineFixture.failLogin(status: 500) }, .unavailable),
+            ("login 401", { EngineFixture.failLogin(status: 401) }, .authenticationFailed),
+            ("query 500", { EngineFixture.failQueries(status: 500) }, .queryFailed),
+            ("query 403", { EngineFixture.failQueries(status: 403) }, .authenticationFailed),
+        ]
+        for (label, arrange, expected) in cases {
+            EngineFixture.reset()
+            arrange()
+            do {
+                try await makeClient().verifyConnection(paths: paths)
+                XCTFail("\(label) should fail")
+            } catch {
+                XCTAssertEqual(
+                    String(describing: error),
+                    String(describing: expected),
+                    label
+                )
+            }
+        }
+    }
+
     private func makeClient() -> ByoriGraphClient {
         ByoriGraphClient(
             serviceVerifier: LocalServiceVerifier(runner: TrustedServiceRunner()),
@@ -108,6 +133,8 @@ private final class EngineFixture: URLProtocol, @unchecked Sendable {
     private struct State {
         var signOuts: [SignOut] = []
         var queriesFail = false
+        var queryStatus = 500
+        var loginStatus = 200
         var signOutStatus = 200
     }
 
@@ -115,7 +142,13 @@ private final class EngineFixture: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) private static var state = State()
 
     static func reset() { withState { $0 = State() } }
-    static func failQueries() { withState { $0.queriesFail = true } }
+    static func failQueries(status: Int = 500) {
+        withState {
+            $0.queriesFail = true
+            $0.queryStatus = status
+        }
+    }
+    static func failLogin(status: Int) { withState { $0.loginStatus = status } }
     static func rejectSignOut() { withState { $0.signOutStatus = 405 } }
     static func signOuts() -> [SignOut] { withState { $0.signOuts } }
 
@@ -134,10 +167,12 @@ private final class EngineFixture: URLProtocol, @unchecked Sendable {
         let (status, body): (Int, String)
         switch (request.httpMethod ?? "GET", path) {
         case ("POST", "/api/v1/session"):
-            (status, body) = (200, #"{"session_id":"123456"}"#)
+            let loginStatus = Self.withState { $0.loginStatus }
+            (status, body) = (loginStatus, loginStatus == 200 ? #"{"session_id":"123456"}"# : "{}")
         case ("POST", "/api/v1/query"):
-            (status, body) = Self.withState { $0.queriesFail }
-                ? (500, "{}")
+            let (fails, failure) = Self.withState { ($0.queriesFail, $0.queryStatus) }
+            (status, body) = fails
+                ? (failure, "{}")
                 : (200, #"{"results":[{"name":"fixture","body":"text"}]}"#)
         case ("DELETE", _):
             let signOut = SignOut(path: path, header: request.value(forHTTPHeaderField: "X-ByoriDB-Session-Id"))
