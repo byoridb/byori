@@ -899,20 +899,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
                 nativeSessionID: terminalID.uuidString.lowercased()
             )
             didActivateSession = true
-            lastTerminalStatus[session.id] = .starting
-            try await terminalController.start(
-                descriptor,
-                callbacks: TerminalSessionCallbacks(statusChanged: { [weak self] snapshot in
-                    self?.terminalStatusChanged(
-                        coreSessionID: session.id,
-                        taskID: task.id,
-                        snapshot: snapshot
-                    )
-                })
-            )
-            if case let .failed(message) = terminalController.snapshot(for: terminalID)?.status {
-                throw WorkspaceAdapterError.invalidState(message)
-            }
+            try await startTerminal(descriptor, terminalID: terminalID, coreSessionID: session.id, taskID: task.id)
         } catch {
             _ = try? await taskStore.updateSessionStatus(
                 taskID: task.id,
@@ -1128,20 +1115,7 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
             environment: ["BYORIDB_MEMORY_SPACE": project.memorySpace, "BYORI_TASK_ID": task.id],
             additionalArguments: []
         )
-        lastTerminalStatus[session.id] = .starting
-        try await terminalController.start(
-            descriptor,
-            callbacks: TerminalSessionCallbacks(statusChanged: { [weak self] snapshot in
-                self?.terminalStatusChanged(
-                    coreSessionID: session.id,
-                    taskID: task.id,
-                    snapshot: snapshot
-                )
-            })
-        )
-        if case let .failed(message) = terminalController.snapshot(for: terminalID)?.status {
-            throw WorkspaceAdapterError.invalidState(message)
-        }
+        try await startTerminal(descriptor, terminalID: terminalID, coreSessionID: session.id, taskID: task.id)
         detachedSessionIDs.remove(terminalID)
 
         coreTasks[task.id] = task
@@ -1155,6 +1129,31 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
             task: taskItem,
             session: sessionItem
         )
+    }
+
+    /// Starts the terminal for a stored session and turns a start that failed at
+    /// once into an error. Launch and reattach share this; activation, rollback,
+    /// and detached-session bookkeeping stay with each caller.
+    private func startTerminal(
+        _ descriptor: TerminalLaunchDescriptor,
+        terminalID: UUID,
+        coreSessionID: String,
+        taskID: String
+    ) async throws {
+        lastTerminalStatus[coreSessionID] = .starting
+        try await terminalController.start(
+            descriptor,
+            callbacks: TerminalSessionCallbacks(statusChanged: { [weak self] snapshot in
+                self?.terminalStatusChanged(
+                    coreSessionID: coreSessionID,
+                    taskID: taskID,
+                    snapshot: snapshot
+                )
+            })
+        )
+        if case let .failed(message) = terminalController.snapshot(for: terminalID)?.status {
+            throw WorkspaceAdapterError.invalidState(message)
+        }
     }
 
     private func stopSessionLocked(id: String) async throws -> WorkspaceSessionItem {
