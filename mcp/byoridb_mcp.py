@@ -395,6 +395,28 @@ def _post(path, payload, timeout=30):
         return resp.status, json.loads(resp.read().decode() or "{}")
 
 
+def _http_error_detail(error):
+    """The body of an HTTP error response, read once and then closed.
+
+    An `HTTPError` holds the open response. Left to the garbage collector it is a
+    ResourceWarning per failed request, so every handler reads it through here or
+    closes it itself; the error object stays usable for its status and headers.
+    """
+    if getattr(error, "fp", None) is None:
+        return str(error)
+    try:
+        return error.read().decode(errors="replace")
+    finally:
+        error.close()
+
+
+def _close_http_error(error):
+    # An error built without a response has nothing to close, and on Python 3.9
+    # closing it raises instead.
+    if getattr(error, "fp", None) is not None:
+        error.close()
+
+
 class LoginRefused(RuntimeError):
     """401/403 on `POST /api/v1/session`: the credential was evaluated and rejected.
 
@@ -471,7 +493,7 @@ def _login():
         # Classified here rather than at each call site: a 429 used to escape
         # `_raw_query` as a raw urllib exception because that one path did not
         # remember to look at the status.
-        detail = e.read().decode(errors="replace") if hasattr(e, "read") else str(e)
+        detail = _http_error_detail(e)
         if e.code == 429:
             raise LoginThrottled(_retry_after_seconds(e, detail), detail) from e
         if e.code in (401, 403):
@@ -528,6 +550,7 @@ def _logout():
             response.read()
         return "signed out"
     except urllib.error.HTTPError as e:
+        _close_http_error(e)
         return f"sign-out refused ({e.code}); left to its server-side TTL"
     except Exception as e:  # noqa: BLE001 - exiting either way
         return f"sign-out failed ({type(e).__name__}); left to its server-side TTL"
@@ -628,7 +651,7 @@ def _raw_query(ngql, read_only=False):
             _session["space"] = use_match.group(1)
         return body
     except urllib.error.HTTPError as e:
-        detail = e.read().decode(errors="replace") if hasattr(e, "read") else str(e)
+        detail = _http_error_detail(e)
         if _is_session_lost(e.code, detail):
             _login()
             try:
@@ -639,10 +662,7 @@ def _raw_query(ngql, read_only=False):
             except urllib.error.HTTPError as retried:
                 # Without this the second attempt's status escaped as a urllib
                 # exception, one layer below every other error this returns.
-                again = (
-                    retried.read().decode(errors="replace")
-                    if hasattr(retried, "read") else str(retried)
-                )
+                again = _http_error_detail(retried)
                 raise RuntimeError(
                     f"query failed after re-login ({retried.code}): {_short(again)}"
                 ) from retried
@@ -788,6 +808,7 @@ def _ensure_ready():
             # Backstop for a status that reached here from something other than the
             # login (`_raw_query` posts directly on its re-login path). `_login`
             # itself now raises the two classified types above.
+            _close_http_error(e)
             if e.code in (401, 403):
                 raise RuntimeError(
                     f"authentication failed (HTTP {e.code}); check BYORIDB_ROOT_PASSWORD. "
