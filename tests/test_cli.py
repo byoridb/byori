@@ -715,6 +715,16 @@ class RuntimeLoaderEnvironmentTests(unittest.TestCase):
                         load()
                     self.assertEqual(self.caller_environment(), before)
 
+    def test_an_unreadable_env_file_names_what_each_loader_was_reading(self):
+        (self.home / "env").mkdir()
+        for name, load, _ in self.loaders():
+            with self.subTest(loader=name), self.assertRaises(CLI.ByoriError) as raised:
+                load()
+            self.assertIn(str(self.home / "env"), str(raised.exception))
+        with self.assertRaises(CLI.ByoriError) as raised:
+            CLI.MemoryBridge("caller_load", self.home)
+        self.assertIn("could not read ByoriDB environment", str(raised.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

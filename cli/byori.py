@@ -529,7 +529,10 @@ class MemoryBridge:
                 "ByoriDB MCP runtime not found; install Byori or use --no-memory"
             )
 
-        loaded = self._read_env_file(self.byoridb_home / "env")
+        try:
+            loaded = read_runtime_env(self.byoridb_home / "env")
+        except ByoriError as exc:
+            raise ByoriError("could not read ByoriDB environment: %s" % exc)
         explicit = {
             "BYORIDB_MEMORY_SPACE": self.space,
             "BYORIDB_MCP_PROFILE": "legacy",
@@ -550,23 +553,6 @@ class MemoryBridge:
                     "update the installed Byori runtime: %s" % exc
                 )
         return module
-
-    @staticmethod
-    def _read_env_file(path: pathlib.Path) -> Dict[str, str]:
-        values: Dict[str, str] = {}
-        if not path.exists():
-            return values
-        try:
-            for raw_line in path.read_text(encoding="utf-8").splitlines():
-                line = raw_line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                if key.startswith("BYORIDB_"):
-                    values[key] = value
-        except OSError as exc:
-            raise ByoriError("could not read ByoriDB environment: %s" % exc)
-        return values
 
     def prepare(self) -> None:
         try:
