@@ -158,7 +158,7 @@ public struct AgentCommandCatalogScanner: @unchecked Sendable {
                     let manifest = version
                         .appendingPathComponent(".codex-plugin", isDirectory: true)
                         .appendingPathComponent("plugin.json")
-                    guard safeRegularFile(manifest) else { continue }
+                    guard manifest.isUnlinkedRegularFile else { continue }
                     let identity = pluginIdentity(at: version, fallbackName: plugin.lastPathComponent)
                     groups.append(contentsOf: pluginCommandGroups(
                         identity: identity,
@@ -222,7 +222,7 @@ public struct AgentCommandCatalogScanner: @unchecked Sendable {
         let directory = identity.root.appendingPathComponent("commands", isDirectory: true)
         guard safeDirectory(directory), let files = safeChildren(of: directory) else { return [] }
         let commands = files.compactMap { file -> AgentQuickCommand? in
-            guard file.pathExtension.lowercased() == "md", safeRegularFile(file),
+            guard file.pathExtension.lowercased() == "md", file.isUnlinkedRegularFile,
                   let commandName = safeName(file.deletingPathExtension().lastPathComponent) else {
                 return nil
             }
@@ -423,7 +423,7 @@ public struct AgentCommandCatalogScanner: @unchecked Sendable {
     }
 
     private func safeData(at url: URL) -> Data? {
-        guard safeRegularFile(url),
+        guard url.isUnlinkedRegularFile,
               url.standardizedFileURL.path.hasPrefix(home.path + "/"),
               let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
               (values.fileSize ?? maximumMarkdownBytes + 1) <= maximumMarkdownBytes else {
@@ -438,13 +438,6 @@ public struct AgentCommandCatalogScanner: @unchecked Sendable {
             return false
         }
         return values.isDirectory == true && values.isSymbolicLink != true
-    }
-
-    private func safeRegularFile(_ url: URL) -> Bool {
-        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else {
-            return false
-        }
-        return values.isRegularFile == true && values.isSymbolicLink != true
     }
 
     private func safeName(_ raw: String) -> String? {

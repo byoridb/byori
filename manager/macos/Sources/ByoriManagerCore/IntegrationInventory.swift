@@ -527,7 +527,7 @@ public struct UserSkillScanner: @unchecked Sendable {
             return nil
         }
         let skillFile = directory.appendingPathComponent("SKILL.md")
-        guard safeRegularFile(skillFile),
+        guard skillFile.isUnlinkedRegularFile,
               skillFile.resolvingSymlinksInPath().standardizedFileURL == skillFile.standardizedFileURL else {
             return nil
         }
@@ -546,12 +546,5 @@ public struct UserSkillScanner: @unchecked Sendable {
             return false
         }
         return values.isDirectory == true && values.isSymbolicLink != true
-    }
-
-    private func safeRegularFile(_ url: URL) -> Bool {
-        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else {
-            return false
-        }
-        return values.isRegularFile == true && values.isSymbolicLink != true
     }
 }
