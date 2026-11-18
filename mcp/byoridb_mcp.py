@@ -2137,11 +2137,7 @@ def tool_why(args):
                 other_vid = edge["source_vid"]
                 # Incoming supersedes is the one that must never be silent: it means
                 # this answer is out of date.
-                bucket = {
-                    "supersedes": "superseded_by",
-                    "caused_by": "related",
-                    "fixed_by": "related",
-                }.get(edge["relation"], "related")
+                bucket = "superseded_by" if edge["relation"] == "supersedes" else "related"
             if other_vid is None or bucket is None:
                 continue
             other = neighbours.get(str(other_vid))

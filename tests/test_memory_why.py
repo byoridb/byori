@@ -128,6 +128,22 @@ class MemoryWhyTests(unittest.TestCase):
         )
         self.assertNotIn("stale", answers["decision:retry-limit-three"])
 
+    def test_incoming_causal_edges_are_related_not_reasons(self):
+        """`incident caused_by decision` explains the incident, not the decision;
+        seen from the decision it is only related."""
+        self.edges.append({"relation": "fixed_by", "source_vid": "3", "target_vid": "1"})
+        answers = {a["name"]: a for a in self.why("retry", limit=5)["answers"]}
+
+        for name in ("decision:retry-limit-five", "decision:retry-limit-three"):
+            with self.subTest(answer=name):
+                answer = answers[name]
+                self.assertEqual(
+                    [item["name"] for item in answer["related"]],
+                    ["incident:duplicate-charges"],
+                )
+                self.assertNotIn("because", answer)
+                self.assertNotIn("resolved_by", answer)
+
     def test_superseded_state_without_an_edge_is_still_stale(self):
         self.edges = [edge for edge in self.edges if edge["relation"] != "supersedes"]
         answers = {a["name"]: a for a in self.why("retry", limit=5)["answers"]}
