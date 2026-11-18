@@ -214,21 +214,71 @@ final class AppUpdateOutcomeTests: XCTestCase {
 /// the app deadlocked instead of quitting, the helper sat there holding a
 /// mounted image with no way to make progress.
 final class AppUpdaterHelperScriptTests: XCTestCase {
-    func testTheHelperGivesUpWhenTheAppNeverExits() throws {
-        let directory = FileManager.default.temporaryDirectory
+    private var workspace: URL!
+    private var staging: URL!
+    private var source: URL!
+    private var target: URL!
+
+    /// The staging directory sits apart from the apps, as it does in use: the
+    /// helper removes it, and that must never reach the installed app.
+    override func setUpWithError() throws {
+        workspace = FileManager.default.temporaryDirectory
             .appendingPathComponent("byori-helper-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+        staging = workspace.appendingPathComponent("byori-update-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        try Data("image".utf8).write(to: staging.appendingPathComponent("Byori-0.4.0-universal.dmg"))
+        try Data(AppUpdater.applyScript.utf8).write(to: staging.appendingPathComponent("apply-update.sh"))
 
-        let script = directory.appendingPathComponent("apply-update.sh")
-        try Data(AppUpdater.applyScript.utf8).write(to: script)
-
-        let source = directory.appendingPathComponent("New.app")
-        let target = directory.appendingPathComponent("Installed.app")
+        let applications = workspace.appendingPathComponent("Applications", isDirectory: true)
+        source = workspace.appendingPathComponent("Volume/New.app", isDirectory: true)
+        target = applications.appendingPathComponent("Installed.app", isDirectory: true)
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try Data("new".utf8).write(to: source.appendingPathComponent("marker"))
         try Data("installed".utf8).write(to: target.appendingPathComponent("marker"))
+    }
 
+    override func tearDownWithError() throws {
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: target.deletingLastPathComponent().path
+        )
+        try? FileManager.default.removeItem(at: workspace)
+    }
+
+    private func runHelper(waitingFor pid: Int32, maxWait: Int, stagingDirectory: URL? = nil) throws -> Int32 {
+        let helper = Process()
+        helper.executableURL = URL(fileURLWithPath: "/bin/sh")
+        helper.arguments = [
+            staging.appendingPathComponent("apply-update.sh").path,
+            String(pid),
+            source.path,
+            target.path,
+            workspace.appendingPathComponent("not-a-mount").path,
+            (stagingDirectory ?? staging).path,
+            String(maxWait),
+        ]
+        // `open` at the end has no bundle to launch here; the swap is what
+        // these cover.
+        try helper.run()
+        helper.waitUntilExit()
+        return helper.terminationStatus
+    }
+
+    private func exitedProcessID() throws -> Int32 {
+        let finished = Process()
+        finished.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        finished.arguments = ["0"]
+        try finished.run()
+        finished.waitUntilExit()
+        return finished.processIdentifier
+    }
+
+    private func marker(in app: URL) throws -> Data {
+        try Data(contentsOf: app.appendingPathComponent("marker"))
+    }
+
+    func testTheHelperGivesUpWhenTheAppNeverExits() throws {
         // A process that outlives the helper's bound, standing in for an app
         // that was asked to quit and did not.
         let stubborn = Process()
@@ -237,75 +287,53 @@ final class AppUpdaterHelperScriptTests: XCTestCase {
         try stubborn.run()
         defer { stubborn.terminate() }
 
-        let helper = Process()
-        helper.executableURL = URL(fileURLWithPath: "/bin/sh")
-        helper.arguments = [
-            script.path,
-            String(stubborn.processIdentifier),
-            source.path,
-            target.path,
-            directory.appendingPathComponent("not-a-mount").path,
-            "5",
-        ]
-        try helper.run()
-        helper.waitUntilExit()
+        let status = try runHelper(waitingFor: stubborn.processIdentifier, maxWait: 5)
 
-        XCTAssertNotEqual(helper.terminationStatus, 0, "the helper should report giving up")
-        XCTAssertEqual(
-            try Data(contentsOf: target.appendingPathComponent("marker")),
-            Data("installed".utf8),
-            "the installed app must be left exactly as it was"
-        )
+        XCTAssertNotEqual(status, 0, "the helper should report giving up")
+        XCTAssertEqual(try marker(in: target), Data("installed".utf8),
+                       "the installed app must be left exactly as it was")
         XCTAssertFalse(
             FileManager.default.fileExists(atPath: target.path + ".byori-new"),
             "nothing should have been staged next to the target"
         )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path),
+                       "nothing was applied, so the staged image is not kept")
     }
 
     func testTheHelperSwapsAndKeepsNoLeftoversOnceTheAppExits() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("byori-helper-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+        _ = try runHelper(waitingFor: try exitedProcessID(), maxWait: 50)
 
-        let script = directory.appendingPathComponent("apply-update.sh")
-        try Data(AppUpdater.applyScript.utf8).write(to: script)
-
-        let source = directory.appendingPathComponent("New.app")
-        let target = directory.appendingPathComponent("Installed.app")
-        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
-        try Data("new".utf8).write(to: source.appendingPathComponent("marker"))
-        try Data("installed".utf8).write(to: target.appendingPathComponent("marker"))
-
-        let finished = Process()
-        finished.executableURL = URL(fileURLWithPath: "/bin/sleep")
-        finished.arguments = ["0"]
-        try finished.run()
-        finished.waitUntilExit()
-
-        let helper = Process()
-        helper.executableURL = URL(fileURLWithPath: "/bin/sh")
-        helper.arguments = [
-            script.path,
-            String(finished.processIdentifier),
-            source.path,
-            target.path,
-            directory.appendingPathComponent("not-a-mount").path,
-            "50",
-        ]
-        // `open` at the end has no bundle to launch here; the swap itself is
-        // what this covers.
-        try helper.run()
-        helper.waitUntilExit()
-
-        XCTAssertEqual(
-            try Data(contentsOf: target.appendingPathComponent("marker")),
-            Data("new".utf8),
-            "the target should now hold the new app"
-        )
+        XCTAssertEqual(try marker(in: target), Data("new".utf8),
+                       "the target should now hold the new app")
         XCTAssertFalse(FileManager.default.fileExists(atPath: target.path + ".byori-old"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: target.path + ".byori-new"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path),
+                       "the image and the helper go once the update is installed")
+    }
+
+    func testAFailedSwapKeepsTheImageForAManualInstall() throws {
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o555],
+            ofItemAtPath: target.deletingLastPathComponent().path
+        )
+
+        let status = try runHelper(waitingFor: try exitedProcessID(), maxWait: 50)
+
+        XCTAssertNotEqual(status, 0)
+        XCTAssertEqual(try marker(in: target), Data("installed".utf8))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: staging.appendingPathComponent("Byori-0.4.0-universal.dmg").path
+        ))
+    }
+
+    func testOnlyAnUpdaterStagingDirectoryIsRemoved() throws {
+        let unrelated = workspace.appendingPathComponent("Documents", isDirectory: true)
+        try FileManager.default.createDirectory(at: unrelated, withIntermediateDirectories: true)
+
+        _ = try runHelper(waitingFor: try exitedProcessID(), maxWait: 50, stagingDirectory: unrelated)
+
+        XCTAssertEqual(try marker(in: target), Data("new".utf8), "the swap itself still happened")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unrelated.path))
     }
 }
 
