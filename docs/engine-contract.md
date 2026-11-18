@@ -420,3 +420,10 @@ starts a full server against the live data directory — which a status refresh 
 therefore runs `--version` only when the recorded tag is `v0.4.0` or later, and reports the recorded
 identity otherwise. An install performed before Byori recorded anything has no file, which is
 reported as "not recorded" rather than as a verified build.
+
+**The record must describe the binary on disk.** When `engine.json` carries a `sha256` that is not
+the digest of `bin/byoridb-server`, the app trusts neither the recorded tag nor the probe it would
+gate: it reports "기록과 다른 엔진" with the binary's own short digest and does not run `--version`.
+That covers an engine replaced by hand and a rollback that restored the binary without its record.
+The app's runtime snapshot and rollback therefore treat `engine.json` as part of the runtime, next
+to `bin/`.
