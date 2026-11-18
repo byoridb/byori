@@ -2702,22 +2702,6 @@ final class WorkspaceViewModel: ObservableObject {
         }
     }
 
-    private func replaceTask(_ updated: WorkspaceTaskItem) {
-        for projectIndex in projects.indices {
-            for sourceTreeIndex in projects[projectIndex].sourceTrees.indices {
-                if let taskIndex = projects[projectIndex]
-                    .sourceTrees[sourceTreeIndex]
-                    .tasks
-                    .firstIndex(where: { $0.id == updated.id }) {
-                    projects[projectIndex]
-                        .sourceTrees[sourceTreeIndex]
-                        .tasks[taskIndex] = updated
-                    return
-                }
-            }
-        }
-    }
-
     private func taskLocation(taskID: String) -> (
         project: WorkspaceProjectItem,
         sourceTree: WorkspaceSourceTreeItem,
@@ -2731,23 +2715,6 @@ final class WorkspaceViewModel: ObservableObject {
             }
         }
         return nil
-    }
-
-    private func fallbackSelection(
-        projectID: String,
-        sourceTreeID: String,
-        taskID: String
-    ) -> WorkspaceSelection? {
-        guard let project = projects.first(where: { $0.id == projectID }) else {
-            return defaultSelection()
-        }
-        guard let sourceTree = project.sourceTrees.first(where: { $0.id == sourceTreeID }) else {
-            return .project(project.id)
-        }
-        guard sourceTree.tasks.contains(where: { $0.id == taskID }) else {
-            return .sourceTree(sourceTree.id)
-        }
-        return .task(taskID)
     }
 
     private func isFailure(_ phase: WorkspacePresentationPhase) -> Bool {
