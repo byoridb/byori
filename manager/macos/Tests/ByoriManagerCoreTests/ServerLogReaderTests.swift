@@ -38,6 +38,33 @@ final class ServerLogReaderTests: XCTestCase {
         XCTAssertEqual(reader.tail(of: .error, in: directory).content, .empty)
     }
 
+    /// A log the app cannot open still exists and may hold the crash the user is
+    /// looking for; calling it missing or empty would send them elsewhere.
+    func testAFileWithoutReadPermissionIsUnreadableNotMissing() throws {
+        try write("panic: disk full\n", to: .error)
+        let url = directory.appendingPathComponent(ServerLogFile.error.rawValue)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: url.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path) }
+        guard !FileManager.default.isReadableFile(atPath: url.path) else {
+            throw XCTSkip("permissions do not restrict this user (running as root?)")
+        }
+
+        let tail = reader.tail(of: .error, in: directory)
+
+        XCTAssertEqual(tail.content, .unreadable)
+        XCTAssertNil(tail.text)
+        XCTAssertEqual(tail.lineCount, 0)
+    }
+
+    func testADirectoryInPlaceOfTheFileIsUnreadable() throws {
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent(ServerLogFile.output.rawValue),
+            withIntermediateDirectories: false
+        )
+
+        XCTAssertEqual(reader.tail(of: .output, in: directory).content, .unreadable)
+    }
+
     /// The engine writes dim, colour, and italic sequences around every field. A
     /// text editor shows them literally; the app must not.
     func testTerminalControlSequencesAreStripped() throws {

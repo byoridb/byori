@@ -2164,6 +2164,12 @@ private struct ServerLogSheet: View {
                 title: "\(file.displayName) 파일이 없습니다.",
                 detail: "서비스를 한 번 시작하면 launchd가 이 파일을 만듭니다."
             )
+        case .unreadable:
+            LogPlaceholder(
+                symbol: "exclamationmark.triangle",
+                title: "\(file.displayName) 파일을 읽을 수 없습니다.",
+                detail: "파일은 있지만 열거나 읽지 못했습니다. 파일 권한을 확인하세요."
+            )
         case nil:
             LogPlaceholder(symbol: "clock", title: "로그를 읽는 중…", detail: "")
         }
