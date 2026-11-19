@@ -166,9 +166,15 @@ struct WorkspaceSidebar: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .ready:
             List(selection: selectionBinding) {
-                ForEach(sidebarNodes) { node in
+                ForEach(Array(sidebarNodes.enumerated()), id: \.element.id) { index, node in
+                    // Projects are the units the user scans for; a rule between
+                    // them keeps one project's tasks from reading as the next's.
+                    if index > 0 {
+                        WorkspaceSidebarProjectRule()
+                    }
                     WorkspaceSidebarBranch(
                         node: node,
+                        depth: 0,
                         newSession: { target in
                             Task { await model.prepareNewSession(target: target) }
                         },
@@ -194,6 +200,7 @@ struct WorkspaceSidebar: View {
                 }
             }
             .listStyle(.sidebar)
+            .environment(\.defaultMinListRowHeight, 1)
             .scrollContentBackground(.hidden)
             .accessibilityLabel("Projects, tasks, and sessions")
         }
@@ -409,8 +416,28 @@ private struct WorkspaceSidebarNode: Identifiable {
     }
 }
 
+/// A thin rule between projects. It is a row of its own with no tag, so it
+/// cannot be selected and never sits inside a selected row's highlight.
+private struct WorkspaceSidebarProjectRule: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor))
+            .frame(height: 1)
+            .listRowInsets(EdgeInsets(top: 2, leading: 10, bottom: 2, trailing: 10))
+            .accessibilityHidden(true)
+    }
+}
+
+/// One node and, when expanded, its descendants as sibling rows.
+///
+/// The outline draws its own disclosure control instead of using
+/// `DisclosureGroup`: the sidebar list puts that triangle in the gutter left
+/// of the icon and only on rows that have children, so projects with and
+/// without tasks started at different places and the triangle floated apart
+/// from the row it opened.
 private struct WorkspaceSidebarBranch: View {
     let node: WorkspaceSidebarNode
+    let depth: Int
     let newSession: (WorkspaceNewSessionTarget) -> Void
     let newTerminal: (WorkspaceNewSessionTarget) -> Void
     let buildMemory: (String) -> Void
@@ -426,41 +453,42 @@ private struct WorkspaceSidebarBranch: View {
     @Binding var manualExpansions: [String: Bool]
 
     var body: some View {
-        if let children = node.children, !children.isEmpty {
-            DisclosureGroup(isExpanded: expansion) {
-                ForEach(children) { child in
-                    WorkspaceSidebarBranch(
-                        node: child,
-                        newSession: newSession,
-                        newTerminal: newTerminal,
-                        buildMemory: buildMemory,
-                        showCodeIndex: showCodeIndex,
-                        addSourceTree: addSourceTree,
-                        requestRemoval: requestRemoval,
-                        restoreSourceTree: restoreSourceTree,
-                        isMutatingWorkspace: isMutatingWorkspace,
-                        selection: selection,
-                        manualExpansions: $manualExpansions
-                    )
-                }
-            } label: {
-                taggedRow
-            }
+        taggedRow
             .onChange(of: selection) { newSelection in
-                if node.contains(newSelection) {
+                if hasChildren, node.contains(newSelection) {
                     manualExpansions[node.id] = nil
                 }
             }
-        } else {
-            taggedRow
+        if isExpanded, let children = node.children {
+            ForEach(children) { child in
+                WorkspaceSidebarBranch(
+                    node: child,
+                    depth: depth + 1,
+                    newSession: newSession,
+                    newTerminal: newTerminal,
+                    buildMemory: buildMemory,
+                    showCodeIndex: showCodeIndex,
+                    addSourceTree: addSourceTree,
+                    requestRemoval: requestRemoval,
+                    restoreSourceTree: restoreSourceTree,
+                    isMutatingWorkspace: isMutatingWorkspace,
+                    selection: selection,
+                    manualExpansions: $manualExpansions
+                )
+            }
         }
     }
 
-    private var expansion: Binding<Bool> {
-        Binding(
-            get: { manualExpansions[node.id] ?? node.contains(selection) },
-            set: { manualExpansions[node.id] = $0 }
-        )
+    private var hasChildren: Bool { !(node.children?.isEmpty ?? true) }
+
+    private var isExpanded: Bool {
+        hasChildren && (manualExpansions[node.id] ?? node.contains(selection))
+    }
+
+    private func toggleExpansion() {
+        withAnimation(.easeInOut(duration: 0.15)) {
+            manualExpansions[node.id] = !isExpanded
+        }
     }
 
     @ViewBuilder
@@ -475,6 +503,9 @@ private struct WorkspaceSidebarBranch: View {
     private var row: some View {
         WorkspaceSidebarRow(
             node: node,
+            depth: depth,
+            disclosure: hasChildren ? isExpanded : nil,
+            toggleExpansion: toggleExpansion,
             newSession: newSession,
             newTerminal: newTerminal,
             buildMemory: buildMemory,
@@ -490,6 +521,10 @@ private struct WorkspaceSidebarBranch: View {
 
 private struct WorkspaceSidebarRow: View {
     let node: WorkspaceSidebarNode
+    let depth: Int
+    /// Whether the row's children are shown; nil when it has none.
+    let disclosure: Bool?
+    let toggleExpansion: () -> Void
     let newSession: (WorkspaceNewSessionTarget) -> Void
     let newTerminal: (WorkspaceNewSessionTarget) -> Void
     let buildMemory: (String) -> Void
@@ -504,9 +539,15 @@ private struct WorkspaceSidebarRow: View {
 
     private static let actionSlotWidth: CGFloat = 48
     private static let statusSlotWidth: CGFloat = 7
+    private static let disclosureSlotWidth: CGFloat = 12
+    /// A child's chevron lines up under its parent's icon.
+    private static let indentWidth: CGFloat = 20
 
     var body: some View {
         HStack(spacing: 8) {
+            disclosureControl
+                .padding(.leading, CGFloat(depth) * Self.indentWidth)
+
             Image(systemName: icon)
                 .foregroundStyle(.secondary)
                 .frame(width: 17)
@@ -550,6 +591,29 @@ private struct WorkspaceSidebarRow: View {
         .help(rowHelp)
         .onHover { isHovered = $0 }
         .contextMenu { actionMenuItems }
+    }
+
+    /// Every row keeps the slot, so icons and titles of rows with and without
+    /// children start at the same place.
+    @ViewBuilder
+    private var disclosureControl: some View {
+        if let isExpanded = disclosure {
+            Button(action: toggleExpansion) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .frame(width: Self.disclosureSlotWidth, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(isExpanded ? "접기" : "펼치기")
+            .accessibilityLabel(isExpanded ? "\(node.title) 접기" : "\(node.title) 펼치기")
+        } else {
+            Color.clear
+                .frame(width: Self.disclosureSlotWidth, height: 1)
+                .accessibilityHidden(true)
+        }
     }
 
     /// Selection makes the same actions available when navigating by keyboard.
