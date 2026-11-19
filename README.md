@@ -6,85 +6,20 @@
   <img src="assets/byori-app-icon.png" width="160" alt="Byori app icon">
 </p>
 
-> **The memory of your software project.**
->
-> Git remembers what changed. Byori remembers why.
+Byori is a Mac app for working with Claude Code and Codex. Pick the AI you want to work with on each task.
 
-Every coding agent forgets. Your project shouldn't.
+Say a bug comes in while Claude Code is building a feature. Leave the feature open and give the bug to Codex.
+Each task can have its own copy of the code, so the two sets of edits stay separate. Click a task to see how
+it’s going, then review the changes and decide which ones to bring back into the project.
 
-```text
-$ byori init                       # reads Git history and indexes source code
-analyzed
-  11,814 commits · 1,858 tracked files · 1,042 pull requests
-discovered
-  module 24 · bug 72 · task 64 · decision 19 · relations 453
-```
+“Why did we turn this feature off?” Months later, the code alone might not tell you. In Byori, you can link
+a bug to the code it affected and record why you chose a particular fix. Those records stay on your Mac in
+ByoriDB. If Claude Code investigated the bug and you pick it up later with Codex, Codex can look up the same
+record and point you to the change or document behind it.
 
-```text
-$ ask any agent: "why was sendfile removed from replication?"
+[Quick start](#quick-start) · [Mac app guide](docs/manager-macos.md)
 
-without Byori   "I can only see the current implementation. There is no
-                 sendfile code here, so I cannot say whether it ever existed."
-
-with Byori      bug:redis-revert-61074b43   (evidence-backed)
-                Reverted on 2020-06-06: "Implements sendfile for redis."
-                  (commit 9cf500a3f67e)
-                A revert is the history stating the change was wrong; why it
-                was wrong is not in the commit, so it is not recorded here.
-```
-
-**On redis's full history: 8/8 questions answered with the graph, 0/8 without it**, where a pass means
-the answer cited a commit or pull request a reader can open. Ingest took 11 seconds.
-Reproduce it: [`benchmarks/why.py`](benchmarks/why.py).
-
-Byori preserves that chain rather than a pile of summaries:
-
-```text
-incident ──caused_by──> bug ──fixed_by──> decision ──affects──> module
-                                      └──supersedes──> previous decision
-```
-
-Vector search recalls a similar paragraph; this recalls the reason — and says what it is standing on.
-Every memory is labelled `evidence-backed` or `unsourced`, and a decision that something newer
-replaced comes back marked `stale`, because a memory nobody can check is worth less than one that
-cites a commit, and last year's decision presented as current is worse than no answer.
-
-## What it is made of
-
-| | |
-|---|---|
-| **`byori init`** | Reads Git history — issue trailers, reverts, pull requests, ADRs — then runs the Rust source indexer for Python, Swift, JS/TS, and Rust. Deterministic: no model, with commit/document evidence and source locations. |
-| **`memory_why`** | An MCP tool any agent can call. The *server* assembles the answer — cause, what resolved it, what it superseded, what superseded it, evidence — so a model cannot summarise the evidence away. |
-| **ByoriDB** | The local graph engine underneath: typed causal edges, provenance, bitemporal history, `AS OF`. |
-| **The workspace** | A native macOS app that runs Claude Code, Codex and a plain terminal over per-project memory. It exists so the graph keeps being written; it is not the point. |
-| **`byori doctor`** | Checks the engine, its service, the credential, this project's memory and the agent wiring — and prints the command that fixes whatever failed. |
-
-## What Byori is
-
-Byori is a project-first native multi-agent coding workspace. Organize local Git work as
-**Project → Source Tree/Worktree → Task → Session**, then choose Claude Code or Codex for each
-interactive terminal session. The user decides where each agent works and opens another session
-when another agent is useful; Byori does not automatically fan out a prompt, select a winner,
-merge branches, or delete agent work.
-
-[ByoriDB](https://github.com/byoridb/byoridb) is the durable knowledge engine beneath the
-workspace. It keeps project decisions and rationale, module relationships, recurring bugs,
-incidents, resolutions, and task checkpoints available across agents and sessions. **Byori** is
-the product, **ByoriDB** is its graph engine, and **`byori`** is the command-line interface.
-
-Agents capture durable knowledge at checkpoints. `byori init` imports Git history and ADRs
-and automatically indexes Python, Swift, JavaScript/TypeScript, and Rust source. `byori index`
-refreshes just the source-code graph.
-See [source code indexing](docs/code-index.md) for setup and resolution limits.
-
-> [!WARNING]
-> Byori is currently an early experiment. The native macOS workspace MVP, real interactive PTY,
-> local single-node ByoriDB setup, MCP surface, schema v4 (notes, typed wiki, code indexes,
-> recall policies and explicit task checkpoints), and a
-> separate foreground multi-CLI prototype are implemented. Retained terminal sessions require
-> tmux 3.2 or later; without it they end with the app. Code indexing is explicit and static;
-> unresolved references remain visible rather than being presented as known relationships.
-> Do not use Byori as the only copy of important data.
+> Byori is still experimental. Keep a separate backup of important data.
 
 ## Workspace model
 
@@ -385,9 +320,9 @@ it does not call MCP directly. The agent still decides what to record and whethe
 | Accumulate duplicates through free-form extraction | Manage entities with a narrow ontology and canonical names |
 | May depend on external services | Keep redb-backed data and the MCP server local |
 
-Once the causal chain shown at the top of this page is recorded, future agents can explore the
-cause, the decision that resolved it, and the affected module as one traversal instead of
-searching for the symptom alone.
+In a [test using Redis history](benchmarks/why.py), all eight answers cited a relevant commit or pull
+request after the history was imported, compared with zero when the graph was empty. One answer traced a
+file transfer change back to the commit that reversed it. The reason for reversing it was missing from the record.
 
 ### Preliminary benchmark (dogfood)
 
