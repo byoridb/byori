@@ -334,6 +334,7 @@ struct WorkspaceView<TerminalHost: View>: View {
                 stop: { Task { await model.stopSession(session) } },
                 reattach: { Task { await model.reattachSession(session) } },
                 newSession: { Task { await model.prepareNewSession(after: session) } },
+                close: { model.closeEndedSession(session) },
                 showTaskWork: { model.showTaskWork(taskID: task.id) },
                 newTerminal: {
                     Task {

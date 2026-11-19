@@ -1151,9 +1151,14 @@ final class WorkspaceViewModel: ObservableObject {
         do {
             let snapshot = try await dataSource.loadWorkspace()
             let previousSelection = selection
+            let previousSession = previousSelection.flatMap { lineage(for: $0)?.session }
             projects = snapshot.projects
-            if let previousSelection, lineage(for: previousSelection) != nil {
-                selection = previousSelection
+            if let previousSelection, let lineage = lineage(for: previousSelection) {
+                selection = Self.selectionAfterRefresh(
+                    previousSelection,
+                    wasSession: previousSession,
+                    in: lineage
+                )
             } else {
                 selection = defaultSelection()
             }
@@ -1172,6 +1177,32 @@ final class WorkspaceViewModel: ObservableObject {
                 alert = WorkspaceAlert(title: "Workspace refresh failed", message: message)
             }
         }
+    }
+
+    /// A session that ended on its own or was stopped leaves nothing in its
+    /// terminal — tmux clears the screen and prints only "[exited]" — so the
+    /// view returns to the project instead of holding a dead pane open. A
+    /// session that failed stays selected so its exit code can be read.
+    static func selectionAfterRefresh(
+        _ selection: WorkspaceSelection,
+        wasSession previous: WorkspaceSessionItem?,
+        in lineage: WorkspaceLineage
+    ) -> WorkspaceSelection {
+        guard let previous, previous.state.isActive,
+              let session = lineage.session, session.id == previous.id,
+              !session.isDetached,
+              session.state == .completed || session.state == .cancelled else {
+            return selection
+        }
+        return .project(lineage.project.id)
+    }
+
+    /// Leaves an ended session's pane for its project.
+    func closeEndedSession(_ session: WorkspaceSessionItem) {
+        guard !session.state.isActive, !session.isDetached,
+              selection == .session(session.id),
+              let project = selectedLineage?.project else { return }
+        select(.project(project.id))
     }
 
     func select(_ newSelection: WorkspaceSelection?) {
