@@ -12,6 +12,7 @@ struct WorkspaceSessionPane<TerminalHost: View>: View {
     let stop: () -> Void
     let reattach: () -> Void
     let newSession: () -> Void
+    let close: () -> Void
     let showTaskWork: () -> Void
     let newTerminal: () -> Void
     let commandGroups: [AgentCommandGroup]
@@ -206,6 +207,10 @@ struct WorkspaceSessionPane<TerminalHost: View>: View {
             // The CLI is running, but under the tmux server rather than this
             // app, so there is no terminal view to mount until it reattaches.
             detachedSessionView
+        } else if !session.state.isActive {
+            // An ended tmux client leaves only "[exited]" behind, so the
+            // terminal has nothing left to read; say how it ended instead.
+            endedSessionView
         } else {
             // TerminalSessionController retains SwiftTerm after process exit.
             // Keep that final buffer visible; historical sessions without a
@@ -259,6 +264,42 @@ struct WorkspaceSessionPane<TerminalHost: View>: View {
         .padding(28)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(WorkspacePalette.terminalBackground)
+    }
+
+    private var endedSessionView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: session.state == .completed ? "checkmark.circle" : "xmark.octagon")
+                .font(.system(size: 32))
+                .foregroundStyle(session.state == .completed ? Color.secondary : Color.red)
+                .accessibilityHidden(true)
+            Text(session.state == .completed ? "세션이 끝났습니다" : "세션이 종료되었습니다")
+                .font(.title3.weight(.semibold))
+            Text(endedSessionDetail)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 460)
+
+            HStack(spacing: 10) {
+                Button(action: newSession) {
+                    Label("같은 작업에서 새 세션", systemImage: "plus.rectangle.on.rectangle")
+                }
+                .buttonStyle(.borderedProminent)
+                Button("닫기", action: close)
+                    .keyboardShortcut(.cancelAction)
+                    .help("이 세션을 닫고 프로젝트로 돌아갑니다")
+            }
+            .padding(.top, 4)
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(WorkspacePalette.terminalBackground)
+    }
+
+    private var endedSessionDetail: String {
+        if let detail = session.statusDetail, !detail.isEmpty {
+            return "\(session.providerName) · \(detail)"
+        }
+        return "\(session.providerName) · \(session.state.label)"
     }
 
     private var checkoutHelp: String {

@@ -168,6 +168,8 @@ bottle이 없을 때(현재 macOS 14 이하와 Intel Mac)도 마찬가지다. �
 - 종료된 session에는 같은 Task로 여는 **New Session**을 제공한다. 활성 session은
   **Close**할 수 없으며 먼저 중지해야 한다.
 - 종료된 session은 선택 중인 경우를 제외하고 목록에서 숨기지만, 상위 작업은 남겨 둔다.
+- 선택한 session이 정상 종료되거나 중지되면 화면이 프로젝트로 돌아가고 session 행은 사라진다.
+  오류로 끝난 session은 비어 버린 터미널 대신 exit code와 **같은 작업에서 새 세션**, **닫기**를 보여 준다.
 - ByoriDB 자체는 별도 launchd user service로 계속 실행된다.
 
 사이드바 하단 **보관함 · 정리**에서 **지난 세션 정리**를 연다. 모든 세션이 종료된 작업만 대상으로,

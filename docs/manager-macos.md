@@ -178,6 +178,9 @@ next session without relaunching Byori:
 - An ended session offers **New Session** for the same task. An active session cannot be
   closed and must be stopped first.
 - Ended sessions are omitted from the outline unless currently selected; their parent task remains.
+- When the selected session finishes or is stopped, the window returns to its project and the
+  session's row disappears. A session that fails stays open with its exit code, **New Session**,
+  and **Close** in place of the emptied terminal.
 - ByoriDB itself is separate and continues running as a launchd user service.
 
 The sidebar footer's **보관함 · 정리** opens **지난 세션 정리**. It lists tasks whose sessions
