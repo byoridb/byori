@@ -156,7 +156,10 @@ quit. Existing sessions created by older Byori builds on the default tmux server
 reattachable. Without a supported tmux, retention is limited to the current Byori process and the
 workspace surfaces that limitation before launch. **Settings → Setup Overview** reports the same
 requirement and can install or upgrade tmux with Homebrew; when Homebrew is absent it states the
-requirement rather than offering an action it cannot complete. A successful install applies to the
+requirement rather than offering an action it cannot complete. The same holds when Homebrew has no
+tmux bottle for the Mac (currently macOS 14 and earlier, and Intel Macs): `brew install tmux` would
+compile tmux and its build tools from source, which runs far past what a Settings action waits for,
+so Settings names the command to run in a terminal instead. A successful install applies to the
 next session without relaunching Byori:
 
 - **Quit Byori** detaches tmux-backed sessions and stops only non-persistent fallback sessions.

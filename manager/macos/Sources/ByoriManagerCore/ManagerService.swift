@@ -9,6 +9,7 @@ public actor ManagerService: CodeIndexProviding {
     }
 
     private var serverBinaryDigestCache: (key: BinaryFileKey, digest: String)?
+    private var tmuxBottlePoured: Bool?
 
     private struct RuntimeSnapshot: Sendable {
         let root: URL
@@ -86,12 +87,37 @@ public actor ManagerService: CodeIndexProviding {
     }
 
     public func tmuxStatus() async -> TmuxStatus {
-        TmuxStatus(
-            availability: await tmux.availability(),
-            install: paths.executable(named: "brew").map {
-                .homebrew(executablePath: $0.path)
-            }
+        let availability = await tmux.availability()
+        let install = paths.executable(named: "brew").map {
+            TmuxInstallMethod.homebrew(executablePath: $0.path)
+        }
+        var buildsFromSource = false
+        if !availability.isAvailable, let install {
+            buildsFromSource = await homebrewTmuxBottle(brew: install.executablePath) == false
+        }
+        return TmuxStatus(
+            availability: availability,
+            install: install,
+            homebrewBuildsFromSource: buildsFromSource
         )
+    }
+
+    /// Whether Homebrew has a tmux bottle for this Mac; nil when brew could not
+    /// say. Only a definite answer is kept, for the life of the app: the bottle
+    /// set changes with a tmux release, not between two status refreshes.
+    private func homebrewTmuxBottle(brew: String) async -> Bool? {
+        if let tmuxBottlePoured { return tmuxBottlePoured }
+        var environment = commonEnvironment
+        environment["HOMEBREW_NO_AUTO_UPDATE"] = "1"
+        let result = await runner.run(CommandSpec(
+            executable: brew,
+            arguments: ["info", "--json=v2", "tmux"],
+            environment: environment,
+            timeout: 30
+        ))
+        guard result.succeeded else { return nil }
+        tmuxBottlePoured = HomebrewBottle.isPoured(infoOutput: result.output)
+        return tmuxBottlePoured
     }
 
     /// Installs or upgrades tmux with Homebrew, then re-reads it.
@@ -113,6 +139,9 @@ public actor ManagerService: CodeIndexProviding {
                 summary: "tmux는 이미 사용 가능합니다",
                 detail: status.stateLabel
             )
+        }
+        guard !status.homebrewBuildsFromSource else {
+            throw ManagerError.prerequisite(status.detail)
         }
 
         let subcommand = status.installSubcommand
