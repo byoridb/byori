@@ -3,7 +3,18 @@ name: Byori CI
 on:
   push:
     branches: [main]
+    # Agent instructions and bundled license notices are also Markdown. Keep
+    # those on the build path and skip only reader-facing documentation.
+    paths-ignore: &documentation
+      - 'README.md'
+      - 'adapters/README.md'
+      - 'indexer/README.md'
+      - 'docs/**'
+      - 'DESIGN.md'
+      - 'PRODUCT.md'
+      - '.impeccable/**/*.md'
   pull_request:
+    paths-ignore: *documentation
 
 jobs:
   code-indexer:
