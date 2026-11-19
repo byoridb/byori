@@ -75,6 +75,79 @@ final class ManagerServiceTmuxTests: XCTestCase {
         XCTAssertTrue(brewCommands.isEmpty, "brew was run for a tmux that already works")
     }
 
+    /// #70: with no bottle for this Mac, `brew install tmux` compiled tmux, its
+    /// dependencies and their build tools, ran into the 15-minute limit, and was
+    /// killed mid-build. No source build starts; the user is told to run it in a
+    /// terminal, where its progress is visible.
+    func testWithoutABottleNoSourceBuildIsStarted() async throws {
+        let runner = ScriptedRunner(
+            tmuxVersions: ["tmux 3.1c"],
+            info: brewInfo(bottleTags: [], warnings: oldMacOSWarnings)
+        )
+        let service = ManagerService(paths: paths, runner: runner)
+
+        let status = await service.tmuxStatus()
+        XCTAssertTrue(status.homebrewBuildsFromSource)
+        XCTAssertNil(status.actionTitle, "Settings must not offer the source build")
+        XCTAssertTrue(status.detail.contains("brew upgrade tmux"), status.detail)
+
+        do {
+            _ = try await service.installTmux()
+            XCTFail("a source build must not be started from Settings")
+        } catch let error as ManagerError {
+            guard case let .prerequisite(message) = error else {
+                return XCTFail("expected a prerequisite, got \(error)")
+            }
+            XCTAssertTrue(message.contains("소스에서 빌드"), message)
+        }
+        let brewCommands = await runner.brewCommands()
+        XCTAssertTrue(brewCommands.isEmpty, "\(brewCommands.map(\.arguments))")
+    }
+
+    func testABottledTmuxIsStillOffered() async throws {
+        let runner = ScriptedRunner(
+            tmuxVersions: ["tmux 3.1c"],
+            info: brewInfo(bottleTags: ["arm64_tahoe"], warnings: oldMacOSWarnings)
+        )
+
+        let status = await ManagerService(paths: paths, runner: runner).tmuxStatus()
+
+        XCTAssertFalse(status.homebrewBuildsFromSource)
+        XCTAssertEqual(status.actionTitle, "Homebrew로 업그레이드")
+    }
+
+    /// brew failing to answer is not evidence of a source build; the install
+    /// stays offered as it was before the check existed.
+    func testAnUnreadableAnswerKeepsTheInstall() async throws {
+        let runner = ScriptedRunner(
+            tmuxVersions: ["tmux 3.1c", "tmux 3.5a"],
+            info: CommandResult(exitCode: 0, output: "Error: something unexpected")
+        )
+        let service = ManagerService(paths: paths, runner: runner)
+
+        _ = try await service.installTmux()
+
+        let brewCommands = await runner.brewCommands()
+        XCTAssertEqual(brewCommands.first?.arguments, ["upgrade", "tmux"])
+    }
+
+    func testTheBottleAnswerIsAskedOnceAndNotForAWorkingTmux() async throws {
+        let unusable = ScriptedRunner(
+            tmuxVersions: ["tmux 3.1c"],
+            info: brewInfo(bottleTags: [])
+        )
+        let service = ManagerService(paths: paths, runner: unusable)
+        _ = await service.tmuxStatus()
+        _ = await service.tmuxStatus()
+        let asked = await unusable.infoQueries
+        XCTAssertEqual(asked, 1)
+
+        let working = ScriptedRunner(tmuxVersions: ["tmux 3.5a"], info: brewInfo(bottleTags: []))
+        _ = await ManagerService(paths: paths, runner: working).tmuxStatus()
+        let askedForWorking = await working.infoQueries
+        XCTAssertEqual(askedForWorking, 0, "a usable tmux needs no install, so brew is not asked")
+    }
+
     private func makeExecutable(named name: String) throws {
         let directory = temporaryRoot.appendingPathComponent(".local/bin", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -84,13 +157,17 @@ final class ManagerServiceTmuxTests: XCTestCase {
     }
 }
 
-/// Answers `tmux -V` from a script and records every brew invocation.
+/// Answers `tmux -V` from a script, answers `brew info` with `info`, and records
+/// every other brew invocation.
 private actor ScriptedRunner: CommandRunning {
     private var tmuxVersions: [String]
+    private let info: CommandResult
     private var brewInvocations: [CommandSpec] = []
+    private(set) var infoQueries = 0
 
-    init(tmuxVersions: [String]) {
+    init(tmuxVersions: [String], info: CommandResult = CommandResult(exitCode: 1, output: "")) {
         self.tmuxVersions = tmuxVersions
+        self.info = info
     }
 
     func brewCommands() -> [CommandSpec] { brewInvocations }
@@ -103,9 +180,44 @@ private actor ScriptedRunner: CommandRunning {
             return CommandResult(exitCode: 0, output: version)
         }
         if command.executable.hasSuffix("/brew") {
+            if command.arguments.first == "info" {
+                infoQueries += 1
+                return info
+            }
             brewInvocations.append(command)
             return CommandResult(exitCode: 0, output: "==> Upgrading tmux")
         }
         return CommandResult(exitCode: 0, output: "")
     }
 }
+
+/// `brew info --json=v2 tmux` as Homebrew prints it, trimmed to the field the
+/// bottle check reads. The API data carries only this Mac's bottle, so on a
+/// system Homebrew builds no bottles for, `files` is empty.
+private func brewInfo(bottleTags: [String], warnings: String = "") -> CommandResult {
+    let files = bottleTags
+        .map { "\"\($0)\": {\"cellar\": \":any\"}" }
+        .joined(separator: ", ")
+    return CommandResult(exitCode: 0, output: warnings + """
+    {
+      "formulae": [
+        {
+          "name": "tmux",
+          "bottle": {"stable": {"rebuild": 0, "files": {\(files)}}}
+        }
+      ],
+      "casks": []
+    }
+    """)
+}
+
+/// The start of what Homebrew printed on the reporter's macOS 13 (#70).
+private let oldMacOSWarnings = """
+Warning: You are using macOS 13.
+We (and Apple) do not provide support for this old version.
+Warning: The following taps are not trusted:
+  aws/tap
+Trust other specific casks and commands with:
+  brew trust --cask <user>/<tap>/<cask>
+
+"""

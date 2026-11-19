@@ -148,7 +148,10 @@ tmux 3.2 이상이면 Byori 전용 tmux server를 사용하므로 앱을 완전�
 기존 Byori 빌드가 기본 tmux server에 만든 세션도 다시 attach할 수 있다. 지원되는 tmux가 없으면
 유지 범위는 현재 Byori 앱 process의 수명까지이며, workspace가 실행 전에 이 제한을 표시한다.
 **Settings → 설정 개요**도 같은 요건을 보고하며 Homebrew로 tmux를 설치하거나 업그레이드할 수 있다.
-Homebrew가 없으면 완료할 수 없는 동작을 제공하는 대신 요건만 알린다. 설치가 성공하면 앱을
+Homebrew가 없으면 완료할 수 없는 동작을 제공하는 대신 요건만 알린다. Homebrew에 이 Mac용 tmux
+bottle이 없을 때(현재 macOS 14 이하와 Intel Mac)도 마찬가지다. 이때 `brew install tmux`는 tmux와
+빌드 도구를 소스에서 컴파일하므로 설정 화면의 동작이 기다릴 수 있는 시간을 크게 넘긴다. 그래서
+설정은 버튼 대신 터미널에서 실행할 명령을 알려 준다. 설치가 성공하면 앱을
 다시 실행하지 않아도 다음 세션부터 적용된다.
 
 - **Quit Byori**는 tmux 기반 세션에서는 client만 분리하고, 지속성이 없는 fallback 세션만 중지한다.

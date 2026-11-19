@@ -131,3 +131,46 @@ private actor SequencedRunner: CommandRunning {
         return CommandResult(exitCode: 0, output: output)
     }
 }
+
+/// #70. The status a Mac without a tmux bottle gets: the requirement and the
+/// command to run, but no button that would start a source build.
+final class TmuxSourceBuildStatusTests: XCTestCase {
+    func testASourceBuildIsDescribedNotOffered() {
+        let status = TmuxStatus(
+            availability: .unavailable(.notInstalled),
+            install: .homebrew(executablePath: "/usr/local/bin/brew"),
+            homebrewBuildsFromSource: true
+        )
+
+        XCTAssertFalse(status.canInstall)
+        XCTAssertNil(status.actionTitle)
+        XCTAssertTrue(status.detail.contains("소스에서 빌드"), status.detail)
+        XCTAssertTrue(status.detail.contains("brew install tmux"), status.detail)
+        XCTAssertFalse(status.detail.contains("Homebrew가 없어"), "brew is there; the bottle is not")
+    }
+
+    func testOnlyAnEmptyBottleSetMeansASourceBuild() {
+        let poured = """
+        Warning: You are using macOS 13.
+        {
+          "formulae": [{"name": "tmux", "bottle": {"stable": {"files": {"arm64_tahoe": {}}}}}]
+        }
+        """
+        let unpoured = """
+        {
+          "formulae": [{"name": "tmux", "bottle": {"stable": {"rebuild": 0, "files": {}}}}]
+        }
+        """
+        let noBottleBlock = """
+        {
+          "formulae": [{"name": "tmux", "bottle": {}}]
+        }
+        """
+
+        XCTAssertEqual(HomebrewBottle.isPoured(infoOutput: poured), true)
+        XCTAssertEqual(HomebrewBottle.isPoured(infoOutput: unpoured), false)
+        XCTAssertEqual(HomebrewBottle.isPoured(infoOutput: noBottleBlock), false)
+        XCTAssertNil(HomebrewBottle.isPoured(infoOutput: "Error: No available formula with the name \"tmux\"."))
+        XCTAssertNil(HomebrewBottle.isPoured(infoOutput: "{\n  \"casks\": []\n}"))
+    }
+}
