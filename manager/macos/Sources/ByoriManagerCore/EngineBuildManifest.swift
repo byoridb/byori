@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// What the installer recorded about the engine binary it installed.
@@ -70,6 +71,41 @@ public struct EngineBuildManifest: Equatable, Sendable {
             return false
         }
         return found >= minimum
+    }
+
+    /// Whether this record is about the binary whose digest is `binaryDigest`.
+    ///
+    /// A record without a digest predates digests and is taken as it is. One that
+    /// names a digest describes exactly that file: a rollback that restored the
+    /// binary but not this record, or an engine replaced by hand, leaves it
+    /// describing something that is no longer there. An unreadable binary cannot
+    /// be shown to match, so it does not.
+    public func describes(binaryDigest: String?) -> Bool {
+        guard let sha256 else { return true }
+        return binaryDigest == sha256
+    }
+
+    /// Identity for a binary whose record describes a different file. Starts with
+    /// no version token on purpose: it must not be ordered against releases.
+    public static func unrecordedIdentity(binaryDigest: String?) -> String {
+        "기록과 다른 엔진 · " + (binaryDigest.map { String($0.prefix(12)) } ?? "읽을 수 없음")
+    }
+
+    /// The lowercase hex SHA-256 of the file at `url`, read in chunks so a large
+    /// binary is never held in memory at once. Nil when it cannot be read.
+    public static func sha256(ofFileAt url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        do {
+            // `read(upToCount:)` answers nil, not empty data, at the end.
+            while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+                hasher.update(data: chunk)
+            }
+        } catch {
+            return nil
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     /// Parses `byoridb-server --version`, which prints

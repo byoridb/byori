@@ -400,3 +400,9 @@ byoridb-server 0.4.0 (commit fbeb4ac55417, release)
 살아 있는 데이터 디렉터리에 대해 전체 서버를 시작한다. 상태 확인이 절대 해서는 안 되는 일이다.
 그래서 Byori는 기록된 tag가 `v0.4.0` 이상일 때만 `--version`을 실행하고, 그 외에는 기록된
 식별자를 보고한다. Byori가 기록하기 전에 설치한 경우 파일이 없으며 "기록 없음"으로 보고한다.
+
+**기록은 디스크의 바이너리를 설명해야 한다.** `engine.json`의 `sha256`이 `bin/byoridb-server`의
+digest와 다르면, 앱은 기록된 tag도, 그 tag가 허용하는 probe도 믿지 않는다. 대신 바이너리의 짧은
+digest와 함께 "기록과 다른 엔진"으로 보고하고 `--version`을 실행하지 않는다. 손으로 엔진을 바꾼
+경우와, 롤백이 바이너리만 되돌리고 기록은 되돌리지 않은 경우가 여기에 해당한다. 그래서 앱의
+runtime snapshot과 롤백은 `engine.json`을 `bin/`과 함께 runtime의 일부로 다룬다.

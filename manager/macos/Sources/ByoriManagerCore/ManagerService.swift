@@ -2,6 +2,14 @@ import Darwin
 import Foundation
 
 public actor ManagerService: CodeIndexProviding {
+    private struct BinaryFileKey: Equatable {
+        let inode: UInt64?
+        let size: Int64?
+        let modified: Date?
+    }
+
+    private var serverBinaryDigestCache: (key: BinaryFileKey, digest: String)?
+
     private struct RuntimeSnapshot: Sendable {
         let root: URL
         let existingNames: Set<String>
@@ -1408,8 +1416,18 @@ public actor ManagerService: CodeIndexProviding {
     /// that. With a tag at or above 0.4.0, `--version` parses first and touches
     /// nothing, so the binary is asked and the file becomes the fallback for when
     /// the probe fails or was never recorded.
+    ///
+    /// A record whose digest is not the binary's is not trusted for either: it
+    /// could be gating a probe of a pre-0.4.0 binary it no longer describes.
     private func engineIdentity() async -> String? {
         let manifest = EngineBuildManifest.read(at: paths.engineManifest)
+        if let manifest, manifest.sha256 != nil,
+           fileManager.fileExists(atPath: paths.serverBinary.path) {
+            let digest = serverBinaryDigest()
+            guard manifest.describes(binaryDigest: digest) else {
+                return EngineBuildManifest.unrecordedIdentity(binaryDigest: digest)
+            }
+        }
         guard manifest?.allowsVersionProbe == true,
               fileManager.isExecutableFile(atPath: paths.serverBinary.path) else {
             return manifest?.displayIdentity
@@ -1425,6 +1443,28 @@ public actor ManagerService: CodeIndexProviding {
             return manifest?.displayIdentity
         }
         return version
+    }
+
+    /// Hashing a 20-40 MB binary on every status refresh would be wasted work, so
+    /// the digest is reused while the file's identity and size and modification
+    /// time are unchanged; replacing the binary changes at least one of them.
+    private func serverBinaryDigest() -> String? {
+        let path = paths.serverBinary.path
+        guard let attributes = try? fileManager.attributesOfItem(atPath: path) else {
+            serverBinaryDigestCache = nil
+            return nil
+        }
+        let key = BinaryFileKey(
+            inode: (attributes[.systemFileNumber] as? NSNumber)?.uint64Value,
+            size: (attributes[.size] as? NSNumber)?.int64Value,
+            modified: attributes[.modificationDate] as? Date
+        )
+        if let cached = serverBinaryDigestCache, cached.key == key {
+            return cached.digest
+        }
+        let digest = EngineBuildManifest.sha256(ofFileAt: paths.serverBinary)
+        serverBinaryDigestCache = digest.map { (key, $0) }
+        return digest
     }
 
     private func isServiceLoaded() async -> Bool {
@@ -1520,6 +1560,10 @@ public actor ManagerService: CodeIndexProviding {
             (paths.byoriHome.appendingPathComponent("code_graph.py"), "code_graph.py"),
             (paths.byoriHome.appendingPathComponent("INDEXER_LICENSES.txt"), "INDEXER_LICENSES.txt"),
             (paths.byoriHome.appendingPathComponent("env"), "env"),
+            // The record of which engine `bin/` holds travels with it: restoring
+            // one without the other leaves a record that gates `--version`
+            // probing for a binary it does not describe (#57).
+            (paths.engineManifest, "engine.json"),
             (paths.launchAgent, "launch-agent.plist"),
         ]
         let serviceWasLoaded = await isServiceLoaded()
@@ -1567,6 +1611,7 @@ public actor ManagerService: CodeIndexProviding {
             ("code_graph.py", paths.byoriHome.appendingPathComponent("code_graph.py")),
             ("INDEXER_LICENSES.txt", paths.byoriHome.appendingPathComponent("INDEXER_LICENSES.txt")),
             ("env", paths.byoriHome.appendingPathComponent("env")),
+            ("engine.json", paths.engineManifest),
             ("launch-agent.plist", paths.launchAgent),
         ]
 
