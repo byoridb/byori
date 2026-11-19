@@ -201,9 +201,48 @@ struct WorkspaceSidebar: View {
             }
             .listStyle(.sidebar)
             .environment(\.defaultMinListRowHeight, 1)
+            .onMoveCommand(perform: moveInOutline)
             .scrollContentBackground(.hidden)
             .accessibilityLabel("Projects, tasks, and sessions")
         }
+    }
+
+    /// ← and → fold the outline the way Finder's does, since the rows no
+    /// longer come from an outline view that would: → opens the selected row
+    /// and then steps into it, ← closes it and then steps out to its parent.
+    private func moveInOutline(_ direction: MoveCommandDirection) {
+        guard let path = Self.path(to: model.selection, in: sidebarNodes), let node = path.last else { return }
+        let hasChildren = !(node.children?.isEmpty ?? true)
+        let isExpanded = hasChildren && (manualExpansions[node.id] ?? node.contains(model.selection))
+        switch direction {
+        case .right:
+            if hasChildren, !isExpanded {
+                withAnimation(.easeInOut(duration: 0.15)) { manualExpansions[node.id] = true }
+            } else if isExpanded, let first = node.children?.first?.selection {
+                model.select(first)
+            }
+        case .left:
+            if isExpanded {
+                withAnimation(.easeInOut(duration: 0.15)) { manualExpansions[node.id] = false }
+            } else if path.count > 1, let parent = path[path.count - 2].selection {
+                model.select(parent)
+            }
+        default:
+            break
+        }
+    }
+
+    /// The nodes from a project down to the row showing `selection`.
+    private static func path(
+        to selection: WorkspaceSelection?,
+        in nodes: [WorkspaceSidebarNode]
+    ) -> [WorkspaceSidebarNode]? {
+        guard let selection else { return nil }
+        for node in nodes {
+            if node.selection == selection { return [node] }
+            if let rest = path(to: selection, in: node.children ?? []) { return [node] + rest }
+        }
+        return nil
     }
 
     private var selectionBinding: Binding<WorkspaceSelection?> {
