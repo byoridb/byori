@@ -49,6 +49,8 @@ final class ManagerServiceRecoveryTests: XCTestCase {
         XCTAssertEqual(after.lastAttempt?.outcome, .verified)
         let mutations = await runner.mutations
         XCTAssertEqual(mutations, [["bootstrap", fixture.paths.launchAgent.path]])
+        let enables = await runner.enables
+        XCTAssertEqual(enables, [0], "the job is enabled once, before it is bootstrapped")
         let verifications = await graph.verifications
         XCTAssertGreaterThan(verifications, 0)
         let unexpected = await runner.unexpectedCommands
@@ -177,6 +179,8 @@ private actor RecoveryServiceRunner: CommandRunning {
     let paths: ManagerPaths
     var state: State
     var mutations: [[String]] = []
+    /// How many mutations had happened when each `enable` arrived.
+    var enables: [Int] = []
     var unexpectedCommands: [String] = []
     var commandCount = 0
     private var printCount = 0
@@ -205,6 +209,13 @@ private actor RecoveryServiceRunner: CommandRunning {
         if command.executable == "/usr/sbin/lsof",
            arguments == ["-nP", "-a", "-p", "12345", "-iTCP:\(paths.httpPort)", "-sTCP:LISTEN", "-Fp"] {
             return CommandResult(exitCode: 0, output: "p12345\n")
+        }
+        if command.executable == "/bin/launchctl",
+           arguments == ["enable", "gui/\(getuid())/\(paths.serviceLabel)"] {
+            // Not a lifecycle mutation: it clears a disabled override so the
+            // bootstrap that follows can load the job.
+            enables.append(mutations.count)
+            return CommandResult(exitCode: 0, output: "")
         }
         if command.executable == "/bin/launchctl", arguments.count == 3,
            arguments[0] == "bootstrap", arguments[1] == "gui/\(getuid())", arguments[2] == paths.launchAgent.path {

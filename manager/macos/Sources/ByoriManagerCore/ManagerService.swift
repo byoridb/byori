@@ -989,11 +989,16 @@ public actor ManagerService: CodeIndexProviding {
         if current == .healthy { return }
         guard current.action == action else { throw RuntimeRecoveryError.refused(current) }
         try Task.checkCancellation()
-        let arguments = action == .start
-            ? ["bootstrap", "gui/\(getuid())", paths.launchAgent.path]
-            : ["kickstart", "-k", serviceTarget]
-        let result = await runner.run(CommandSpec(executable: "/bin/launchctl", arguments: arguments, timeout: 15))
-        try require(result, label: action.title)
+        if action == .start {
+            _ = try await loadLaunchAgent(label: action.title)
+        } else {
+            let result = await runner.run(CommandSpec(
+                executable: "/bin/launchctl",
+                arguments: ["kickstart", "-k", serviceTarget],
+                timeout: 15
+            ))
+            try require(result, label: action.title)
+        }
         // Bounded startup grace period. Only a transport/startup failure waits;
         // credentials, disk, foreign ownership and invalid config stop now.
         for _ in 0..<5 {
@@ -1010,22 +1015,10 @@ public actor ManagerService: CodeIndexProviding {
         guard fileManager.fileExists(atPath: paths.launchAgent.path) else {
             throw ManagerError.prerequisite("ByoriDB를 먼저 설치해 주세요.")
         }
-        let target = serviceTarget
-        let bootstrap = await runner.run(CommandSpec(
-            executable: "/bin/launchctl",
-            arguments: ["bootstrap", "gui/\(getuid())", paths.launchAgent.path]
-        ))
-        let detail: String
-        if !bootstrap.succeeded {
-            let kickstart = await runner.run(CommandSpec(
-                executable: "/bin/launchctl",
-                arguments: ["kickstart", "-k", target]
-            ))
-            try require(kickstart, label: "ByoriDB 서비스 시작")
-            detail = "이미 등록된 launchd 서비스를 다시 시작하고 상태 확인을 완료했습니다."
-        } else {
-            detail = "launchd에 서비스를 등록하고 상태 확인을 완료했습니다."
-        }
+        let restartedLoadedJob = try await loadLaunchAgent(label: "ByoriDB 서비스 시작")
+        let detail = restartedLoadedJob
+            ? "이미 등록된 launchd 서비스를 다시 시작하고 상태 확인을 완료했습니다."
+            : "launchd에 서비스를 등록하고 상태 확인을 완료했습니다."
         try await verifyByori()
         try await recovery.setUserStopped(false)
         return OperationResult(summary: "ByoriDB 서비스 시작 완료", detail: detail)
@@ -1467,6 +1460,72 @@ public actor ManagerService: CodeIndexProviding {
         return digest
     }
 
+    /// Loads the launchd job from its plist whatever state it was in, the way
+    /// install.sh does. `enable` first: a disabled job fails to bootstrap with
+    /// "Bootstrap failed: 5: Input/output error", and so does one that is still
+    /// loaded — which is fine, and a restart gives it a fresh process (#58).
+    ///
+    /// Returns whether an already loaded job was restarted instead.
+    private func loadLaunchAgent(label: String) async throws -> Bool {
+        _ = await runner.run(CommandSpec(
+            executable: "/bin/launchctl",
+            arguments: ["enable", serviceTarget],
+            timeout: 5
+        ))
+        let bootstrap = await runner.run(CommandSpec(
+            executable: "/bin/launchctl",
+            arguments: ["bootstrap", "gui/\(getuid())", paths.launchAgent.path],
+            timeout: 30
+        ))
+        if bootstrap.succeeded { return false }
+        if await isServiceLoaded() {
+            let kickstart = await runner.run(CommandSpec(
+                executable: "/bin/launchctl",
+                arguments: ["kickstart", "-k", serviceTarget],
+                timeout: 15
+            ))
+            try require(kickstart, label: label)
+            return true
+        }
+        throw ManagerError.commandFailed(
+            label,
+            bootstrap.exitCode,
+            "\(bootstrap.output)\n\(await launchdJobReport())"
+        )
+    }
+
+    /// Boots the job out and waits until launchd no longer lists it, so a
+    /// bootstrap that follows does not meet a job that is still going away.
+    private func unloadLaunchAgent() async {
+        guard await isServiceLoaded() else { return }
+        _ = await runner.run(CommandSpec(
+            executable: "/bin/launchctl",
+            arguments: ["bootout", serviceTarget],
+            timeout: 15
+        ))
+        for _ in 0..<20 {
+            guard await isServiceLoaded() else { return }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+    }
+
+    /// launchd's own account of the job, for an error that would otherwise say
+    /// only "error 5": neither server.log nor server.err records a process that
+    /// never started.
+    private func launchdJobReport() async -> String {
+        let result = await runner.run(CommandSpec(
+            executable: "/bin/launchctl",
+            arguments: ["print", serviceTarget],
+            timeout: 5
+        ))
+        guard result.succeeded else { return "launchd: \(serviceTarget) is not loaded" }
+        let lines = result.output
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.hasPrefix("state = ") || $0.hasPrefix("last exit") }
+        return (["launchd: \(serviceTarget)"] + lines).joined(separator: "\n")
+    }
+
     private func isServiceLoaded() async -> Bool {
         let result = await runner.run(CommandSpec(
             executable: "/bin/launchctl",
@@ -1615,11 +1674,7 @@ public actor ManagerService: CodeIndexProviding {
             ("launch-agent.plist", paths.launchAgent),
         ]
 
-        _ = await runner.run(CommandSpec(
-            executable: "/bin/launchctl",
-            arguments: ["bootout", serviceTarget],
-            timeout: 15
-        ))
+        await unloadLaunchAgent()
 
         do {
             for (name, destination) in destinations {
@@ -1639,14 +1694,11 @@ public actor ManagerService: CodeIndexProviding {
             }
 
             if snapshot.serviceWasLoaded {
-                let restart = await runner.run(CommandSpec(
-                    executable: "/bin/launchctl",
-                    arguments: ["bootstrap", "gui/\(getuid())", paths.launchAgent.path],
-                    timeout: 30
-                ))
-                try require(restart, label: "ByoriDB 자동 롤백 후 서비스 시작")
+                _ = try await loadLaunchAgent(label: "ByoriDB 자동 롤백 후 서비스 시작")
                 guard await isServiceLoaded() else {
-                    throw ManagerError.verificationFailed("롤백한 launchd 서비스가 로드되지 않았습니다.")
+                    throw ManagerError.verificationFailed(
+                        "롤백한 launchd 서비스가 로드되지 않았습니다.\n\(await launchdJobReport())"
+                    )
                 }
                 if snapshot.serviceWasHealthy {
                     try await verifyByori()
