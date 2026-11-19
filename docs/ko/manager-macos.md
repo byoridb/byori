@@ -106,6 +106,15 @@ prototype/호환 경로로 남아 있다.
   Focused/Related/Broad는 task·source-tree match와 0/1/2-hop graph 이웃을 최근 project
   record보다 우선한다. Context는 별도로 load하므로 ByoriDB가 느리거나 unavailable이어도
   Files와 Git을 막지 않는다.
+- **Issues** inspector 탭은 선택한 프로젝트 저장소의 GitHub 이슈를 보여 준다. 저장소는 프로젝트
+  primary checkout의 git remote로 정한다. Byori는 사용자의 `gh`를 실행할 뿐 GitHub 토큰을 읽거나
+  저장하지 않는다. `gh`가 없거나, `gh auth login`을 하지 않았거나, GitHub remote가 없으면 그 요건과
+  해결 명령을 표시한다. 목록은 열림·닫힘·전체로 거르고 GitHub 검색 문법으로 찾는다(최근 100개
+  표시). 이슈를 열면 본문과 댓글을 인라인 Markdown으로 보여 주고, 완료·계획 안 함으로 닫기,
+  다시 열기, 댓글 작성, 라벨·담당자 편집을 할 수 있다. **+**로 새 이슈를 등록한다. 모든 변경은
+  gh가 실제로 적용하고 이슈를 다시 읽은 뒤에만 화면에 반영한다. **이 이슈로 작업 시작**은 새
+  세션 시트를 열고 새 task 이름을 `#<번호> <제목>`으로 채운다. 그래서 제안 브랜치에 이슈 번호가
+  들어간다. 프롬프트는 지금처럼 사용자가 입력하고, 에이전트는 필요하면 `gh`로 이슈를 직접 읽는다.
 - 하단 28pt 상태바는 인증까지 확인한 ByoriDB readiness, branch와 작업 폴더 상태, 활성 session 수,
   Context availability, 세션 시작 시 선택과 경과 시간을 표시한다. Git·Context는 해당 inspector
   탭을, ByoriDB 상태는 Settings를 연다. 중복 project 이름·세로 구분선·새로고침 버튼은 두지 않는다.

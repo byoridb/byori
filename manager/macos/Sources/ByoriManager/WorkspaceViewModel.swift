@@ -57,9 +57,14 @@ protocol WorkspaceDataSource: AnyObject {
     func loadTaskVerification(scope: WorkspaceTaskWorkScope) async throws -> VerificationSnapshot
     func saveTaskVerificationCommands(scope: WorkspaceTaskWorkScope, commands: [VerificationCommand]) async throws
     func runTaskVerification(scope: WorkspaceTaskWorkScope, commandID: String) async throws -> VerificationReceipt
+    /// The GitHub issues of the repository this checkout's remotes point to.
+    func gitHubIssues(projectID: String, sourceTreeID: String) async throws -> any GitHubIssueProviding
 }
 
 extension WorkspaceDataSource {
+    func gitHubIssues(projectID: String, sourceTreeID: String) async throws -> any GitHubIssueProviding {
+        throw WorkspaceAdapterError.unsupported("GitHub 이슈가 연결되지 않았습니다.")
+    }
     func loadTaskWorkflow(scope: WorkspaceTaskWorkScope) async throws -> TaskWorkflowPlan? {
         throw WorkspaceAdapterError.unsupported("작업 절차 저장소가 연결되지 않았습니다.")
     }
@@ -659,6 +664,7 @@ enum WorkspaceInspectorTab: String, CaseIterable, Identifiable {
     case files = "Files"
     case git = "Git"
     case context = "Context"
+    case issues = "Issues"
 
     var id: String { rawValue }
 }
@@ -705,6 +711,14 @@ enum WorkspaceSessionOptionsPhase: Equatable {
 enum WorkspaceNewSessionTaskChoice: Hashable {
     case newTask
     case existing(String)
+}
+
+struct WorkspaceIssuesScope: Identifiable, Equatable, Sendable {
+    let projectID: String
+    let projectName: String
+    let sourceTreeID: String
+
+    var id: String { projectID }
 }
 
 struct WorkspaceNewSessionTarget: Hashable {
@@ -1669,7 +1683,10 @@ final class WorkspaceViewModel: ObservableObject {
         await presentNewSession(for: target)
     }
 
-    func prepareNewSession(target requestedTarget: WorkspaceNewSessionTarget) async {
+    func prepareNewSession(
+        target requestedTarget: WorkspaceNewSessionTarget,
+        newTaskTitle: String? = nil
+    ) async {
         guard !isPresentingNewSession, !isStartingSession else { return }
         guard let target = newSessionTarget(matching: requestedTarget) else {
             alert = WorkspaceAlert(
@@ -1679,7 +1696,40 @@ final class WorkspaceViewModel: ObservableObject {
             return
         }
 
-        await presentNewSession(for: target)
+        await presentNewSession(for: target, newTaskTitle: newTaskTitle)
+    }
+
+    /// The new-session sheet for work on a GitHub issue (#22): a new task named
+    /// after the issue, so the suggested branch carries its number. The prompt
+    /// stays the user's to type; the agent can read the issue with gh itself.
+    func startWork(onIssue issue: GitHubIssueSummary, in scope: WorkspaceIssuesScope) async {
+        await prepareNewSession(
+            target: WorkspaceNewSessionTarget(
+                projectID: scope.projectID,
+                sourceTreeID: scope.sourceTreeID,
+                existingTaskID: nil
+            ),
+            newTaskTitle: Self.issueTaskTitle(issue)
+        )
+    }
+
+    static func issueTaskTitle(_ issue: GitHubIssueSummary) -> String {
+        "#\(issue.number) \(issue.title)"
+    }
+
+    /// Issues belong to the repository, so the scope follows the project and
+    /// prefers its primary checkout: choosing another worktree of the same
+    /// project does not reload the list.
+    var issuesScope: WorkspaceIssuesScope? {
+        guard let project = selectedLineage?.project,
+              let tree = project.sourceTrees.first(where: { $0.kind == .primary })
+                ?? selectedLineage?.sourceTree
+                ?? project.sourceTrees.first else { return nil }
+        return WorkspaceIssuesScope(projectID: project.id, projectName: project.name, sourceTreeID: tree.id)
+    }
+
+    func issueProvider(for scope: WorkspaceIssuesScope) async throws -> any GitHubIssueProviding {
+        try await dataSource.gitHubIssues(projectID: scope.projectID, sourceTreeID: scope.sourceTreeID)
     }
 
     func prepareNewSession(after session: WorkspaceSessionItem) async {
@@ -1861,7 +1911,7 @@ final class WorkspaceViewModel: ObservableObject {
         project: WorkspaceProjectItem,
         sourceTree: WorkspaceSourceTreeItem?,
         task: WorkspaceTaskItem?
-    )) async {
+    ), newTaskTitle: String? = nil) async {
         sessionPlanRequestToken = UUID()
         sessionStrategyWasEdited = false
         sessionBranchWasEdited = false
@@ -1879,6 +1929,7 @@ final class WorkspaceViewModel: ObservableObject {
             // Opening or cancelling a sheet never creates Git state.
             sourceTreeID: target.sourceTree?.id ?? "",
             taskChoice: target.task.map { .existing($0.id) } ?? .newTask,
+            newTaskTitle: target.task == nil ? (newTaskTitle ?? "") : "",
             sessionName: WorkspaceSessionNameGenerator.make(),
             contextDepth: contextDepth,
             acceptsModifiedWorkingTree: false

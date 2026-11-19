@@ -160,7 +160,7 @@ struct WorkspaceView<TerminalHost: View>: View {
                     Label("Inspector", systemImage: "sidebar.right")
                 }
                 .keyboardShortcut("i", modifiers: [.command, .option])
-                .help(model.isInspectorPresented ? "Files · Git · Context 접기" : "Files · Git · Context 열기")
+                .help(model.isInspectorPresented ? "Files · Git · Context · Issues 접기" : "Files · Git · Context · Issues 열기")
                 .accessibilityLabel(model.isInspectorPresented ? "Hide Inspector" : "Show Inspector")
                 .accessibilityValue(model.isInspectorPresented ? "Expanded" : "Collapsed")
 
@@ -544,7 +544,9 @@ private struct WorkspaceInspector: View {
         // row. Files and Git describe a checkout, so they still need one selected —
         // requiring one for all three hid this tab exactly where a new project is
         // clicked first.
-        if model.inspectorTab == .context, model.selectedProject != nil {
+        if model.inspectorTab == .issues {
+            issuesContent
+        } else if model.inspectorTab == .context, model.selectedProject != nil {
             contextContent
         } else if model.selectedSourceTree == nil {
             WorkspaceUnavailableView(
@@ -576,7 +578,7 @@ private struct WorkspaceInspector: View {
                         WorkspaceFilesInspector(files: snapshot.files) { model.openFile($0) }
                     case .git:
                         WorkspaceGitInspector(summary: snapshot.git) { model.showHistory() }
-                    case .context:
+                    case .context, .issues:
                         EmptyView()
                     }
                 } else {
@@ -721,6 +723,27 @@ private struct WorkspaceInspector: View {
         case .files: return "doc.on.doc"
         case .git: return "arrow.triangle.branch"
         case .context: return "cylinder.split.1x2"
+        case .issues: return "record.circle"
+        }
+    }
+
+    /// Issues belong to the project's repository, so a project row is enough.
+    /// The view is keyed by project: switching projects starts a fresh list
+    /// against the other repository instead of showing the previous one.
+    @ViewBuilder
+    private var issuesContent: some View {
+        if let scope = model.issuesScope {
+            WorkspaceIssuesView(
+                makeProvider: { [model] in try await model.issueProvider(for: scope) },
+                startWork: { issue in Task { await model.startWork(onIssue: issue, in: scope) } }
+            )
+            .id(scope.id)
+        } else {
+            WorkspaceUnavailableView(
+                icon: "record.circle",
+                title: "Select a project",
+                detail: "Select a project to see its GitHub issues."
+            )
         }
     }
 }

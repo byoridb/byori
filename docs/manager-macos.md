@@ -111,6 +111,17 @@ prototype and compatibility path.
   task and source-tree matches plus zero/one/two-hop graph neighbors before recent project
   records. Context loads independently, so a slow or unavailable ByoriDB does not block Files
   or Git.
+- The **Issues** inspector tab shows the GitHub issues of the selected project's repository,
+  resolved from its primary checkout's git remote. Byori runs the user's own `gh` and never
+  reads or stores a GitHub token; without `gh`, a `gh auth login`, or a GitHub remote, the tab
+  names the requirement and the command that resolves it. The list filters open, closed, or
+  all issues and searches with GitHub's search syntax (the most recent 100 are shown). An issue
+  shows its body and comments as inline Markdown, and can be closed as completed or not
+  planned, reopened, commented on, and have its labels and assignees edited; **+** creates
+  one. Every change is shown only after gh has made it and the issue has been read back.
+  **이 이슈로 작업 시작** opens the new-session sheet with a new task named `#<number> <title>`,
+  so the suggested branch carries the issue number; the prompt stays the user's to type, and
+  the agent can read the issue with `gh` itself.
 - The 28pt bottom status bar shows verified ByoriDB readiness, branch and working-tree state,
   active sessions, Context availability, recorded session launch selection, and elapsed time.
   Git and Context open the inspector; ByoriDB health opens Settings. The row omits a repeated
