@@ -101,7 +101,7 @@ Project
 ```
 
 왼쪽 outline은 이 계층을 계속 보여 줍니다. 세션을 선택하면 가운데에 해당 terminal이 열리고,
-오른쪽 inspector에는 제한된 Files/Git 정보와 프로젝트 범위 ByoriDB Context가 나타납니다.
+오른쪽 inspector에는 제한된 Files/Git 정보, 프로젝트 범위 ByoriDB Context, 저장소의 GitHub Issues(사용자의 `gh` 사용)가 나타납니다.
 ByoriDB·CLI 설치, 에이전트별 MCP/Memory Skill 연결, 유지관리, 백업, 진단은 메인 내비게이션이
 아닌 **Settings**의 지원 기능입니다.
 
@@ -117,7 +117,7 @@ Byori
 ├── macOS 앱
 │   ├── project/source-tree/worktree/task/session 워크스페이스
 │   ├── 세션마다 선택한 실제 Claude Code 또는 Codex PTY
-│   ├── Files · Git · 프로젝트 범위 ByoriDB Context
+│   ├── Files · Git · 프로젝트 범위 ByoriDB Context · GitHub Issues
 │   └── agent · Skill · MCP · ByoriDB · diagnostics Settings
 ├── `byori` foreground CLI 프로토타입                 cli/byori.py
 └── 통합 계층 (이 저장소)

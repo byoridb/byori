@@ -100,8 +100,8 @@ Project
 ```
 
 The left outline keeps this hierarchy visible. Selecting a session opens its terminal in the
-center; the right inspector shows bounded Files and Git views plus project-scoped ByoriDB
-Context. ByoriDB and CLI installation, per-agent MCP and Memory Skill connections, maintenance,
+center; the right inspector shows bounded Files and Git views, project-scoped ByoriDB
+Context, and the repository's GitHub Issues (through your own `gh`). ByoriDB and CLI installation, per-agent MCP and Memory Skill connections, maintenance,
 backups, and diagnostics are supporting operations under **Settings**, not the main navigation.
 
 Removing a project or linked checkout from the outline is non-destructive. A project registration
@@ -121,7 +121,7 @@ Byori
 ├── macOS app
 │   ├── project/source-tree/worktree/task/session workspace
 │   ├── real Claude Code or Codex PTY selected per session
-│   ├── Files · Git · project-scoped ByoriDB Context
+│   ├── Files · Git · project-scoped ByoriDB Context · GitHub Issues
 │   └── Settings for agents, Skills, MCP, ByoriDB, and diagnostics
 ├── `byori` foreground CLI prototype                    cli/byori.py
 └── integration layer (this repository)

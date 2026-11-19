@@ -153,6 +153,13 @@ final class LiveWorkspaceDataSource: WorkspaceDataSource {
                                  taskID: scope.taskID, root: checkout.url)
     }
 
+    func gitHubIssues(projectID: String, sourceTreeID: String) async throws -> any GitHubIssueProviding {
+        GitHubIssueService(
+            directory: try checkoutURL(projectID: projectID, sourceTreeID: sourceTreeID),
+            paths: managerService.paths
+        )
+    }
+
     func loadTaskWorkflow(scope: WorkspaceTaskWorkScope) async throws -> TaskWorkflowPlan? {
         try await operationGate.perform {
             let validated = try await validatedVerificationScope(scope)

@@ -417,6 +417,29 @@ final class WorkspaceSessionLocationTests: XCTestCase {
         model.chooseModel("default")
     }
 
+    /// #22: "이 이슈로 작업 시작" opens the ordinary new-session sheet with a
+    /// new task named after the issue, so the suggested branch carries the
+    /// issue number. Nothing is created until the sheet is confirmed.
+    func testWorkOnAnIssueStartsANewTaskNamedAfterIt() async throws {
+        let dataSource = LocationDataSource(snapshot: makeSnapshot(primaryBusy: false))
+        let model = WorkspaceViewModel(dataSource: dataSource)
+        await model.load()
+        let scope = try XCTUnwrap(model.issuesScope)
+        XCTAssertEqual(scope.sourceTreeID, "primary123", "issues follow the project's primary checkout")
+
+        await model.startWork(
+            onIssue: GitHubIssueSummary(number: 22, title: "Issues tab", state: .open),
+            in: scope
+        )
+
+        XCTAssertTrue(model.isPresentingNewSession)
+        XCTAssertEqual(model.newSessionDraft.taskChoice, .newTask)
+        XCTAssertEqual(model.newSessionDraft.newTaskTitle, "#22 Issues tab")
+        XCTAssertEqual(model.newSessionDraft.newBranchName, "byori/22-issues-tab")
+        XCTAssertTrue(dataSource.createdBranches.isEmpty)
+        XCTAssertTrue(dataSource.startedRequests.isEmpty)
+    }
+
     private func startSession(in model: WorkspaceViewModel, titled title: String) async {
         await model.prepareNewSession()
         model.newSessionDraft.newTaskTitle = title
