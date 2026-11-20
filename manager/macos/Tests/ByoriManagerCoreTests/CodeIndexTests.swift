@@ -41,7 +41,7 @@ final class CodeIndexTests: XCTestCase {
         )
         XCTAssertTrue(command.arguments.contains("--query=--hello ' $()"))
         XCTAssertTrue(command.arguments.contains("--file=dir/a.swift"))
-        XCTAssertEqual(command.arguments.prefix(3), [paths.bundledByoriCLI.path, "code", "symbols"])
+        XCTAssertEqual(command.arguments.prefix(4), ["-B", paths.bundledByoriCLI.path, "code", "symbols"])
         XCTAssertEqual(command.workingDirectory, root.appendingPathComponent("worktree").path)
         XCTAssertNil(command.environment["BYORI_INDEXER"])
         XCTAssertEqual(command.timeout, 45)
