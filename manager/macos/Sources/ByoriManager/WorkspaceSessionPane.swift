@@ -24,6 +24,10 @@ struct WorkspaceSessionPane<TerminalHost: View>: View {
             sessionHeader
             Divider()
             terminalContent
+                // The terminal canvas stays dark in both app appearances.
+                // Keep its overlays and native controls legible without
+                // changing the appearance of the surrounding workspace.
+                .environment(\.colorScheme, .dark)
         }
     }
 
