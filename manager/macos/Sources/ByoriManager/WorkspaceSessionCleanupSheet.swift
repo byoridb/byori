@@ -6,6 +6,10 @@ struct WorkspaceSessionCleanupSheet: View {
     @ObservedObject var model: WorkspaceViewModel
     @State private var showsArchive = false
 
+    private var isBusy: Bool {
+        model.isCleaningSessions || model.isUndoingArchive || model.isMutatingWorkspace
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
@@ -26,6 +30,22 @@ struct WorkspaceSessionCleanupSheet: View {
                     Text("보관함").tag(true)
                 }
                 .pickerStyle(.segmented)
+
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("작업 또는 프로젝트 검색", text: $model.cleanupSearchQuery)
+                        .textFieldStyle(.plain)
+                        .accessibilityLabel("보관할 작업 또는 보관한 작업 검색")
+                    if !model.cleanupSearchQuery.isEmpty {
+                        Button { model.cleanupSearchQuery = "" } label: {
+                            Image(systemName: "xmark.circle.fill")
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("정리 검색 지우기")
+                    }
+                }
+                .padding(8)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
 
                 HStack {
                     Picker("프로젝트", selection: $model.cleanupProjectID) {
@@ -76,17 +96,18 @@ struct WorkspaceSessionCleanupSheet: View {
                 }
             }
             .padding(20)
-            .disabled(model.isCleaningSessions)
+            .disabled(isBusy)
 
             Divider()
 
             cleanupList
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .disabled(model.isCleaningSessions)
+                .disabled(isBusy)
 
             Divider()
 
             VStack(alignment: .leading, spacing: 8) {
+                WorkspaceArchiveUndoView(model: model)
                 if let message = model.cleanupResultSummary {
                     Text(message).font(.callout).textSelection(.enabled)
                 }
@@ -100,7 +121,7 @@ struct WorkspaceSessionCleanupSheet: View {
                     .accessibilityLabel("정리하지 못한 항목")
                 }
                 HStack {
-                    if model.isCleaningSessions {
+                    if isBusy {
                         ProgressView().controlSize(.small)
                         Text("기록을 정리하고 있습니다…").font(.caption)
                     } else {
@@ -109,7 +130,7 @@ struct WorkspaceSessionCleanupSheet: View {
                     Spacer()
                     Button("닫기") { model.dismissSessionCleanup() }
                         .keyboardShortcut(.cancelAction)
-                        .disabled(model.isCleaningSessions)
+                        .disabled(isBusy)
                     Button(showsArchive ? "선택한 \(selectedCount)개 복원" : "선택한 \(selectedCount)개 보관") {
                         Task {
                             if showsArchive {
@@ -120,14 +141,14 @@ struct WorkspaceSessionCleanupSheet: View {
                         }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(selectedCount == 0 || model.isCleaningSessions || !listIsReady)
+                    .disabled(selectedCount == 0 || isBusy || !listIsReady)
                 }
             }
             .padding(16)
         }
         .frame(width: 700)
         .frame(minHeight: 520, idealHeight: 640)
-        .interactiveDismissDisabled(model.isCleaningSessions)
+        .interactiveDismissDisabled(isBusy)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("지난 세션 정리 및 복원")
     }
@@ -148,7 +169,9 @@ struct WorkspaceSessionCleanupSheet: View {
                 if model.archivedCleanupTasks.isEmpty {
                     emptyState(
                         model.cleanupArchiveListIsTruncated ? "불러온 범위에 보관한 작업이 없습니다" : "보관한 작업이 없습니다",
-                        detail: "보관한 작업과 세션 기록이 여기에 표시됩니다."
+                        detail: model.cleanupSearchQuery.isEmpty
+                            ? "보관한 작업과 세션 기록이 여기에 표시됩니다."
+                            : "검색어를 바꾸거나 지워 보세요."
                     )
                 } else {
                     List(model.archivedCleanupTasks) { item in
@@ -169,7 +192,7 @@ struct WorkspaceSessionCleanupSheet: View {
             } else if model.cleanupCandidates.isEmpty {
                 emptyState(
                     model.cleanupActiveListIsTruncated ? "불러온 범위에 이 조건의 작업이 없습니다" : "이 조건에 맞는 작업이 없습니다",
-                    detail: "다른 기간이나 프로젝트를 선택해 보세요."
+                    detail: "검색어, 기간 또는 프로젝트를 바꿔 보세요."
                 )
             } else {
                 List(model.cleanupCandidates) { item in

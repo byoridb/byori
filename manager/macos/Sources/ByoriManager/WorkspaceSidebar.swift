@@ -10,19 +10,29 @@ struct WorkspaceSidebar: View {
     let requestRemoval: (WorkspaceRemovalRequest) -> Void
     let restoreSourceTree: (WorkspaceHiddenSourceTreeItem) -> Void
     @State private var manualExpansions: [String: Bool] = [:]
+    @State private var filteredExpansions: [String: Bool] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
             projectSearch
                 .padding(.horizontal, 12)
-                .padding(.top, 14)
-                .padding(.bottom, 12)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+
+            Picker("프로젝트 보기", selection: $model.workspaceListFilter) {
+                ForEach(WorkspaceListFilter.allCases) { filter in
+                    Text(filter.title).tag(filter)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 10)
 
             HStack(spacing: 8) {
                 Text("프로젝트")
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
-                if isSearching {
+                if model.isFilteringWorkspace {
                     Text("\(model.filteredProjects.count) / \(model.projects.count)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -32,15 +42,15 @@ struct WorkspaceSidebar: View {
                 if model.isRegisteringProject {
                     ProgressView()
                         .controlSize(.small)
-                        .accessibilityLabel("Adding project")
+                        .accessibilityLabel("프로젝트 추가 중")
                 }
                 Menu {
                     Button(action: createProject) {
-                        Label("Create New Project…", systemImage: "folder.badge.plus")
+                        Label("새 프로젝트…", systemImage: "folder.badge.plus")
                     }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
                     Button(action: openProject) {
-                        Label("Open Folder…", systemImage: "folder")
+                        Label("폴더 열기…", systemImage: "folder")
                     }
                     .keyboardShortcut("o", modifiers: [.command, .shift])
                 } label: {
@@ -50,9 +60,9 @@ struct WorkspaceSidebar: View {
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                .accessibilityLabel("Add Project")
+                .accessibilityLabel("프로젝트 추가")
                 .disabled(model.isRegisteringProject || model.isCreatingProject)
-                .help("Create or open a project")
+                .help("프로젝트 만들기 또는 열기")
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 4)
@@ -77,14 +87,14 @@ struct WorkspaceSidebar: View {
                 .disabled(model.projects.isEmpty || model.phase != .ready)
 
                 Button(action: openSettings) {
-                    Label("Settings", systemImage: "gearshape")
+                    Label("설정", systemImage: "gearshape")
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(",", modifiers: .command)
                 .frame(height: 34)
-                .accessibilityHint("Opens agent, ByoriDB, and diagnostic settings")
+                .accessibilityHint("에이전트, ByoriDB, 진단 설정을 엽니다")
             }
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -92,6 +102,8 @@ struct WorkspaceSidebar: View {
             .padding(.vertical, 8)
         }
         .background(WorkspacePalette.sidebarBackground)
+        .onChange(of: model.projectSearchQuery) { _ in filteredExpansions = [:] }
+        .onChange(of: model.workspaceListFilter) { _ in filteredExpansions = [:] }
     }
 
     private var isSearching: Bool {
@@ -103,10 +115,10 @@ struct WorkspaceSidebar: View {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
-            TextField("프로젝트 이름 검색", text: $model.projectSearchQuery)
+            TextField("프로젝트·작업·브랜치 검색", text: $model.projectSearchQuery)
                 .textFieldStyle(.plain)
-                .accessibilityLabel("프로젝트 이름 검색")
-                .accessibilityHint("프로젝트 이름으로 목록을 좁힙니다. 열려 있는 세션은 유지됩니다")
+                .accessibilityLabel("프로젝트·작업·브랜치·세션 검색")
+                .accessibilityHint("목록을 좁혀도 현재 터미널은 유지됩니다. Command-K로 빠르게 전환할 수 있습니다")
             if !model.projectSearchQuery.isEmpty {
                 Button { model.projectSearchQuery = "" } label: {
                     Image(systemName: "xmark.circle.fill")
@@ -114,12 +126,12 @@ struct WorkspaceSidebar: View {
                 }
                 .buttonStyle(.plain)
                 .help("검색 지우기")
-                .accessibilityLabel("프로젝트 검색 지우기")
+                .accessibilityLabel("검색 지우기")
             }
         }
         .font(.body)
         .padding(.horizontal, 11)
-        .padding(.vertical, 10)
+        .padding(.vertical, 7)
         .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
         .overlay {
             RoundedRectangle(cornerRadius: 8)
@@ -133,7 +145,7 @@ struct WorkspaceSidebar: View {
         case .idle, .loading:
             VStack(spacing: 10) {
                 ProgressView()
-                Text("Loading projects…")
+                Text("프로젝트 불러오는 중…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -142,7 +154,7 @@ struct WorkspaceSidebar: View {
             VStack(spacing: 10) {
                 Image(systemName: "exclamationmark.triangle")
                     .foregroundStyle(.secondary)
-                Text("Projects unavailable")
+                Text("프로젝트를 불러오지 못했습니다")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -152,7 +164,7 @@ struct WorkspaceSidebar: View {
                 Image(systemName: "folder")
                     .font(.title2)
                     .foregroundStyle(.secondary)
-                Text("No projects")
+                Text("등록된 프로젝트가 없습니다")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -160,18 +172,18 @@ struct WorkspaceSidebar: View {
         case .ready where model.filteredProjects.isEmpty:
             VStack(spacing: 10) {
                 Image(systemName: "magnifyingglass").font(.title2).foregroundStyle(.secondary)
-                Text("일치하는 프로젝트가 없습니다").font(.callout)
-                Button("검색 지우기") { model.projectSearchQuery = "" }
+                Text(isSearching ? "일치하는 작업이 없습니다" : "열린 세션이 없습니다").font(.callout)
+                if isSearching {
+                    Button("검색 지우기") { model.projectSearchQuery = "" }
+                }
+                if model.workspaceListFilter == .openSessions {
+                    Button("전체 프로젝트 보기") { model.workspaceListFilter = .all }
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .ready:
             List(selection: selectionBinding) {
-                ForEach(Array(sidebarNodes.enumerated()), id: \.element.id) { index, node in
-                    // Projects are the units the user scans for; a rule between
-                    // them keeps one project's tasks from reading as the next's.
-                    if index > 0 {
-                        WorkspaceSidebarProjectRule()
-                    }
+                ForEach(sidebarNodes) { node in
                     WorkspaceSidebarBranch(
                         node: node,
                         depth: 0,
@@ -191,11 +203,13 @@ struct WorkspaceSidebar: View {
                         addSourceTree: { projectID in
                             Task { await model.prepareNewSourceTree(projectID: projectID) }
                         },
+                        toggleProjectPin: model.toggleProjectPin,
                         requestRemoval: requestRemoval,
                         restoreSourceTree: restoreSourceTree,
                         isMutatingWorkspace: model.isMutatingWorkspace,
                         selection: model.selection,
-                        manualExpansions: $manualExpansions
+                        automaticallyExpand: model.isFilteringWorkspace,
+                        manualExpansions: outlineExpansions
                     )
                 }
             }
@@ -203,7 +217,7 @@ struct WorkspaceSidebar: View {
             .environment(\.defaultMinListRowHeight, 1)
             .onMoveCommand(perform: moveInOutline)
             .scrollContentBackground(.hidden)
-            .accessibilityLabel("Projects, tasks, and sessions")
+            .accessibilityLabel("프로젝트, 작업, 세션")
         }
     }
 
@@ -213,17 +227,18 @@ struct WorkspaceSidebar: View {
     private func moveInOutline(_ direction: MoveCommandDirection) {
         guard let path = Self.path(to: model.selection, in: sidebarNodes), let node = path.last else { return }
         let hasChildren = !(node.children?.isEmpty ?? true)
-        let isExpanded = hasChildren && (manualExpansions[node.id] ?? node.contains(model.selection))
+        let isExpanded = hasChildren && (outlineExpansions.wrappedValue[node.id]
+            ?? (model.isFilteringWorkspace || node.contains(model.selection)))
         switch direction {
         case .right:
             if hasChildren, !isExpanded {
-                withAnimation(.easeInOut(duration: 0.15)) { manualExpansions[node.id] = true }
+                withAnimation(.easeInOut(duration: 0.15)) { outlineExpansions.wrappedValue[node.id] = true }
             } else if isExpanded, let first = node.children?.first?.selection {
                 model.select(first)
             }
         case .left:
             if isExpanded {
-                withAnimation(.easeInOut(duration: 0.15)) { manualExpansions[node.id] = false }
+                withAnimation(.easeInOut(duration: 0.15)) { outlineExpansions.wrappedValue[node.id] = false }
             } else if path.count > 1, let parent = path[path.count - 2].selection {
                 model.select(parent)
             }
@@ -248,10 +263,22 @@ struct WorkspaceSidebar: View {
     private var selectionBinding: Binding<WorkspaceSelection?> {
         Binding(get: { model.selection }, set: { selection in
             // Filtering rows must not detach the session currently being read.
-            if selection != nil || model.projectSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if selection != nil || !model.isFilteringWorkspace {
                 model.select(selection)
             }
         })
+    }
+
+    /// Search can reveal matching descendants without changing the user's
+    /// ordinary disclosure choices. Returning to the full list restores them.
+    private var outlineExpansions: Binding<[String: Bool]> {
+        Binding(
+            get: { model.isFilteringWorkspace ? filteredExpansions : manualExpansions },
+            set: { value in
+                if model.isFilteringWorkspace { filteredExpansions = value }
+                else { manualExpansions = value }
+            }
+        )
     }
 
     /// Projects group tasks and sessions; a task's checkout is supporting
@@ -260,21 +287,24 @@ struct WorkspaceSidebar: View {
         model.filteredProjects.map { project in
             let taskNodes = project.sourceTrees.flatMap { sourceTree -> [WorkspaceSidebarNode] in
                 let activeSessionReason = sourceTree.hasActiveWritingSession
-                    ? "A writing session is already active in this checkout."
+                    ? "이 작업 위치에서 이미 에이전트 세션이 실행 중입니다."
                     : nil
                 // Branches describe where the task runs, including the primary
                 // checkout; they do not add another navigation level.
                 let locationLabel = sourceTree.branch
-                return sourceTree.tasks.map { task in
+                return sourceTree.tasks.filter {
+                    model.sidebarTaskIsVisible($0, in: sourceTree, project: project)
+                }.map { task in
                     let taskDisabledReason = activeSessionReason ?? (!task.status.allowsNewSession
-                        ? "This \(task.status.label.lowercased()) task cannot start another session."
+                        ? "완료되거나 취소된 작업에서는 새 세션을 시작할 수 없습니다."
                         : nil)
                     // An ended session has nothing left to show: the PTY is gone
                     // and no transcript is kept, so its row would only ever open
                     // an "ended" placeholder. Keep the selected one so the pane
                     // the user is reading does not vanish under them.
                     let visibleSessions = task.sessions.filter {
-                        $0.state.isActive || model.selection == .session($0.id)
+                        WorkspaceNavigation.isOpen($0)
+                            || (model.workspaceListFilter == .all && model.selection == .session($0.id))
                     }
                     // A task holds at most one open session. Nesting a single
                     // visible session under its own task row
@@ -353,7 +383,8 @@ struct WorkspaceSidebar: View {
                 ),
                 removalRequests: [.project(project)],
                 restorableSourceTrees: project.hiddenSourceTrees,
-                addSourceTreeProjectID: project.id
+                addSourceTreeProjectID: project.id,
+                isPinnedProject: model.pinnedProjectIDs.contains(project.id)
             )
         }
     }
@@ -406,6 +437,7 @@ private struct WorkspaceSidebarNode: Identifiable {
     let restorableSourceTrees: [WorkspaceHiddenSourceTreeItem]
     /// Set on projects to offer checkout management in the overflow menu.
     let addSourceTreeProjectID: String?
+    let isPinnedProject: Bool
 
     /// Whether the selected row is this one or somewhere beneath it. Drives which
     /// branches open on their own, so the outline shows the path being worked in
@@ -439,7 +471,8 @@ private struct WorkspaceSidebarNode: Identifiable {
         quickSessionDisabledReason: String? = nil,
         removalRequests: [WorkspaceRemovalRequest] = [],
         restorableSourceTrees: [WorkspaceHiddenSourceTreeItem] = [],
-        addSourceTreeProjectID: String? = nil
+        addSourceTreeProjectID: String? = nil,
+        isPinnedProject: Bool = false
     ) {
         self.id = id
         self.selection = selection
@@ -452,18 +485,7 @@ private struct WorkspaceSidebarNode: Identifiable {
         self.removalRequests = removalRequests
         self.restorableSourceTrees = restorableSourceTrees
         self.addSourceTreeProjectID = addSourceTreeProjectID
-    }
-}
-
-/// A thin rule between projects. It is a row of its own with no tag, so it
-/// cannot be selected and never sits inside a selected row's highlight.
-private struct WorkspaceSidebarProjectRule: View {
-    var body: some View {
-        Rectangle()
-            .fill(Color(nsColor: .separatorColor))
-            .frame(height: 1)
-            .listRowInsets(EdgeInsets(top: 2, leading: 10, bottom: 2, trailing: 10))
-            .accessibilityHidden(true)
+        self.isPinnedProject = isPinnedProject
     }
 }
 
@@ -482,10 +504,12 @@ private struct WorkspaceSidebarBranch: View {
     let buildMemory: (String) -> Void
     let showCodeIndex: (String) -> Void
     let addSourceTree: (String) -> Void
+    let toggleProjectPin: (String) -> Void
     let requestRemoval: (WorkspaceRemovalRequest) -> Void
     let restoreSourceTree: (WorkspaceHiddenSourceTreeItem) -> Void
     let isMutatingWorkspace: Bool
     let selection: WorkspaceSelection?
+    let automaticallyExpand: Bool
 
     /// Preserve explicit expansion until a new selection needs to reveal its
     /// path. Unrelated projects stay collapsed by default.
@@ -493,6 +517,7 @@ private struct WorkspaceSidebarBranch: View {
 
     var body: some View {
         taggedRow
+            .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
             .onChange(of: selection) { newSelection in
                 if hasChildren, node.contains(newSelection) {
                     manualExpansions[node.id] = nil
@@ -508,10 +533,12 @@ private struct WorkspaceSidebarBranch: View {
                     buildMemory: buildMemory,
                     showCodeIndex: showCodeIndex,
                     addSourceTree: addSourceTree,
+                    toggleProjectPin: toggleProjectPin,
                     requestRemoval: requestRemoval,
                     restoreSourceTree: restoreSourceTree,
                     isMutatingWorkspace: isMutatingWorkspace,
                     selection: selection,
+                    automaticallyExpand: automaticallyExpand,
                     manualExpansions: $manualExpansions
                 )
             }
@@ -521,7 +548,7 @@ private struct WorkspaceSidebarBranch: View {
     private var hasChildren: Bool { !(node.children?.isEmpty ?? true) }
 
     private var isExpanded: Bool {
-        hasChildren && (manualExpansions[node.id] ?? node.contains(selection))
+        hasChildren && (manualExpansions[node.id] ?? (automaticallyExpand || node.contains(selection)))
     }
 
     private func toggleExpansion() {
@@ -550,6 +577,7 @@ private struct WorkspaceSidebarBranch: View {
             buildMemory: buildMemory,
             showCodeIndex: showCodeIndex,
             addSourceTree: addSourceTree,
+            toggleProjectPin: toggleProjectPin,
             requestRemoval: requestRemoval,
             restoreSourceTree: restoreSourceTree,
             isMutatingWorkspace: isMutatingWorkspace,
@@ -569,6 +597,7 @@ private struct WorkspaceSidebarRow: View {
     let buildMemory: (String) -> Void
     let showCodeIndex: (String) -> Void
     let addSourceTree: (String) -> Void
+    let toggleProjectPin: (String) -> Void
     let requestRemoval: (WorkspaceRemovalRequest) -> Void
     let restoreSourceTree: (WorkspaceHiddenSourceTreeItem) -> Void
     let isMutatingWorkspace: Bool
@@ -624,8 +653,8 @@ private struct WorkspaceSidebarRow: View {
                 .frame(width: Self.statusSlotWidth, height: Self.statusSlotWidth)
                 .accessibilityHidden(true)
         }
-        .frame(minHeight: 36)
-        .padding(.vertical, 4)
+        .frame(minHeight: 32)
+        .padding(.vertical, 2)
         .contentShape(Rectangle())
         .help(rowHelp)
         .onHover { isHovered = $0 }
@@ -679,15 +708,15 @@ private struct WorkspaceSidebarRow: View {
             Menu {
                 actionMenuItems
             } label: {
-                Label("More Actions", systemImage: "ellipsis")
+                Label("더 보기", systemImage: "ellipsis")
                     .frame(width: 22, height: 24)
             }
             .labelStyle(.iconOnly)
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .help("Actions for \(node.title)")
-            .accessibilityLabel("More actions for \(node.title)")
+            .help("\(node.title) 작업 메뉴")
+            .accessibilityLabel("\(node.title) 더 보기")
         }
     }
 
@@ -719,7 +748,13 @@ private struct WorkspaceSidebarRow: View {
         }
         if let projectID = node.addSourceTreeProjectID {
             Divider()
-            Button("Add Source Tree…") { addSourceTree(projectID) }
+            Button {
+                toggleProjectPin(projectID)
+            } label: {
+                Label(node.isPinnedProject ? "고정 해제" : "프로젝트 고정",
+                    systemImage: node.isPinnedProject ? "pin.slash" : "pin")
+            }
+            Button("작업 위치 추가…") { addSourceTree(projectID) }
                 .disabled(isMutatingWorkspace)
             Button("프로젝트 분석") { buildMemory(projectID) }
                 .disabled(isMutatingWorkspace)
@@ -745,7 +780,7 @@ private struct WorkspaceSidebarRow: View {
                     .help(sourceTree.url.path)
                 }
             } label: {
-                Label("Restore Source Tree", systemImage: "arrow.uturn.backward.circle")
+                Label("숨긴 작업 위치 복원", systemImage: "arrow.uturn.backward.circle")
             }
         }
 
@@ -754,7 +789,7 @@ private struct WorkspaceSidebarRow: View {
         }
 
         ForEach(node.removalRequests) { request in
-            Button(role: .destructive) {
+            Button(role: removalRole(for: request)) {
                 requestRemoval(request)
             } label: {
                 Label(
@@ -767,19 +802,25 @@ private struct WorkspaceSidebarRow: View {
         }
     }
 
+    private func removalRole(for request: WorkspaceRemovalRequest) -> ButtonRole? {
+        if case .managedWorktree = request { return .destructive }
+        return nil
+    }
+
 
     private func removalMenuTitle(for request: WorkspaceRemovalRequest) -> String {
         switch request {
-        case .project: return "Remove Project from Byori…"
-        case let .sourceTree(sourceTree): return "Hide \(sourceTree.kind.removalLabel) from Byori…"
-        case .task: return "Remove Task from Byori…"
-        case .managedWorktree: return "Delete Managed Worktree…"
+        case .project: return "프로젝트 보관…"
+        case .sourceTree: return "작업 위치 숨기기…"
+        case .task: return "작업 보관…"
+        case .managedWorktree: return "관리 워크트리 삭제…"
         }
     }
 
     private func removalMenuIcon(for request: WorkspaceRemovalRequest) -> String {
         switch request {
-        case .project, .sourceTree, .task: return "minus.circle"
+        case .project, .task: return "archivebox"
+        case .sourceTree: return "eye.slash"
         case .managedWorktree: return "trash"
         }
     }
@@ -787,17 +828,17 @@ private struct WorkspaceSidebarRow: View {
     private func removalMenuHelp(for request: WorkspaceRemovalRequest) -> String {
         switch request {
         case .project, .sourceTree:
-            return "Keeps files, Git branches, history, and ByoriDB context"
+            return "파일, Git 브랜치와 이력, 프로젝트 기억은 유지합니다"
         case .task:
-            return "Archives task and session metadata without changing Git files"
+            return "파일은 변경하지 않고 작업과 세션 기록을 보관합니다"
         case .managedWorktree:
-            return "Deletes this clean Byori-managed worktree after confirmation"
+            return "확인 후 변경 사항이 없는 Byori 관리 워크트리를 삭제합니다"
         }
     }
 
     private var icon: String {
         switch node.kind {
-        case .project: return "folder"
+        case .project: return node.isPinnedProject ? "pin.fill" : "folder"
         case .sourceTree: return "arrow.triangle.branch"
         // A task is a piece of work with sessions under it; the crosshair read as
         // a target or a locator, neither of which a task is.
@@ -807,16 +848,16 @@ private struct WorkspaceSidebarRow: View {
     }
 
     private var quickActionLabel: String {
-        if case .sourceTree = node.kind { return "New Task and Session" }
-        return "New Session"
+        if case .sourceTree = node.kind { return "새 작업과 세션" }
+        return "새 세션"
     }
 
     private var quickActionHelp: String {
         switch node.kind {
         case let .sourceTree(sourceTree):
-            return "Create a new task and session in \(sourceTree.name)"
+            return "\(sourceTree.name)에서 새 작업과 세션을 만듭니다"
         case let .task(task):
-            return "Start a new session for \(task.title)"
+            return "\(task.title)에서 새 세션을 시작합니다"
         default:
             return quickActionLabel
         }
@@ -844,7 +885,7 @@ private struct WorkspaceSidebarRow: View {
             if !details.contains(session.launchSelectionDisplayName) {
                 details.append(session.launchSelectionDisplayName)
             }
-            details.append(session.isDetached ? "Reattach to this session" : session.state.label)
+            details.append(session.isDetached ? "세션 다시 연결" : session.state.label)
         }
         return details.joined(separator: "\n")
     }

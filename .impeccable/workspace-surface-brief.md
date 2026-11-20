@@ -1,5 +1,36 @@
 # Byori Workspace Surface Brief
 
+## Approved refinement — 2026-11-20
+
+This refinement supersedes the historical composition and visible inventory below where they
+disagree. Preserve the native project workbench and the real terminal; reduce repeated choices
+and visual scanning rather than introduce a new visual identity.
+
+- Compact collapsed project rows without separator-only list rows. Keep task/session identity
+  on two lines. User-pinned projects retain stable ordering above other projects; an explicit
+  all/open-session filter and search never change the selected terminal.
+- Search project, task, branch and session names. Command-K opens a keyboard-accessible quick
+  switcher with lineage in each result. The status-bar open-session action uses the same switcher.
+- New Session prioritizes task title, agent/model, then the recommended work location. Keep the
+  selected strategy, destination branch and consequential confirmations visible. Put the optional
+  alias, procedure, Context depth and CLI arguments behind a native advanced disclosure.
+  Remember only successful project-scoped agent/model choices; never restore elevated execution
+  flags or dirty-checkout consent. Cancel creates no task, checkout or session.
+- Agent settings provide inventory search and ownership filters. Rows lead with name and honest
+  state; paths and maintenance actions live in disclosure/menu details. Unknown or failed MCP
+  inventory has no fabricated zero count and offers a local retry action. Registration is not a
+  verified live connection or authentication result.
+- Use consistent Korean labels for the changed workspace flows. Recoverable task removal is
+  called archive and offers Undo after success, preserving the archived task identity. Existing
+  managed-worktree deletion remains a separate explicitly destructive operation.
+- The status bar exposes open-session navigation and project-memory access. Elapsed time remains
+  available as detail, and the displayed launch model never claims to observe in-CLI changes.
+
+Acceptance: verify narrow and wide native windows, light/dark semantic colors, keyboard search,
+filtering without terminal replacement, session defaults and advanced safety controls, inventory
+failure/empty distinctions, and archive/Undo including partial failure. No user data is archived
+or provider configuration changed merely to demonstrate these controls.
+
 - Scope/mode: native macOS workspace, Operate mode.
 - Audience/job: a local developer selects a project and source tree, then works in a real interactive coding-agent terminal without losing project knowledge.
 - Primary task: create or open a trusted local project, navigate Project → SourceTree/Worktree → Task → Session, create a session with one recorded launch agent/model, interact with it, and inspect Files, Git, or ByoriDB Context.

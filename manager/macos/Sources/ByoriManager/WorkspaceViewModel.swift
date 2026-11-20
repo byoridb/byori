@@ -867,7 +867,22 @@ final class WorkspaceViewModel: ObservableObject {
     @Published private(set) var projects: [WorkspaceProjectItem] = []
     @Published private(set) var selection: WorkspaceSelection?
     @Published var projectSearchQuery = ""
+    @Published var workspaceListFilter: WorkspaceListFilter = .all {
+        didSet { persistNavigationPreferences() }
+    }
+    @Published private(set) var pinnedProjectIDs: Set<String> = []
+    @Published var isPresentingQuickSwitch = false
+    @Published var quickSwitchQuery = ""
+    @Published var quickSwitchOnlyOpen = false
     @Published var isPresentingSessionCleanup = false
+    @Published var cleanupSearchQuery = "" {
+        didSet {
+            if oldValue != cleanupSearchQuery { clearCleanupSelections() }
+        }
+    }
+    @Published private(set) var archiveUndoItems: [WorkspaceArchiveUndoItem] = []
+    @Published private(set) var isUndoingArchive = false
+    @Published private(set) var archiveUndoError: String?
     @Published var cleanupProjectID: String? {
         didSet {
             if oldValue != cleanupProjectID { clearCleanupSelections() }
@@ -953,7 +968,9 @@ final class WorkspaceViewModel: ObservableObject {
     }
     @Published private(set) var sessionBranches: [WorkspaceGitBranch] = []
     @Published private(set) var sessionBranchesPhase: WorkspaceSessionOptionsPhase = .idle
+    private var sessionPresentationToken = UUID()
     private var sessionPlanRequestToken = UUID()
+    private var sessionOptionsRequestToken = UUID()
     private var sessionStrategyWasEdited = false
     private var sessionBranchWasEdited = false
     private var sessionStartPointWasEdited = false
@@ -969,11 +986,24 @@ final class WorkspaceViewModel: ObservableObject {
     @Published var alert: WorkspaceAlert?
 
     private let dataSource: any WorkspaceDataSource
+    private let navigationPreferences: WorkspaceNavigationPreferencesStore
+    private let launchPreferences: WorkspaceLaunchPreferencesStore
     private var inspectorRequestToken = UUID()
     private var contextRequestToken = UUID()
+    private var needsWorkspaceRefresh = false
 
-    init(dataSource: any WorkspaceDataSource) {
+    init(
+        dataSource: any WorkspaceDataSource,
+        navigationPreferences: WorkspaceNavigationPreferencesStore? = nil,
+        launchPreferences: WorkspaceLaunchPreferencesStore? = nil
+    ) {
         self.dataSource = dataSource
+        self.launchPreferences = launchPreferences ?? WorkspaceLaunchPreferencesStore()
+        let preferences = navigationPreferences ?? WorkspaceNavigationPreferencesStore()
+        self.navigationPreferences = preferences
+        let saved = preferences.load()
+        self.pinnedProjectIDs = saved.pinnedProjectIDs
+        self.workspaceListFilter = saved.filter
     }
 
     var selectedLineage: WorkspaceLineage? {
@@ -1034,13 +1064,13 @@ final class WorkspaceViewModel: ObservableObject {
 
     var sessionNameValidationMessage: String? {
         let name = normalizedSessionName
-        guard !name.isEmpty else { return "Enter a session name." }
+        guard !name.isEmpty else { return "고급 설정에서 세션 별칭을 입력하세요." }
         guard name.unicodeScalars.count <= WorkspaceSession.maximumNameScalarCount,
               name.utf8.count <= WorkspaceSession.maximumNameUTF8Bytes else {
-            return "Keep the session name within \(WorkspaceSession.maximumNameScalarCount) characters."
+            return "세션 별칭은 \(WorkspaceSession.maximumNameScalarCount)자 이내로 입력하세요."
         }
         guard !name.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) else {
-            return "Remove line breaks or control characters from the session name."
+            return "세션 별칭에서 줄바꿈과 제어 문자를 제거하세요."
         }
         return nil
     }
@@ -1059,13 +1089,13 @@ final class WorkspaceViewModel: ObservableObject {
     /// thing still to do rather than the last thing checked.
     var startSessionBlockedReason: String? {
         guard !newSessionDraft.projectID.isEmpty else {
-            return "Choose the project this session runs in."
+            return "세션을 실행할 프로젝트를 선택하세요."
         }
         if let message = sessionNameValidationMessage { return message }
         if let message = launchConstraintMessage { return message }
         if case .newTask = newSessionDraft.taskChoice,
            newSessionDraft.newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "Give the new task a title."
+            return "작업 제목을 입력하세요."
         }
 
         // The provider list is read when the sheet opens, so "nothing is chosen"
@@ -1073,32 +1103,32 @@ final class WorkspaceViewModel: ObservableObject {
         // the first one asks the user for anything.
         switch sessionOptionsPhase {
         case .idle, .loading:
-            return "Reading the installed provider models…"
+            return "설치된 에이전트를 확인하고 있습니다…"
         case let .failed(message):
             return message
         case .ready:
             break
         }
         guard !sessionOptions.isEmpty else {
-            return "No installed provider is available. Open Settings to connect one."
+            return "사용할 수 있는 에이전트가 없습니다. 설정에서 설치 상태를 확인하세요."
         }
         guard let providerID = newSessionDraft.providerID else {
-            return "Choose the launch provider under Agent."
+            return "에이전트를 선택하세요."
         }
         guard let provider = sessionOptions.first(where: { $0.id == providerID }) else {
-            return "That provider is no longer installed. Choose another under Agent."
+            return "선택한 에이전트를 찾을 수 없습니다. 다른 에이전트를 선택하세요."
         }
         if let reason = provider.availability.unavailableReason { return reason }
         guard let modelID = newSessionDraft.modelID else {
-            return "Choose the model under Agent."
+            return "모델을 선택하세요."
         }
         guard let model = provider.models.first(where: { $0.id == modelID }) else {
-            return "\(provider.displayName) no longer offers that model. Choose another under Agent."
+            return "\(provider.displayName)에서 해당 모델을 찾을 수 없습니다. 다른 모델을 선택하세요."
         }
         if let reason = model.availability.unavailableReason { return reason }
         if model.acceptsCustomIdentifier,
            newSessionDraft.customModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "Enter the model identifier for \(model.displayName)."
+            return "\(model.displayName)의 모델 식별자를 입력하세요."
         }
         return nil
     }
@@ -1139,7 +1169,12 @@ final class WorkspaceViewModel: ObservableObject {
     }
 
     func load(force: Bool = false) async {
-        guard phase != .loading, !isRefreshing else { return }
+        guard phase != .loading, !isRefreshing else {
+            // A metadata mutation may finish while an older snapshot is in
+            // flight. Do not drop its request to read the committed state.
+            if force { needsWorkspaceRefresh = true }
+            return
+        }
         guard force || phase == .idle || isFailure(phase) else { return }
 
         if projects.isEmpty {
@@ -1176,6 +1211,10 @@ final class WorkspaceViewModel: ObservableObject {
             } else {
                 alert = WorkspaceAlert(title: "Workspace refresh failed", message: message)
             }
+        }
+        if needsWorkspaceRefresh {
+            needsWorkspaceRefresh = false
+            await load(force: true)
         }
     }
 
@@ -1610,12 +1649,12 @@ final class WorkspaceViewModel: ObservableObject {
     }
 
     func archiveTask(_ task: WorkspaceTaskItem) async {
-        guard !isMutatingWorkspace,
+        guard !isMutatingWorkspace, !isCleaningSessions, !isUndoingArchive,
               let location = taskLocation(taskID: task.id) else { return }
-        guard !task.sessions.contains(where: { $0.state.isActive }) else {
+        guard !WorkspaceCleanupEligibility.hasActiveSession(task) else {
             alert = WorkspaceAlert(
-                title: "Task could not be removed",
-                message: "Stop its active session first. The task and its files were left unchanged."
+                title: "작업을 보관할 수 없습니다",
+                message: "열린 세션을 먼저 종료해 주세요. 작업과 파일은 그대로 유지됩니다."
             )
             return
         }
@@ -1624,11 +1663,16 @@ final class WorkspaceViewModel: ObservableObject {
         defer { isMutatingWorkspace = false }
         do {
             try await dataSource.archiveTask(id: task.id)
-            selection = .sourceTree(location.sourceTree.id)
+            archiveUndoItems = [.init(id: task.id, title: task.title,
+                                      projectID: location.project.id, sourceTreeID: location.sourceTree.id)]
+            archiveUndoError = nil
+            if selectedLineage?.task?.id == task.id {
+                selection = .sourceTree(location.sourceTree.id)
+            }
             await load(force: true)
         } catch {
             alert = WorkspaceAlert(
-                title: "Task could not be removed",
+                title: "작업을 보관하지 못했습니다",
                 message: error.localizedDescription
             )
         }
@@ -1943,7 +1987,10 @@ final class WorkspaceViewModel: ObservableObject {
         sourceTree: WorkspaceSourceTreeItem?,
         task: WorkspaceTaskItem?
     ), newTaskTitle: String? = nil) async {
+        sessionPresentationToken = UUID()
         sessionPlanRequestToken = UUID()
+        sessionOptionsRequestToken = UUID()
+        let presentationToken = sessionPresentationToken
         sessionStrategyWasEdited = false
         sessionBranchWasEdited = false
         sessionStartPointWasEdited = false
@@ -1967,11 +2014,15 @@ final class WorkspaceViewModel: ObservableObject {
         )
         sessionOptions = []
         sessionOptionsPhase = .loading
+        sessionPersistenceWarning = nil
         newSessionError = nil
         isPresentingNewSession = true
         refreshSessionPlanSuggestions()
-        sessionPersistenceWarning = await dataSource.sessionPersistenceWarning()
+        let persistenceWarning = await dataSource.sessionPersistenceWarning()
+        guard isPresentingNewSession, sessionPresentationToken == presentationToken else { return }
+        sessionPersistenceWarning = persistenceWarning
         await retrySessionBranches()
+        guard isPresentingNewSession, sessionPresentationToken == presentationToken else { return }
         await loadSessionOptions(projectID: target.project.id)
     }
 
@@ -1983,14 +2034,24 @@ final class WorkspaceViewModel: ObservableObject {
     func dismissNewSession() {
         guard !isStartingSession else { return }
         isPresentingNewSession = false
+        sessionPresentationToken = UUID()
         sessionPlanRequestToken = UUID()
+        sessionOptionsRequestToken = UUID()
         newSessionError = nil
     }
 
     func chooseProvider(_ providerID: String?) {
         guard newSessionDraft.providerID != providerID else { return }
         newSessionDraft.providerID = providerID
-        newSessionDraft.modelID = nil
+        newSessionDraft.customModelID = ""
+        // Changing providers must not carry provider-specific permission flags
+        // or arbitrary arguments into the next CLI.
+        newSessionDraft.launchOptionSelections = [:]
+        newSessionDraft.additionalArguments = ""
+        let available = sessionOptions.first { $0.id == providerID }?.models.filter {
+            $0.availability.isAvailable
+        } ?? []
+        newSessionDraft.modelID = available.count == 1 ? available.first?.id : nil
     }
 
     func chooseModel(_ modelID: String?) {
@@ -2008,7 +2069,7 @@ final class WorkspaceViewModel: ObservableObject {
             // rather than a generic list, so a keyboard shortcut or a test is
             // told the same thing the footer shows.
             newSessionError = startSessionBlockedReason
-                ?? "Choose an available provider and model, then start the session again."
+                ?? "사용 가능한 에이전트와 모델을 선택한 뒤 다시 시작하세요."
             return
         }
 
@@ -2057,6 +2118,15 @@ final class WorkspaceViewModel: ObservableObject {
 
         do {
             let result = try await dataSource.startSession(request)
+            launchPreferences.remember(
+                WorkspaceRememberedLaunch(
+                    providerID: request.providerID,
+                    modelID: selectedModel.id,
+                    customModelID: selectedModel.acceptsCustomIdentifier
+                        ? newSessionDraft.customModelID.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+                ),
+                for: request.projectID
+            )
             upsert(result)
             selection = .session(result.session.id)
             contextDepth = request.contextDepth
@@ -2356,12 +2426,35 @@ final class WorkspaceViewModel: ObservableObject {
     }
 
     private func loadSessionOptions(projectID: String) async {
+        let presentationToken = sessionPresentationToken
+        let token = UUID()
+        sessionOptionsRequestToken = token
         sessionOptionsPhase = .loading
         do {
             let options = try await dataSource.loadSessionOptions(projectID: projectID)
+            guard isPresentingNewSession, sessionPresentationToken == presentationToken,
+                  sessionOptionsRequestToken == token,
+                  newSessionDraft.projectID == projectID else { return }
             sessionOptions = options
+            if newSessionDraft.providerID == nil,
+               let remembered = launchPreferences.selection(for: projectID)?.validated(in: options) {
+                newSessionDraft.providerID = remembered.providerID
+                newSessionDraft.modelID = remembered.modelID
+                newSessionDraft.customModelID = remembered.customModelID
+            } else if let providerID = newSessionDraft.providerID,
+                      let provider = options.first(where: { $0.id == providerID }),
+                      provider.availability.isAvailable {
+                let available = provider.models.filter { $0.availability.isAvailable }
+                if !available.contains(where: { $0.id == newSessionDraft.modelID }) {
+                    newSessionDraft.modelID = available.count == 1 ? available.first?.id : nil
+                    newSessionDraft.customModelID = ""
+                }
+            }
             sessionOptionsPhase = .ready
         } catch {
+            guard isPresentingNewSession, sessionPresentationToken == presentationToken,
+                  sessionOptionsRequestToken == token,
+                  newSessionDraft.projectID == projectID else { return }
             sessionOptions = []
             sessionOptionsPhase = .failed(error.localizedDescription)
         }
@@ -3064,11 +3157,54 @@ extension WorkspaceViewModel {
 
 extension WorkspaceViewModel {
     var filteredProjects: [WorkspaceProjectItem] {
-        let query = projectSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return projects }
-        return projects.filter {
-            $0.name.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
-        }
+        WorkspaceNavigation.filteredProjects(projects, query: projectSearchQuery,
+            filter: workspaceListFilter, pins: pinnedProjectIDs)
+    }
+
+    var isFilteringWorkspace: Bool {
+        workspaceListFilter != .all || !projectSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    func sidebarTaskIsVisible(
+        _ task: WorkspaceTaskItem, in tree: WorkspaceSourceTreeItem, project: WorkspaceProjectItem
+    ) -> Bool {
+        WorkspaceNavigation.taskMatches(task, tree: tree, project: project,
+            query: projectSearchQuery, filter: workspaceListFilter)
+    }
+
+    func toggleProjectPin(_ projectID: String) {
+        guard projects.contains(where: { $0.id == projectID }) else { return }
+        if !pinnedProjectIDs.insert(projectID).inserted { pinnedProjectIDs.remove(projectID) }
+        persistNavigationPreferences()
+    }
+
+    private func persistNavigationPreferences() {
+        navigationPreferences.save(.init(pinnedProjectIDs: pinnedProjectIDs, filter: workspaceListFilter))
+    }
+
+    var quickSwitchResults: [WorkspaceQuickSwitchResult] {
+        WorkspaceNavigation.quickSwitchResults(projects: projects, query: quickSwitchQuery,
+            openSessionsOnly: quickSwitchOnlyOpen, pins: pinnedProjectIDs)
+    }
+
+    var openSessionCount: Int {
+        projects.lazy.flatMap(\.sourceTrees).flatMap(\.tasks).flatMap(\.sessions)
+            .filter(WorkspaceNavigation.isOpen).count
+    }
+
+    func presentQuickSwitch(openSessionsOnly: Bool = false) {
+        guard !isPresentingNewSession, !isPresentingNewProject, !isPresentingSessionCleanup else { return }
+        quickSwitchQuery = ""
+        quickSwitchOnlyOpen = openSessionsOnly
+        isPresentingQuickSwitch = true
+    }
+
+    func chooseQuickSwitchResult(_ result: WorkspaceQuickSwitchResult) {
+        // A refresh may remove an item while the switcher is open. Never create
+        // a dangling selection from its old search result.
+        guard lineage(for: result.selection) != nil else { return }
+        select(result.selection)
+        isPresentingQuickSwitch = false
     }
 
     private var cleanupScopedProjects: [WorkspaceProjectItem] {
@@ -3087,7 +3223,7 @@ extension WorkspaceViewModel {
                     )
                 }
             }
-        }.sorted {
+        }.filter { cleanupSearchMatches(title: $0.title, project: $0.projectName) }.sorted {
             let left = $0.latestEndedAt ?? .distantFuture
             let right = $1.latestEndedAt ?? .distantFuture
             return left != right ? left < right : $0.id < $1.id
@@ -3107,7 +3243,17 @@ extension WorkspaceViewModel {
     }
 
     var archivedCleanupTasks: [WorkspaceArchivedTaskItem] {
-        cleanupArchivedRows.filter { cleanupProjectID == nil || $0.projectID == cleanupProjectID }
+        cleanupArchivedRows.filter {
+            (cleanupProjectID == nil || $0.projectID == cleanupProjectID)
+                && cleanupSearchMatches(title: $0.title, project: $0.projectName)
+        }
+    }
+
+    private func cleanupSearchMatches(title: String, project: String) -> Bool {
+        let query = cleanupSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        return query.isEmpty || [title, project].contains {
+            $0.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+        }
     }
 
     private func clearCleanupSelections() {
@@ -3118,6 +3264,7 @@ extension WorkspaceViewModel {
     func prepareSessionCleanup(projectID: String? = nil, now: Date = Date()) async {
         guard !isPresentingSessionCleanup, !isCleaningSessions else { return }
         cleanupProjectID = projectID
+        cleanupSearchQuery = ""
         cleanupThreshold = .thirtyDays
         cleanupReferenceDate = now
         clearCleanupSelections()
@@ -3185,7 +3332,8 @@ extension WorkspaceViewModel {
     }
 
     func archiveSelectedCleanupTasks() async {
-        guard isPresentingSessionCleanup, !isCleaningSessions, cleanupPhase == .ready else { return }
+        guard isPresentingSessionCleanup, !isCleaningSessions, !isMutatingWorkspace,
+              !isUndoingArchive, cleanupPhase == .ready else { return }
         let selected = cleanupCandidates.filter { selectedCleanupTaskIDs.contains($0.id) }
         guard !selected.isEmpty else { return }
         let threshold = cleanupThreshold
@@ -3221,6 +3369,12 @@ extension WorkspaceViewModel {
             }
         }
         selectedCleanupTaskIDs.subtract(successes)
+        if !successes.isEmpty {
+            archiveUndoItems = selected.filter { successes.contains($0.id) }.map {
+                .init(id: $0.id, title: $0.title, projectID: $0.projectID, sourceTreeID: $0.sourceTreeID)
+            }
+            archiveUndoError = nil
+        }
         await load(force: true)
         await loadCleanupData()
         cleanupResultSummary = "\(successes.count)개 작업을 보관했습니다."
@@ -3230,7 +3384,8 @@ extension WorkspaceViewModel {
     }
 
     func restoreSelectedCleanupTasks() async {
-        guard isPresentingSessionCleanup, !isCleaningSessions, cleanupArchivedPhase == .ready else { return }
+        guard isPresentingSessionCleanup, !isCleaningSessions, !isMutatingWorkspace,
+              !isUndoingArchive, cleanupArchivedPhase == .ready else { return }
         let selected = archivedCleanupTasks.filter {
             selectedArchivedTaskIDs.contains($0.id) && $0.restoreUnavailableReason == nil
         }
@@ -3260,11 +3415,59 @@ extension WorkspaceViewModel {
             }
         }
         selectedArchivedTaskIDs.subtract(successes)
+        archiveUndoItems.removeAll { successes.contains($0.id) }
+        if archiveUndoItems.isEmpty { archiveUndoError = nil }
         await load(force: true)
         await loadCleanupData()
         cleanupResultSummary = "\(successes.count)개 작업을 복원했습니다."
             + (failures.isEmpty ? "" : " \(failures.count)개는 복원하지 않았습니다.")
         cleanupError = failures.isEmpty ? nil : failures.joined(separator: "\n")
         isCleaningSessions = false
+    }
+
+    /// Undo restores only the exact metadata archived by the most recent action.
+    /// The adapter revalidates the archive and refuses overwrites; no session starts.
+    func undoLastArchive() async {
+        guard !archiveUndoItems.isEmpty, !isUndoingArchive, !isCleaningSessions,
+              !isMutatingWorkspace else { return }
+        isUndoingArchive = true
+        isMutatingWorkspace = true
+        archiveUndoError = nil
+        defer {
+            isUndoingArchive = false
+            isMutatingWorkspace = false
+        }
+        let items = archiveUndoItems
+        var restored: Set<String> = []
+        var failures: [String] = []
+        for item in items {
+            do {
+                let latest = try await dataSource.loadWorkspace()
+                guard latest.projects.contains(where: {
+                    $0.id == item.projectID && $0.registration != .approvalRequired
+                        && $0.sourceTrees.contains(where: { $0.id == item.sourceTreeID })
+                }) else {
+                    failures.append("\(item.title): 프로젝트나 원래 작업 위치를 먼저 복원해 주세요.")
+                    continue
+                }
+                try await dataSource.restoreTask(id: item.id)
+                restored.insert(item.id)
+            } catch {
+                failures.append("\(item.title): \(error.localizedDescription)")
+            }
+        }
+        archiveUndoItems.removeAll { restored.contains($0.id) }
+        archiveUndoError = failures.isEmpty ? nil : failures.joined(separator: "\n")
+        await load(force: true)
+        if isPresentingSessionCleanup {
+            await loadCleanupData()
+            cleanupResultSummary = "\(restored.count)개 작업의 보관을 취소했습니다."
+        }
+    }
+
+    func dismissArchiveUndo() {
+        guard !isUndoingArchive else { return }
+        archiveUndoItems = []
+        archiveUndoError = nil
     }
 }

@@ -140,9 +140,15 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 - Use native project disclosures and compact two-line task/session rows: title first, distinct
   branch/provider metadata second. Keep checkout identity available without a separate checkout
   nesting level. Row actions are a small `+` and overflow menu; further actions live in menus.
-- Keep a project-name search field at the very top of the sidebar, above the project heading. Match names without
-  case or accent sensitivity, include Korean names, and provide a clear action and a useful
-  no-results state. Filtering never changes the active terminal or discards disclosure choices.
+- Keep workspace search at the very top of the sidebar. Match project, task, branch and session
+  names without case or accent sensitivity, include Korean names, and provide a clear action and
+  useful no-results state. Filtering never changes the active terminal or discards disclosure choices.
+- Avoid separator-only list rows between projects. Keep collapsed projects compact, and retain
+  two-line task/session identity. User-pinned projects stay first with stable ordering; provide an
+  explicit all/open-session view instead of silently reordering work by inferred activity.
+- Command-K opens a native quick switcher with project/branch/agent lineage. Arrow keys and Return
+  select a result; Escape dismisses without changing the terminal. The bottom open-session action
+  opens the same switcher filtered to open sessions, including detached sessions.
 - Open `지난 세션 정리` from the sidebar footer's `보관함 · 정리` action. Preview inactive tasks by project and most
   recent session end time, defaulting to 30 days with 7/90-day and all-ended alternatives.
   Do not call this last-use time: terminal input activity is not recorded. Start with no rows
@@ -165,6 +171,9 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 - Removing a project archives its exact registration outside the active list. Re-adding the same canonical repository restores its stable project identity, graph space, and task/session linkage.
 - Removing a linked checkout hides that canonical path from the outline until the user restores it. The action must be described as hiding from Byori, not deleting a Git worktree.
 - Removing a task archives its exact task/session metadata outside the active outline. State plainly that repository files, its checkout and branch, and ByoriDB records remain.
+- Call recoverable task removal **작업 보관**. After success, offer a dismissible Undo receipt,
+  including after closing cleanup. Undo revalidates locations, restores only successful archives,
+  retains failed items for retry, and never launches a session. Cleanup and archive lists are searchable.
 - Offer Git worktree deletion only for a Byori-managed worktree, behind a separate destructive confirmation. Disable it until active sessions have stopped, tasks have been removed, and Git reports a clean worktree. Let the user keep the branch or request Git-safe `-d` deletion; report an unmerged branch as retained after the worktree is removed.
 - Never offer file deletion for the primary checkout or an externally managed worktree.
 
@@ -188,11 +197,14 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 ### Workspace Status Bar
 
 - Report only local state Byori can verify: ByoriDB health, selected branch and working-tree state,
-  active session count, Context availability, recorded session launch selection, and elapsed time.
+  open session count, Context availability, and recorded session launch selection. Keep elapsed
+  time in details/help instead of an always-visible long duration.
 - Keep one 28pt native row with spacing and truncation for long branch/model names. Avoid repeating
   the project name, vertical separators, or a refresh button. Git and Context are shortcuts that
   open their respective inspector tabs; ByoriDB health opens Settings.
 - Never imitate provider quota percentages or billing windows without a supported provider API.
+- Use **열린 세션 N개** as a navigation action and **프로젝트 기억 N개** for the currently loaded
+  Context records. Do not imply that an inventory count is a complete graph or provider quota.
 - While an installation or management command runs, replace ordinary status with one explicit progress label and a real Cancel action.
 
 ### Inspector
@@ -263,6 +275,12 @@ Status dots stay small and circular. Pills are reserved for compact system contr
 ### New Session Sheet
 
 - Treat session creation as protected focus: location, task, provider, launch model, dirty-tree confirmation, and Context depth belong in one native sheet.
+- Prioritize task title, agent/model and the recommended work location. Use a native advanced
+  disclosure for the optional generated alias, task procedure, Context depth and CLI arguments.
+  Keep the selected location and consequential confirmations visible even when advanced is closed.
+- Restore the project's last successfully launched agent/model only when still available.
+  Auto-select a single valid model. Never restore elevated flags, raw arguments or dirty-tree consent.
+- Keep actual launch failures beside the fixed Start footer, and preserve all entered values for retry.
 - Put a small `+` action on project and task/session rows: project `+` starts a new task with a
   recommended checkout, while task/session `+` preserves that exact task and checkout target.
 - Prefill a short two-word session name, keep it editable, and preserve the provider/model label as the fallback for legacy unnamed sessions.
@@ -300,6 +318,10 @@ Status dots stay small and circular. Pills are reserved for compact system contr
   controls that could only refuse.
 - Collapse an optional provider form, such as the Claude model API, behind a disclosure whose label carries its active state. An always-expanded optional form pushes the inventory the page exists for below the fold.
 - List each agent's bounded user-scoped MCP and Skill inventory in compact native rows. Never display raw command arguments, environment/header values, or tokens; cloud-owned connectors remain read-only.
+- Provide name search and ownership filters across MCP/Skill inventories. Lead rows with name and
+  state; disclose full paths and maintenance actions only when requested. A failed or pending
+  inventory has no zero count; show its real state and a nearby retry action. Distinguish registered
+  configuration from verified live connectivity and from vendor-owned account authentication.
 - Advanced MCP editing opens the agent's own configuration, while direct removal uses its official CLI and a prior backup. Skill editing opens `SKILL.md`; removal is restricted to validated direct children of known user Skill roots and is backed up first.
 - Keep long-running operations responsive with persistent progress, safe cancellation, and a durable Activity result.
 - Closing the Settings window must not interrupt an operation. Quitting the app cancels only rollback-safe runtime work; otherwise it waits for the exact operation. It must wait for cleanup or rollback and keep the app open on recovery failure.

@@ -47,6 +47,8 @@ struct ContentView: View {
                 }
             }
 
+            WorkspaceArchiveUndoView(model: workspaceModel)
+
             Divider()
 
             WorkspaceStatusBar(
@@ -118,10 +120,11 @@ private struct WorkspaceStatusBar: View {
                         .help("Open Git: \(sourceTree.branch), \(sourceTree.workingState.accessibilityLabel)")
                     }
 
-                    Label(
-                        "\(terminals.activeSessionCount) active",
-                        systemImage: "terminal"
-                    )
+                    Button { workspace.presentQuickSwitch(openSessionsOnly: true) } label: {
+                        Label("열린 세션 \(workspace.openSessionCount)개", systemImage: "terminal")
+                    }
+                    .buttonStyle(.plain)
+                    .help("열린 세션으로 전환")
 
                     if let contextLabel {
                         Button { workspace.showInspector(.context) } label: {
@@ -129,16 +132,17 @@ private struct WorkspaceStatusBar: View {
                                 .foregroundStyle(contextColor)
                         }
                         .buttonStyle(.plain)
-                        .help("Open ByoriDB Context")
+                        .help("프로젝트 기억 보기 · 현재 불러온 기록 수")
                     }
 
                     Spacer(minLength: 12)
 
                     if let session = workspace.selectedSession {
-                        Text(sessionSummary(session, now: timeline.date))
+                        Text(session.launchSelectionDisplayName)
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .foregroundStyle(.secondary)
+                            .help("시작할 때 선택한 에이전트·모델 · \(sessionSummary(session, now: timeline.date))\n터미널 안에서 변경한 모델은 반영하지 않습니다.")
                     }
                 }
             }
@@ -153,10 +157,10 @@ private struct WorkspaceStatusBar: View {
     }
 
     private var databaseLabel: String {
-        guard let status = manager.snapshot?.byori else { return "ByoriDB checking" }
+        guard let status = manager.snapshot?.byori else { return "ByoriDB 확인 중" }
         if status.isHealthy { return "ByoriDB" }
-        if status.serviceLoaded { return "ByoriDB unavailable" }
-        return status.isInstalled ? "ByoriDB stopped" : "ByoriDB setup"
+        if status.serviceLoaded { return "ByoriDB 연결 확인 필요" }
+        return status.isInstalled ? "ByoriDB 중지됨" : "ByoriDB 설정 필요"
     }
 
     private var databaseColor: Color {
@@ -171,11 +175,11 @@ private struct WorkspaceStatusBar: View {
         case .idle:
             return nil
         case .loading:
-            return "Context loading"
+            return "프로젝트 기억 불러오는 중"
         case .ready:
-            return "Context \(workspace.contextSnapshot?.items.count ?? 0)"
+            return "프로젝트 기억 \(workspace.contextSnapshot?.items.count ?? 0)개"
         case .failed:
-            return "Context unavailable"
+            return "프로젝트 기억 확인 실패"
         }
     }
 
@@ -186,9 +190,9 @@ private struct WorkspaceStatusBar: View {
 
     private func workingTreeLabel(_ state: WorkspaceWorkingTreeStatus) -> String {
         switch state {
-        case .clean: return "Clean"
-        case let .modified(changeCount): return "\(changeCount) change\(changeCount == 1 ? "" : "s")"
-        case .unavailable: return "Git unavailable"
+        case .clean: return "변경 없음"
+        case let .modified(changeCount): return "변경 \(changeCount)개"
+        case .unavailable: return "Git 확인 실패"
         }
     }
 
@@ -634,6 +638,7 @@ private struct IntegrationsView: View {
                     status: model.snapshot?.agent(selectedAgent),
                     inventory: model.integrationInventory(selectedAgent)
                 )
+                .id(selectedAgent)
 
                 Divider()
 
@@ -673,6 +678,7 @@ private struct IntegrationsView: View {
 
 private struct AgentInventoryPane: View {
     @EnvironmentObject private var model: ManagerViewModel
+    @State private var query = AgentInventoryQuery()
     let kind: AgentKind
     let status: AgentStatus?
     let inventory: AgentIntegrationInventory?
@@ -733,18 +739,76 @@ private struct AgentInventoryPane: View {
                 Divider()
             }
 
+            if descriptor.managesMCP || descriptor.managesSkill {
+                inventorySearch
+                    .padding(.top, 12)
+            }
+
+            if descriptor.managesMCP {
+                mcpSection
+            }
+
+            if descriptor.managesSkill {
+                Divider().padding(.top, 12)
+                skillsSection
+            }
+        }
+        .disabled(model.isBusy || model.isRefreshingIntegrations)
+    }
+
+    private var inventorySearch: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("MCP·Skill 이름 검색", text: $query.text)
+                    .textFieldStyle(.plain)
+                    .accessibilityLabel("MCP·Skill 이름 검색")
+                if !query.text.isEmpty {
+                    Button { query.text = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("검색어 지우기")
+                    .accessibilityLabel("검색어 지우기")
+                }
+            }
+            .padding(8)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+
+            Picker("등록 주체", selection: $query.filter) {
+                ForEach(AgentInventoryFilter.allCases) { filter in
+                    Text(filter.label).tag(filter)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 360)
+        }
+    }
+
+    private var mcpSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
             InventorySectionHeader(
                 title: "MCP 서버",
-                count: inventory?.mcpServers.count,
+                count: nil,
                 actionTitle: "설정 파일 편집",
-                action: { model.openAgentConfig(kind) }
+                action: { model.openAgentConfig(kind) },
+                countLabel: AgentInventoryPresentation.countLabel(
+                    state: inventory?.mcpState, count: inventory?.mcpServers.count ?? 0
+                )
             )
 
-            ByoriMCPInventoryRow(
-                connected: status?.mcpConnected == true,
-                connect: { model.request(connectAction) },
-                disconnect: { model.request(disconnectAction, confirmation: true) }
-            )
+            if showsByoriMCP {
+                ByoriMCPInventoryRow(
+                    registrationConfirmed: byoriRegistrationConfirmed,
+                    inventoryState: inventory?.mcpState,
+                    serverStatus: managedMCPServer?.status,
+                    connect: { model.request(connectAction) },
+                    disconnect: { model.request(disconnectAction, confirmation: true) }
+                )
+            }
 
             ForEach(otherMCPServers) { server in
                 Divider().padding(.leading, 36)
@@ -753,7 +817,6 @@ private struct AgentInventoryPane: View {
 
             if let inventory {
                 if inventory.mcpState != .ready {
-                    Divider().padding(.leading, 36)
                     InventoryMessageRow(
                         icon: inventory.mcpState == .cliMissing
                             ? "terminal.fill" : "exclamationmark.triangle.fill",
@@ -761,78 +824,104 @@ private struct AgentInventoryPane: View {
                             ? "CLI 설치 후 MCP 목록을 확인할 수 있습니다."
                             : "MCP 목록을 확인하지 못했습니다.",
                         detail: inventory.mcpState == .unavailable
-                            ? "에이전트 CLI가 응답하지 않았습니다. 새로고침해 다시 시도하세요."
-                            : nil
+                            ? "등록이 없는 상태와 다릅니다. CLI 응답이나 설정 파일을 다시 확인하세요."
+                            : nil,
+                        actionTitle: inventory.mcpState == .unavailable ? "다시 확인" : nil,
+                        action: refreshInventory
                     )
-                } else if otherMCPServers.isEmpty {
-                    Divider().padding(.leading, 36)
+                } else if !showsByoriMCP && otherMCPServers.isEmpty {
                     InventoryMessageRow(
-                        icon: "tray",
-                        title: "다른 MCP 등록이 없습니다.",
-                        detail: kind == .claude
-                            ? "claude.ai 커넥터는 발견되면 읽기 전용으로 표시됩니다."
-                            : nil
+                        icon: "magnifyingglass",
+                        title: "조건에 맞는 MCP가 없습니다.",
+                        detail: "검색어를 지우거나 등록 주체를 전체로 바꿔보세요."
                     )
                 }
             } else {
-                Divider().padding(.leading, 36)
                 InventoryMessageRow(
                     icon: "arrow.clockwise",
                     title: "MCP 목록을 불러오는 중입니다.",
                     detail: nil
                 )
             }
+        }
+    }
 
-            Divider()
-                .padding(.top, 12)
-
+    private var skillsSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
             InventorySectionHeader(
                 title: "사용자 Skill",
-                count: inventory?.skills.count,
+                count: nil,
                 actionTitle: nil,
-                action: {}
+                action: {},
+                countLabel: AgentInventoryPresentation.countLabel(
+                    state: inventory?.skillsState,
+                    count: inventory?.skills.count ?? 0,
+                    truncated: inventory?.skillsWereTruncated == true
+                )
             )
 
-            ForEach(Array(ManagedSkill.allCases.enumerated()), id: \.element.id) { index, definition in
-                if index > 0 { Divider().padding(.leading, 36) }
-                let installedSkill = managedSkills.first { $0.name == definition.rawValue }
+            ForEach(visibleManagedSkillDefinitions) { definition in
                 ManagedSkillInventoryRow(
                     kind: kind,
                     definition: definition,
-                    skill: installedSkill,
+                    skill: managedSkills.first { $0.name == definition.rawValue },
                     state: status?.state(for: definition),
                     sync: { model.request(syncAction(for: definition)) },
                     remove: { model.request(removeAction(for: definition), confirmation: true) }
                 )
+                Divider().padding(.leading, 36)
             }
 
             ForEach(otherSkills) { skill in
-                Divider().padding(.leading, 36)
                 UserSkillInventoryRow(skill: skill)
+                Divider().padding(.leading, 36)
             }
 
+            if inventory?.skillsState == .ready,
+               visibleManagedSkillDefinitions.isEmpty, otherSkills.isEmpty {
+                InventoryMessageRow(
+                    icon: "magnifyingglass",
+                    title: "조건에 맞는 Skill이 없습니다.",
+                    detail: "검색어를 지우거나 등록 주체를 전체로 바꿔보세요."
+                )
+            }
             if inventory?.skillsWereTruncated == true {
-                Divider().padding(.leading, 36)
                 InventoryMessageRow(
                     icon: "ellipsis.circle",
-                    title: "안전을 위해 처음 200개 Skill만 표시합니다.",
-                    detail: nil
+                    title: "처음 확인한 200개 Skill에서 검색합니다.",
+                    detail: "전체 폴더의 검색 결과가 아닐 수 있습니다."
                 )
             }
             if inventory?.skillsState == .unavailable {
-                Divider().padding(.leading, 36)
                 InventoryMessageRow(
                     icon: "exclamationmark.triangle.fill",
                     title: "일부 Skill 폴더를 안전하게 읽지 못했습니다.",
-                    detail: "심볼릭 링크 또는 접근 권한을 확인한 뒤 새로고침하세요."
+                    detail: "심볼릭 링크 또는 접근 권한을 확인하세요.",
+                    actionTitle: "다시 확인",
+                    action: refreshInventory
                 )
             }
         }
-        .disabled(model.isBusy || model.isRefreshingIntegrations)
+    }
+
+    private var showsByoriMCP: Bool {
+        query.matches(name: "byoridb", isByoriManaged: true)
+    }
+
+    private var managedMCPServer: MCPServerSummary? {
+        guard inventory?.mcpState == .ready else { return nil }
+        return inventory?.mcpServers.first { $0.management == .byoriManaged }
+    }
+
+    private var byoriRegistrationConfirmed: Bool {
+        if inventory?.mcpState == .ready { return managedMCPServer != nil }
+        return status?.mcpConnected == true
     }
 
     private var otherMCPServers: [MCPServerSummary] {
-        inventory?.mcpServers.filter { $0.management != .byoriManaged } ?? []
+        inventory?.mcpServers.filter {
+            $0.management != .byoriManaged && query.matches(name: $0.name, isByoriManaged: false)
+        } ?? []
     }
 
     private var managedSkills: [UserSkillSummary] {
@@ -840,7 +929,17 @@ private struct AgentInventoryPane: View {
     }
 
     private var otherSkills: [UserSkillSummary] {
-        inventory?.skills.filter { !$0.isByoriManaged } ?? []
+        inventory?.skills.filter {
+            !$0.isByoriManaged && query.matches(name: $0.name, isByoriManaged: false)
+        } ?? []
+    }
+
+    private var visibleManagedSkillDefinitions: [ManagedSkill] {
+        ManagedSkill.allCases.filter { query.matches(name: $0.rawValue, isByoriManaged: true) }
+    }
+
+    private func refreshInventory() {
+        Task { await model.refreshIntegrations() }
     }
 
     private func syncAction(for skill: ManagedSkill) -> ManagerAction {
@@ -1362,12 +1461,13 @@ private struct InventorySectionHeader: View {
     let count: Int?
     let actionTitle: String?
     let action: () -> Void
+    var countLabel: String? = nil
 
     var body: some View {
         HStack(spacing: 7) {
             Text(title).font(.headline)
-            if let count {
-                Text("\(count)개")
+            if let label = countLabel ?? count.map({ "\($0)개" }) {
+                Text(label)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1383,30 +1483,51 @@ private struct InventorySectionHeader: View {
 }
 
 private struct ByoriMCPInventoryRow: View {
-    let connected: Bool
+    let registrationConfirmed: Bool
+    let inventoryState: AgentInventoryState?
+    let serverStatus: MCPServerStatus?
     let connect: () -> Void
     let disconnect: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: connected ? "checkmark.circle.fill" : "circle.dashed")
-                .foregroundStyle(connected ? .green : .secondary)
+            Image(systemName: serverStatus == .connected ? "checkmark.circle.fill" : "circle.dashed")
+                .foregroundStyle(serverStatus == .connected ? .green : .secondary)
                 .frame(width: 26)
             VStack(alignment: .leading, spacing: 3) {
                 Text("byoridb").font(.body.weight(.medium))
-                Text(connected ? "연결됨 · Byori 관리" : "미연결 · Byori 관리")
+                Text("\(registrationLabel) · Byori 관리")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 16)
-            if connected {
-                Button("연결 해제", action: disconnect)
+            if registrationConfirmed {
+                Menu {
+                    Button("등록 갱신", action: connect)
+                    Divider()
+                    Button("등록 해제", role: .destructive, action: disconnect)
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .accessibilityLabel("byoridb 관리")
+                .help("byoridb 관리")
+            } else {
+                Button("등록", action: connect)
                     .controlSize(.small)
             }
-            Button(connected ? "다시 연결" : "연결", action: connect)
-                .controlSize(.small)
         }
         .padding(.vertical, 8)
+    }
+
+    private var registrationLabel: String {
+        AgentInventoryPresentation.byoriMCPStatus(
+            registrationConfirmed: registrationConfirmed,
+            inventoryState: inventoryState,
+            serverStatus: serverStatus
+        )
     }
 }
 
@@ -1430,14 +1551,18 @@ private struct MCPInventoryRow: View {
             }
             Spacer(minLength: 16)
             if server.management.canRemove {
-                Button(role: .destructive) {
-                    model.requestRemoval(.mcp(server))
+                Menu {
+                    Button("등록 제거", role: .destructive) {
+                        model.requestRemoval(.mcp(server))
+                    }
                 } label: {
-                    Label("MCP 제거", systemImage: "trash")
+                    Image(systemName: "ellipsis")
                 }
-                .labelStyle(.iconOnly)
-                .controlSize(.small)
-                .help("\(server.name) MCP 제거")
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .accessibilityLabel("\(server.name) MCP 관리")
+                .help("\(server.name) MCP 관리")
             } else {
                 Text("claude.ai에서 관리")
                     .font(.caption)
@@ -1449,8 +1574,8 @@ private struct MCPInventoryRow: View {
 
     private var statusLabel: String {
         switch server.status {
-        case .connected: return "연결됨"
-        case .configured: return "구성됨"
+        case .connected: return "연결 확인됨"
+        case .configured: return "등록됨 · 연결 미확인"
         case .authenticationRequired: return "인증 필요"
         case .disabled: return "비활성"
         case .pendingApproval: return "승인 대기"
@@ -1499,35 +1624,44 @@ private struct ManagedSkillInventoryRow: View {
     let remove: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: stateIcon)
-                .foregroundStyle(stateColor)
-                .frame(width: 26)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 7) {
-                    Text(definition.rawValue).font(.body.weight(.medium))
-                    Text(managedSkillMetadata)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 9) {
                 Text(skill.map { displayPath($0.skillFilePath) } ?? skillDetail)
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
                     .help(skill?.skillFilePath ?? skillDetail)
-            }
-            Spacer(minLength: 16)
-            if let skill {
-                Button("편집") { model.openSkill(skill) }
-                    .controlSize(.small)
-            }
-            if state != .missing {
-                Button("제거", action: remove)
-                    .controlSize(.small)
-            }
-            Button(state == .current ? "다시 동기화" : "설치/업데이트", action: sync)
+
+                HStack(spacing: 10) {
+                    if let skill {
+                        Button("편집") { model.openSkill(skill) }
+                    }
+                    Button(state == .current ? "다시 동기화" : "설치/업데이트", action: sync)
+                    Spacer(minLength: 12)
+                    if let state, state != .missing {
+                        Button("제거", role: .destructive, action: remove)
+                    }
+                }
                 .controlSize(.small)
+            }
+            .padding(.leading, 32)
+            .padding(.vertical, 8)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: stateIcon)
+                    .foregroundStyle(stateColor)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(definition.rawValue)
+                        .font(.body.weight(.medium))
+                    Text(managedSkillMetadata)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+            }
         }
         .padding(.vertical, 8)
     }
@@ -1537,7 +1671,8 @@ private struct ManagedSkillInventoryRow: View {
         case .current: return "최신 · Byori 관리"
         case .outdated: return "업데이트 필요 · Byori 관리"
         case .legacy: return "이전 경로 · Byori 관리"
-        default: return "미설치 · Byori 관리"
+        case .missing: return "미설치 · Byori 관리"
+        case nil: return "상태 확인 중 · Byori 관리"
         }
     }
 
@@ -1583,37 +1718,42 @@ private struct UserSkillInventoryRow: View {
     let skill: UserSkillSummary
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "puzzlepiece.extension")
-                .foregroundStyle(.secondary)
-                .frame(width: 26)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 7) {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 9) {
+                Text(displayPath(skill.skillFilePath))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(skill.skillFilePath)
+
+                HStack {
+                    Button("편집") { model.openSkill(skill) }
+                    Spacer(minLength: 12)
+                    Button("제거", role: .destructive) {
+                        model.requestRemoval(.skill(skill))
+                    }
+                }
+                .controlSize(.small)
+            }
+            .padding(.leading, 32)
+            .padding(.vertical, 8)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "puzzlepiece.extension")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 2) {
                     Text(skill.name)
                         .font(.body.weight(.medium))
                         .lineLimit(1)
                     Text(originLabel)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
-                Text(displayPath(skill.skillFilePath))
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(skill.skillFilePath)
+                Spacer(minLength: 8)
             }
-            Spacer(minLength: 16)
-            Button("편집") { model.openSkill(skill) }
-                .controlSize(.small)
-            Button(role: .destructive) {
-                model.requestRemoval(.skill(skill))
-            } label: {
-                Label("Skill 제거", systemImage: "trash")
-            }
-            .labelStyle(.iconOnly)
-            .controlSize(.small)
-            .help("\(skill.name) Skill 제거")
         }
         .padding(.vertical, 8)
     }
@@ -1634,6 +1774,8 @@ private struct InventoryMessageRow: View {
     let icon: String
     let title: String
     let detail: String?
+    var actionTitle: String? = nil
+    var action: (() -> Void)? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -1649,6 +1791,11 @@ private struct InventoryMessageRow: View {
                 }
             }
             Spacer()
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .controlSize(.small)
+                    .fixedSize()
+            }
         }
         .padding(.vertical, 9)
     }

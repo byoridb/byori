@@ -77,17 +77,21 @@ archives its exact registry record outside the active project list; adding the s
 repository root again restores the prior project ID, graph space, and task/session linkage. Hiding
 a linked checkout only removes that canonical path from the project's outline until it is restored.
 Removing a task moves its exact task/session metadata directory into recoverable archived storage.
-Project-name search filters the outline while preserving the selected terminal. A session-cleanup
+Search matches project, task, branch and session names while preserving the selected terminal.
+Pinned projects and an explicit open-session filter make frequently used work easier to find;
+Command-K opens a keyboard-accessible quick switcher. A session-cleanup
 sheet previews tasks whose sessions have all ended, filters by their latest recorded end time,
 and archives only the user's selection. Running and detached sessions are excluded. The same
 sheet restores archived tasks when their registered project and checkout remain available;
-restoring records does not restart a session. Byori does not claim to track last terminal activity.
+restoring records does not restart a session. Successful task archiving also offers Undo for
+the exact archived records, including after the cleanup sheet closes. Byori does not claim to
+track last terminal activity.
 An explicit, separately confirmed cleanup action may delete only a clean Byori-managed worktree
 after its sessions have stopped and its tasks have been removed. The user can keep its branch or
 ask Git to delete the branch with safe `-d` semantics, which preserves unmerged work. None of these
 actions deletes ByoriDB data or an original/external checkout.
 
-The primary product surface groups two-line task/session rows by project, with project-name
+The primary product surface groups compact two-line task/session rows by project, with workspace
 search at the top, checkout/branch metadata instead of a separate checkout navigation level,
 and explicit archive/cleanup in the sidebar footer. The underlying project/checkout/task/session
 relationships stay intact. One 50pt session header leaves the real terminal dominant; detailed
@@ -95,12 +99,19 @@ session information, command insertion, and procedure/verification remain in its
 Files, Git, and contextual ByoriDB knowledge occupy an inspector that starts collapsed and opens
 from the toolbar, `Command-Option-I`, or the Git/Context status-bar shortcuts. Adding a project
 still opens Context. A 28pt bottom row reports verified local health, checkout and Context state,
-active sessions, recorded launch selection, and elapsed time without repeating the project name.
+open-session navigation, loaded project-memory records, and recorded launch selection without
+repeating the project name. Elapsed time stays available in session detail rather than dominating
+the status row. New Session prioritizes task title, agent/model and the recommended work location;
+optional alias, procedure, Context depth and CLI arguments live in an advanced disclosure.
+Only successful project-scoped agent/model choices are remembered, never execution permissions
+or consent to work in a modified checkout.
 Provider quota percentages are excluded until a supported provider API can supply them truthfully.
 Installation, agent connections, database maintenance, and system diagnostics belong in
 Settings rather than the primary navigation. ByoriDB installation does not implicitly connect
 or alter a provider; MCP and Memory Skill changes remain explicit per-agent actions. Settings
-may inventory user-scoped MCP registrations and Skills, but it never presents secret-bearing
+provides searchable, ownership-filtered user-scoped MCP and Skill inventories. Unknown inventory
+counts remain unknown; registration does not claim a live connection or verified login. Settings
+never presents secret-bearing
 command arguments, headers, environment values, or tokens.
 
 Antigravity CLI (`agy`) is the built-in Google coding agent. It replaces the retired Gemini CLI
