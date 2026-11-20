@@ -300,18 +300,18 @@ struct WorkspaceView<TerminalHost: View>: View {
         case .idle, .loading:
             WorkspaceUnavailableView(
                 icon: "folder.badge.gearshape",
-                title: "Loading workspace",
-                detail: "Reading registered projects, source trees, tasks, and sessions.",
+                title: "작업 공간을 불러오고 있습니다",
+                detail: "등록한 프로젝트와 작업·세션을 확인하고 있습니다.",
                 showsProgress: true
             )
         case let .failed(message):
             WorkspaceUnavailableView(
                 icon: "exclamationmark.triangle",
-                title: "Workspace unavailable",
+                title: "작업 공간을 불러오지 못했습니다",
                 detail: message,
-                primaryTitle: "Try Again",
+                primaryTitle: "다시 시도",
                 primaryAction: { Task { await model.load(force: true) } },
-                secondaryTitle: "Settings",
+                secondaryTitle: "설정",
                 secondaryAction: openSettings
             )
         case .ready:
@@ -324,11 +324,11 @@ struct WorkspaceView<TerminalHost: View>: View {
         if model.projects.isEmpty {
             WorkspaceUnavailableView(
                 icon: "folder.badge.plus",
-                title: "Start a project",
-                detail: "Create a new local project or open any folder you trust. Byori will ask before initializing Git in an existing folder.",
-                primaryTitle: "Create New Project…",
+                title: "프로젝트를 시작하세요",
+                detail: "새 프로젝트를 만들거나 신뢰하는 로컬 폴더를 열어 주세요. 기존 폴더에서 Git을 초기화하기 전에는 별도로 확인합니다.",
+                primaryTitle: "새 프로젝트…",
                 primaryAction: model.presentNewProject,
-                secondaryTitle: "Open Folder…",
+                secondaryTitle: "폴더 열기…",
                 secondaryAction: chooseProjectFolder
             )
         } else if let session = model.selectedSession,
@@ -364,19 +364,19 @@ struct WorkspaceView<TerminalHost: View>: View {
                   project.registration == .missing {
             WorkspaceUnavailableView(
                 icon: "folder.badge.questionmark",
-                title: "Project folder is missing",
-                detail: "Byori cannot find \(project.repositoryURL.path). Locate or re-register the project before opening a session.",
-                primaryTitle: "Open Folder…",
+                title: "프로젝트 폴더를 찾을 수 없습니다",
+                detail: "\(project.repositoryURL.path) 경로를 찾지 못했습니다. 폴더 위치를 확인하거나 프로젝트를 다시 등록해 주세요.",
+                primaryTitle: "폴더 열기…",
                 primaryAction: chooseProjectFolder,
-                secondaryTitle: "Settings",
+                secondaryTitle: "설정",
                 secondaryAction: openSettings
             )
         } else if let sourceTree = model.selectedSourceTree {
             WorkspaceUnavailableView(
                 icon: "terminal",
-                title: model.selectedTask == nil ? "No task selected" : "No session selected",
+                title: model.selectedTask == nil ? "작업을 시작하세요" : "세션을 시작하세요",
                 detail: sessionEmptyDetail(for: sourceTree),
-                primaryTitle: "New Session",
+                primaryTitle: "새 세션",
                 primaryAction: { Task { await model.prepareNewSession() } },
                 secondaryTitle: model.selectedTask == nil ? nil : "작업 절차·검증",
                 secondaryAction: { model.showTaskWork() }
@@ -384,16 +384,16 @@ struct WorkspaceView<TerminalHost: View>: View {
         } else if let project = model.selectedProject, project.sourceTrees.isEmpty {
             WorkspaceUnavailableView(
                 icon: "arrow.triangle.branch",
-                title: "No source tree available",
-                detail: "The runtime adapter did not return a primary checkout or worktree for this project.",
-                secondaryTitle: "Refresh",
+                title: "작업 폴더를 찾을 수 없습니다",
+                detail: "이 프로젝트의 기본 작업 폴더나 워크트리를 확인하지 못했습니다. 폴더 위치를 확인한 뒤 다시 불러와 주세요.",
+                secondaryTitle: "새로고침",
                 secondaryAction: { Task { await model.load(force: true) } }
             )
         } else {
             WorkspaceUnavailableView(
                 icon: "sidebar.left",
-                title: "Choose a task",
-                detail: "Select a task or session from the project list, or start a new session."
+                title: "작업을 선택하세요",
+                detail: "프로젝트 목록에서 작업이나 세션을 선택하거나 새 세션을 시작하세요."
             )
         }
     }
@@ -500,9 +500,9 @@ struct WorkspaceView<TerminalHost: View>: View {
     private func sessionEmptyDetail(for sourceTree: WorkspaceSourceTreeItem) -> String {
         switch sourceTree.workingState {
         case .clean:
-            return "Start one interactive coding session in \(sourceTree.name)."
+            return "\(sourceTree.branch) 브랜치에서 에이전트와 함께 작업을 시작할 수 있습니다."
         case let .modified(changeCount):
-            return "This source tree has \(changeCount) uncommitted changes. Review them before starting a writing session."
+            return "이 작업 폴더에 커밋하지 않은 변경 \(changeCount)개가 있습니다. 세션을 시작하기 전에 변경 내용을 확인해 주세요."
         case let .unavailable(reason):
             return reason
         }
@@ -510,9 +510,9 @@ struct WorkspaceView<TerminalHost: View>: View {
 
     private func chooseProjectFolder() {
         let panel = NSOpenPanel()
-        panel.title = "Open Project Folder"
-        panel.message = "Choose a local folder you trust Byori to use. If it is not a Git repository, Byori will ask before initializing it."
-        panel.prompt = "Open Folder"
+        panel.title = "프로젝트 폴더 열기"
+        panel.message = "Byori에서 사용할 신뢰하는 로컬 폴더를 선택하세요. Git 저장소가 아닌 폴더는 초기화하기 전에 별도로 확인합니다."
+        panel.prompt = "폴더 열기"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
@@ -1058,7 +1058,7 @@ private struct NewWorkspaceSessionSheet: View {
 
                     Section("작업 위치") {
                         VStack(alignment: .leading, spacing: 5) {
-                            Label(model.plannedSessionLocation, systemImage: "arrow.triangle.branch")
+                            Label(plannedLocationLabel, systemImage: "arrow.triangle.branch")
                                 .font(.callout.weight(.medium))
                                 .textSelection(.enabled)
                             Text(locationStrategyDetail)
@@ -1455,6 +1455,20 @@ private struct NewWorkspaceSessionSheet: View {
 
     private var projectName: String {
         model.projects.first(where: { $0.id == model.newSessionDraft.projectID })?.name ?? "알 수 없는 프로젝트"
+    }
+
+    private var plannedLocationLabel: String {
+        guard model.newSessionDraft.locationStrategy == .currentCheckout,
+              !model.sessionPlanHasPendingLocation, let sourceTree = selectedSourceTree else {
+            return model.plannedSessionLocation
+        }
+        let kind: String
+        switch sourceTree.kind {
+        case .primary: kind = "기본 작업 폴더"
+        case .managedWorktree: kind = "Byori 워크트리"
+        case .externalCheckout: kind = "외부 작업 폴더"
+        }
+        return "\(sourceTree.branch) · \(kind)"
     }
 
     private var selectedSourceTree: WorkspaceSourceTreeItem? {

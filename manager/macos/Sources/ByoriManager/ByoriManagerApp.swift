@@ -78,6 +78,13 @@ struct ByoriManagerApp: App {
         .menuBarExtraStyle(.window)
         .commands {
             CommandGroup(replacing: .newItem) { }
+            CommandGroup(after: .newItem) {
+                Button("빠른 전환…") {
+                    workspaceWindowCoordinator.showWindow()
+                    workspaceModel.presentQuickSwitch()
+                }
+                .keyboardShortcut("k", modifiers: .command)
+            }
             CommandGroup(replacing: .appSettings) {
                 Button("설정…") {
                     settingsWindowCoordinator.showWindow()
