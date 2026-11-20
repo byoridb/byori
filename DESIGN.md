@@ -86,7 +86,7 @@ The fixed palette is intentionally small. The frontmatter defines only colors th
 
 **One Mapping Per Fact Rule.** Every surface that reports the same state reads it from the same mapping in code. While the outline and the status bar each owned their own, a clean checkout was teal in one and green in the other.
 
-**The Terminal Stays Fixed Rule.** The terminal remains near-black in every system appearance so the coding surface retains visual authority.
+**The Terminal Stays Fixed Rule.** The terminal remains near-black in every system appearance so the coding surface retains visual authority. Session-ended, reconnecting, and unavailable overlays use dark semantic colors within that canvas so their text and controls remain readable beside light chrome.
 
 **The PTY Owns ANSI Color Rule.** Preserve provider-emitted 16-color, 256-color, and truecolor output. Embedded interactive sessions advertise `xterm-256color`/`truecolor` and do not inherit host variables that suppress color; Byori still does not recolor or fabricate provider output.
 
