@@ -23,6 +23,7 @@ final class ProjectMemoryTests: XCTestCase {
         let capture = await runner.snapshot()
         let command = try XCTUnwrap(capture.command)
         let file = try XCTUnwrap(capture.file)
+        XCTAssertEqual(command.arguments.prefix(4), ["-B", paths.bundledByoriCLI.path, "memory", "checkpoint"])
         XCTAssertFalse(command.arguments.joined().contains(draft.goal))
         XCTAssertEqual(command.workingDirectory, root.path)
         XCTAssertEqual(capture.mode, 0o600)
@@ -46,6 +47,38 @@ final class ProjectMemoryTests: XCTestCase {
         let capture = await runner.snapshot()
         let file = try XCTUnwrap(capture.file)
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testBundledPythonImportsDoNotCreateBytecodeResources() async throws {
+        let root = try makeRuntime()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = ManagerPaths(home: root, runtimeRoot: root.appendingPathComponent("runtime"))
+        try XCTSkipIf(paths.executable(named: "python3") == nil, "Python 3 is not installed")
+        let script = """
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mcp"))
+        import byoridb_mcp
+        print(byoridb_mcp.VALUE)
+        """
+        try Data(script.utf8).write(to: paths.bundledByoriCLI)
+        try Data("import code_graph\nVALUE = code_graph.VALUE\n".utf8).write(to: paths.bundledMCP)
+        try Data("VALUE = 'fixture-imported'\n".utf8).write(to: paths.bundledCodeGraph)
+        let command = try await ProjectMemoryClient(paths: paths).command(
+            action: "read", root: root, space: "project_space", payloadFile: root.appendingPathComponent("unused.json")
+        )
+        // Inherited Python cache settings must not hide a missing launcher flag.
+        let result = await ProcessCommandRunner().run(CommandSpec(
+            executable: command.executable, arguments: command.arguments,
+            environment: command.environment, workingDirectory: command.workingDirectory,
+            timeout: command.timeout,
+            environmentRemovals: ["PYTHONDONTWRITEBYTECODE", "PYTHONPYCACHEPREFIX", "PYTHONPATH", "PYTHONHOME"]
+        ))
+
+        XCTAssertTrue(result.succeeded, result.output)
+        XCTAssertEqual(result.output.trimmingCharacters(in: .whitespacesAndNewlines), "fixture-imported")
+        let resources = try FileManager.default.subpathsOfDirectory(atPath: paths.runtimeRoot.path)
+        XCTAssertFalse(resources.contains { $0.contains("__pycache__") || $0.hasSuffix(".pyc") }, resources.joined(separator: "\n"))
     }
 
     func testPartialBundleFailsInsteadOfUsingDifferentInstalledBridge() async throws {

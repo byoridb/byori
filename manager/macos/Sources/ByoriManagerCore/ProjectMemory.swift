@@ -202,7 +202,8 @@ public actor ProjectMemoryClient {
             for resource in [paths.bundledMCP, paths.bundledCodeGraph] {
                 guard FileManager.default.fileExists(atPath: resource.path) else { throw ManagerError.missingResource(resource.path) }
             }
-            return CommandSpec(executable: python.path, arguments: [paths.bundledByoriCLI.path] + arguments,
+            // Imported modules must not write bytecode into the signed app bundle.
+            return CommandSpec(executable: python.path, arguments: ["-B", paths.bundledByoriCLI.path] + arguments,
                                environment: environment, workingDirectory: root.path, timeout: 45)
         }
         guard FileManager.default.isExecutableFile(atPath: paths.byoriCLI.path) else { throw ManagerError.missingResource(paths.byoriCLI.path) }

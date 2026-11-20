@@ -261,7 +261,8 @@ public actor ManagerService: CodeIndexProviding {
                     throw ManagerError.missingResource(asset.path)
                 }
             }
-            return CommandSpec(executable: python.path, arguments: [paths.bundledByoriCLI.path] + arguments,
+            // Imported modules must not write bytecode into the signed app bundle.
+            return CommandSpec(executable: python.path, arguments: ["-B", paths.bundledByoriCLI.path] + arguments,
                                environment: commonEnvironment, workingDirectory: projectRoot.path, timeout: 45)
         }
         guard fileManager.isExecutableFile(atPath: paths.byoriCLI.path) else {
@@ -471,9 +472,10 @@ public actor ManagerService: CodeIndexProviding {
             }
             var environment = commonEnvironment
             environment["BYORI_INDEXER"] = indexer.path
+            // Imported modules must not write bytecode into the signed app bundle.
             return CommandSpec(
                 executable: python.path,
-                arguments: [paths.bundledByoriCLI.path] + arguments,
+                arguments: ["-B", paths.bundledByoriCLI.path] + arguments,
                 environment: environment,
                 workingDirectory: projectRoot.path,
                 timeout: timeout

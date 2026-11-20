@@ -38,6 +38,7 @@ final class ManagerServiceProjectMemoryTests: XCTestCase {
         // Symlinks are resolved, so a Homebrew python3 arrives as `python3.14`.
         XCTAssertTrue(command.executable.contains("python3"), command.executable)
         XCTAssertEqual(command.arguments, [
+            "-B",
             runtime.appendingPathComponent("cli/byori.py").path,
             "init", "/tmp/shop",
             "--space", "byori_shop_1a2b",
