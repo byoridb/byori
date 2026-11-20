@@ -51,15 +51,15 @@ final class WorkspaceStartSessionGateTests: XCTestCase {
 
         await model.prepareNewSession()
 
-        XCTAssertEqual(model.startSessionBlockedReason, "Give the new task a title.")
+        XCTAssertEqual(model.startSessionBlockedReason, "작업 제목을 입력하세요.")
         XCTAssertFalse(model.canStartSession)
 
         model.newSessionDraft.newTaskTitle = "Fix the parser"
-        XCTAssertEqual(model.startSessionBlockedReason, "Choose the launch provider under Agent.")
+        XCTAssertEqual(model.startSessionBlockedReason, "에이전트를 선택하세요.")
         XCTAssertFalse(model.canStartSession)
 
         model.chooseProvider("claude")
-        XCTAssertEqual(model.startSessionBlockedReason, "Choose the model under Agent.")
+        XCTAssertEqual(model.startSessionBlockedReason, "모델을 선택하세요.")
         XCTAssertFalse(model.canStartSession)
 
         model.chooseModel("default")
@@ -67,9 +67,8 @@ final class WorkspaceStartSessionGateTests: XCTestCase {
         XCTAssertTrue(model.canStartSession)
     }
 
-    /// Choosing a provider clears the model, so the sheet must ask for the model
-    /// again rather than leaving the button dead with nothing to read.
-    func testSwitchingProviderAsksForTheModelAgain() async {
+    /// A provider with a single available model needs no redundant selection.
+    func testSwitchingToASingleModelProviderSelectsThatModel() async {
         let dataSource = GateDataSource()
         let model = WorkspaceViewModel(dataSource: dataSource)
         await model.load()
@@ -81,8 +80,9 @@ final class WorkspaceStartSessionGateTests: XCTestCase {
 
         model.chooseProvider("codex")
 
-        XCTAssertEqual(model.startSessionBlockedReason, "Choose the model under Agent.")
-        XCTAssertFalse(model.canStartSession)
+        XCTAssertEqual(model.newSessionDraft.modelID, "default")
+        XCTAssertNil(model.startSessionBlockedReason)
+        XCTAssertTrue(model.canStartSession)
     }
 
     /// A model that takes an identifier is not chosen until the identifier is
@@ -97,7 +97,7 @@ final class WorkspaceStartSessionGateTests: XCTestCase {
 
         model.chooseModel("custom")
 
-        XCTAssertEqual(model.startSessionBlockedReason, "Enter the model identifier for Custom model.")
+        XCTAssertEqual(model.startSessionBlockedReason, "Custom model의 모델 식별자를 입력하세요.")
         XCTAssertFalse(model.canStartSession)
 
         model.newSessionDraft.customModelID = "claude-opus-5"
@@ -149,7 +149,7 @@ final class WorkspaceStartSessionGateTests: XCTestCase {
         model.newSessionDraft.newTaskTitle = "Fix the parser"
 
         XCTAssertEqual(model.sessionOptionsPhase, .loading)
-        XCTAssertEqual(model.startSessionBlockedReason, "Reading the installed provider models…")
+        XCTAssertEqual(model.startSessionBlockedReason, "설치된 에이전트를 확인하고 있습니다…")
         XCTAssertFalse(model.canStartSession)
 
         dataSource.finishOptionsRead()
@@ -180,7 +180,7 @@ final class WorkspaceStartSessionGateTests: XCTestCase {
 
         XCTAssertEqual(
             model.startSessionBlockedReason,
-            "No installed provider is available. Open Settings to connect one."
+            "사용할 수 있는 에이전트가 없습니다. 설정에서 설치 상태를 확인하세요."
         )
         XCTAssertFalse(model.canStartSession)
     }
@@ -198,7 +198,7 @@ final class WorkspaceStartSessionGateTests: XCTestCase {
 
         await model.startSession()
 
-        XCTAssertEqual(model.newSessionError, "Choose the model under Agent.")
+        XCTAssertEqual(model.newSessionError, "모델을 선택하세요.")
         XCTAssertTrue(dataSource.startedRequests.isEmpty)
     }
 }

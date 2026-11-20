@@ -25,7 +25,11 @@ struct ByoriManagerApp: App {
             claudeGatewaySettings: claudeGatewaySettings,
             workspaceHome: Self.workspaceHome
         )
-        let workspaceModel = WorkspaceViewModel(dataSource: dataSource)
+        let workspaceModel = WorkspaceViewModel(
+            dataSource: dataSource,
+            navigationPreferences: WorkspaceNavigationPreferencesStore(defaults: .standard),
+            launchPreferences: WorkspaceLaunchPreferencesStore(defaults: .standard)
+        )
         dataSource.workspaceChanged = { [weak workspaceModel] in
             Task { @MainActor in
                 await workspaceModel?.load(force: true)
@@ -74,14 +78,21 @@ struct ByoriManagerApp: App {
         .menuBarExtraStyle(.window)
         .commands {
             CommandGroup(replacing: .newItem) { }
+            CommandGroup(after: .newItem) {
+                Button("빠른 전환…") {
+                    workspaceWindowCoordinator.showWindow()
+                    workspaceModel.presentQuickSwitch()
+                }
+                .keyboardShortcut("k", modifiers: .command)
+            }
             CommandGroup(replacing: .appSettings) {
-                Button("Settings…") {
+                Button("설정…") {
                     settingsWindowCoordinator.showWindow()
                 }
                 .keyboardShortcut(",", modifiers: .command)
             }
             CommandGroup(after: .appInfo) {
-                Button("Refresh Workspace") {
+                Button("작업 공간 새로고침") {
                     Task { await workspaceModel.load(force: true) }
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])

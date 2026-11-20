@@ -21,7 +21,7 @@ enum WorkspaceRemovalRequest: Identifiable {
         switch self {
         case .project: return "Remove Project from Byori?"
         case let .sourceTree(sourceTree): return "Hide \(sourceTree.kind.removalLabel) from Byori?"
-        case .task: return "Remove Task from Byori?"
+        case .task: return "작업을 보관할까요?"
         case .managedWorktree: return "Delete Managed Worktree?"
         }
     }
@@ -30,7 +30,7 @@ enum WorkspaceRemovalRequest: Identifiable {
         switch self {
         case .project: return "Remove Project"
         case let .sourceTree(sourceTree): return "Hide \(sourceTree.kind.removalLabel)"
-        case .task: return "Remove Task"
+        case .task: return "작업 보관"
         case .managedWorktree: return "Delete Worktree"
         }
     }
@@ -41,8 +41,8 @@ enum WorkspaceRemovalRequest: Identifiable {
             return "Stop the project's active writing session first."
         case let .sourceTree(sourceTree) where sourceTree.hasActiveWritingSession:
             return "Stop this source tree's active writing session first."
-        case let .task(task) where task.sessions.contains(where: { $0.state.isActive }):
-            return "Stop this task's active session first."
+        case let .task(task) where WorkspaceCleanupEligibility.hasActiveSession(task):
+            return "열린 세션을 먼저 종료해 주세요."
         case let .managedWorktree(sourceTree) where sourceTree.hasActiveWritingSession:
             return "Stop this worktree's active writing session first."
         case let .managedWorktree(sourceTree) where !sourceTree.tasks.isEmpty:
@@ -81,7 +81,7 @@ enum WorkspaceRemovalRequest: Identifiable {
             }
             return "Only \(sourceTree.name) will disappear from Byori's outline. Its folder, Git worktree, branch, task/session history, and ByoriDB context will not be deleted. Restore it later from the project menu.\(workState)"
         case let .task(task):
-            return "\(task.title) and its session metadata will move out of the active workspace into Byori's archived task storage. Repository files, the Git worktree and branch, and ByoriDB context will not be deleted."
+            return "\(task.title) 작업과 세션 기록을 보관함으로 옮깁니다. 파일·브랜치·워크트리·프로젝트 기억은 그대로 유지되며, 실행 취소하거나 보관함에서 복원할 수 있습니다."
         case let .managedWorktree(sourceTree):
             return "Byori will delete only its managed worktree folder at \(sourceTree.url.path) and remove that checkout from Git. Choose whether to keep branch \(sourceTree.branch), or ask Git to delete it safely; an unmerged branch will be kept."
         }
@@ -147,7 +147,7 @@ struct WorkspaceView<TerminalHost: View>: View {
                 Button {
                     Task { await model.prepareNewSession() }
                 } label: {
-                    Label("New Session", systemImage: "plus.rectangle.on.rectangle")
+                    Label("새 세션", systemImage: "plus.rectangle.on.rectangle")
                 }
                 .keyboardShortcut("n", modifiers: .command)
                 .labelStyle(.titleAndIcon)
@@ -165,6 +165,11 @@ struct WorkspaceView<TerminalHost: View>: View {
                 .accessibilityValue(model.isInspectorPresented ? "Expanded" : "Collapsed")
 
                 Menu {
+                    Button { model.presentQuickSwitch() } label: {
+                        Label("빠른 전환…", systemImage: "magnifyingglass")
+                    }
+                    .keyboardShortcut("k", modifiers: .command)
+                    Divider()
                     Button { model.showTaskWork() } label: {
                         Label("작업 절차·검증", systemImage: "checklist")
                     }
@@ -173,7 +178,7 @@ struct WorkspaceView<TerminalHost: View>: View {
                     Button {
                         Task { await model.load(force: true) }
                     } label: {
-                        Label("Refresh Workspace", systemImage: "arrow.clockwise")
+                        Label("작업 공간 새로고침", systemImage: "arrow.clockwise")
                     }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
                     .disabled(model.isRefreshing || model.phase == .loading)
@@ -184,6 +189,9 @@ struct WorkspaceView<TerminalHost: View>: View {
             }
         }
         .task { await model.load() }
+        .sheet(isPresented: $model.isPresentingQuickSwitch) {
+            WorkspaceQuickSwitchSheet(model: model)
+        }
         .sheet(isPresented: Binding(
             get: { model.isPresentingSessionCleanup },
             set: { if !$0 { model.dismissSessionCleanup() } }
@@ -238,6 +246,9 @@ struct WorkspaceView<TerminalHost: View>: View {
                         }
                         .disabled(request.disabledReason != nil || model.isMutatingWorkspace)
                     }
+                } else if case .task = request {
+                    Button(request.actionTitle) { performRemoval(request) }
+                        .disabled(request.disabledReason != nil || model.isMutatingWorkspace)
                 } else {
                     Button(request.actionTitle, role: .destructive) {
                         performRemoval(request)
@@ -245,7 +256,7 @@ struct WorkspaceView<TerminalHost: View>: View {
                     .disabled(request.disabledReason != nil || model.isMutatingWorkspace)
                 }
             }
-            Button("Cancel", role: .cancel) { removalRequest = nil }
+            Button("취소", role: .cancel) { removalRequest = nil }
         } message: {
             if let request = removalRequest {
                 Text(request.disabledReason ?? request.message)
@@ -289,18 +300,18 @@ struct WorkspaceView<TerminalHost: View>: View {
         case .idle, .loading:
             WorkspaceUnavailableView(
                 icon: "folder.badge.gearshape",
-                title: "Loading workspace",
-                detail: "Reading registered projects, source trees, tasks, and sessions.",
+                title: "작업 공간을 불러오고 있습니다",
+                detail: "등록한 프로젝트와 작업·세션을 확인하고 있습니다.",
                 showsProgress: true
             )
         case let .failed(message):
             WorkspaceUnavailableView(
                 icon: "exclamationmark.triangle",
-                title: "Workspace unavailable",
+                title: "작업 공간을 불러오지 못했습니다",
                 detail: message,
-                primaryTitle: "Try Again",
+                primaryTitle: "다시 시도",
                 primaryAction: { Task { await model.load(force: true) } },
-                secondaryTitle: "Settings",
+                secondaryTitle: "설정",
                 secondaryAction: openSettings
             )
         case .ready:
@@ -313,11 +324,11 @@ struct WorkspaceView<TerminalHost: View>: View {
         if model.projects.isEmpty {
             WorkspaceUnavailableView(
                 icon: "folder.badge.plus",
-                title: "Start a project",
-                detail: "Create a new local project or open any folder you trust. Byori will ask before initializing Git in an existing folder.",
-                primaryTitle: "Create New Project…",
+                title: "프로젝트를 시작하세요",
+                detail: "새 프로젝트를 만들거나 신뢰하는 로컬 폴더를 열어 주세요. 기존 폴더에서 Git을 초기화하기 전에는 별도로 확인합니다.",
+                primaryTitle: "새 프로젝트…",
                 primaryAction: model.presentNewProject,
-                secondaryTitle: "Open Folder…",
+                secondaryTitle: "폴더 열기…",
                 secondaryAction: chooseProjectFolder
             )
         } else if let session = model.selectedSession,
@@ -353,19 +364,19 @@ struct WorkspaceView<TerminalHost: View>: View {
                   project.registration == .missing {
             WorkspaceUnavailableView(
                 icon: "folder.badge.questionmark",
-                title: "Project folder is missing",
-                detail: "Byori cannot find \(project.repositoryURL.path). Locate or re-register the project before opening a session.",
-                primaryTitle: "Open Folder…",
+                title: "프로젝트 폴더를 찾을 수 없습니다",
+                detail: "\(project.repositoryURL.path) 경로를 찾지 못했습니다. 폴더 위치를 확인하거나 프로젝트를 다시 등록해 주세요.",
+                primaryTitle: "폴더 열기…",
                 primaryAction: chooseProjectFolder,
-                secondaryTitle: "Settings",
+                secondaryTitle: "설정",
                 secondaryAction: openSettings
             )
         } else if let sourceTree = model.selectedSourceTree {
             WorkspaceUnavailableView(
                 icon: "terminal",
-                title: model.selectedTask == nil ? "No task selected" : "No session selected",
+                title: model.selectedTask == nil ? "작업을 시작하세요" : "세션을 시작하세요",
                 detail: sessionEmptyDetail(for: sourceTree),
-                primaryTitle: "New Session",
+                primaryTitle: "새 세션",
                 primaryAction: { Task { await model.prepareNewSession() } },
                 secondaryTitle: model.selectedTask == nil ? nil : "작업 절차·검증",
                 secondaryAction: { model.showTaskWork() }
@@ -373,16 +384,16 @@ struct WorkspaceView<TerminalHost: View>: View {
         } else if let project = model.selectedProject, project.sourceTrees.isEmpty {
             WorkspaceUnavailableView(
                 icon: "arrow.triangle.branch",
-                title: "No source tree available",
-                detail: "The runtime adapter did not return a primary checkout or worktree for this project.",
-                secondaryTitle: "Refresh",
+                title: "작업 폴더를 찾을 수 없습니다",
+                detail: "이 프로젝트의 기본 작업 폴더나 워크트리를 확인하지 못했습니다. 폴더 위치를 확인한 뒤 다시 불러와 주세요.",
+                secondaryTitle: "새로고침",
                 secondaryAction: { Task { await model.load(force: true) } }
             )
         } else {
             WorkspaceUnavailableView(
                 icon: "sidebar.left",
-                title: "Choose a task",
-                detail: "Select a task or session from the project list, or start a new session."
+                title: "작업을 선택하세요",
+                detail: "프로젝트 목록에서 작업이나 세션을 선택하거나 새 세션을 시작하세요."
             )
         }
     }
@@ -489,9 +500,9 @@ struct WorkspaceView<TerminalHost: View>: View {
     private func sessionEmptyDetail(for sourceTree: WorkspaceSourceTreeItem) -> String {
         switch sourceTree.workingState {
         case .clean:
-            return "Start one interactive coding session in \(sourceTree.name)."
+            return "\(sourceTree.branch) 브랜치에서 에이전트와 함께 작업을 시작할 수 있습니다."
         case let .modified(changeCount):
-            return "This source tree has \(changeCount) uncommitted changes. Review them before starting a writing session."
+            return "이 작업 폴더에 커밋하지 않은 변경 \(changeCount)개가 있습니다. 세션을 시작하기 전에 변경 내용을 확인해 주세요."
         case let .unavailable(reason):
             return reason
         }
@@ -499,9 +510,9 @@ struct WorkspaceView<TerminalHost: View>: View {
 
     private func chooseProjectFolder() {
         let panel = NSOpenPanel()
-        panel.title = "Open Project Folder"
-        panel.message = "Choose a local folder you trust Byori to use. If it is not a Git repository, Byori will ask before initializing it."
-        panel.prompt = "Open Folder"
+        panel.title = "프로젝트 폴더 열기"
+        panel.message = "Byori에서 사용할 신뢰하는 로컬 폴더를 선택하세요. Git 저장소가 아닌 폴더는 초기화하기 전에 별도로 확인합니다."
+        panel.prompt = "폴더 열기"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
@@ -999,14 +1010,17 @@ private struct WorkspaceContextRecordRow: View {
 
 private struct NewWorkspaceSessionSheet: View {
     @ObservedObject var model: WorkspaceViewModel
+    @State private var showsAdvanced = false
+    @State private var showsLocationDetails = false
+    @FocusState private var taskTitleIsFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("New Session")
+                    Text("새 세션")
                         .font(.title2.weight(.semibold))
-                    Text("Confirm where the agent will work, then choose its launch provider and model.")
+                    Text(projectName)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -1017,54 +1031,70 @@ private struct NewWorkspaceSessionSheet: View {
 
             ScrollView {
                 Form {
-                    Section("Session") {
-                        TextField("Session Name", text: $model.newSessionDraft.sessionName)
-                            .accessibilityHint("Names this session in the task history")
-
-                        Text("A short name helps distinguish sessions that use the same agent and model. Up to \(WorkspaceSession.maximumNameScalarCount) characters.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        if let message = model.sessionNameValidationMessage {
-                            Label(message, systemImage: "exclamationmark.circle")
-                                .font(.caption)
-                                .foregroundStyle(.red)
+                    Section("작업") {
+                        if !model.tasks(for: model.newSessionDraft.sourceTreeID).isEmpty {
+                            Picker("작업", selection: $model.newSessionDraft.taskChoice) {
+                                Text("새 작업").tag(WorkspaceNewSessionTaskChoice.newTask)
+                                ForEach(model.tasks(for: model.newSessionDraft.sourceTreeID)) { task in
+                                    Text(task.status.allowsNewSession
+                                         ? task.title
+                                         : "\(task.title) · 종료됨")
+                                        .tag(WorkspaceNewSessionTaskChoice.existing(task.id))
+                                        .disabled(!task.status.allowsNewSession)
+                                }
+                            }
+                            .disabled(model.sessionPlanHasPendingLocation)
+                        }
+                        if case .newTask = model.newSessionDraft.taskChoice {
+                            TextField("작업 제목", text: $model.newSessionDraft.newTaskTitle)
+                                .focused($taskTitleIsFocused)
+                                .accessibilityHint("작업 제목에 맞춰 추천 브랜치 이름도 채웁니다")
                         }
                     }
 
-                    Section("작업") {
-                        LabeledContent("Project", value: projectName)
-
-                        Picker("Task", selection: $model.newSessionDraft.taskChoice) {
-                            Text("New Task").tag(WorkspaceNewSessionTaskChoice.newTask)
-                            ForEach(model.tasks(for: model.newSessionDraft.sourceTreeID)) { task in
-                                Text(task.status.allowsNewSession
-                                     ? task.title
-                                     : "\(task.title) — \(task.status.label)")
-                                    .tag(WorkspaceNewSessionTaskChoice.existing(task.id))
-                                    .disabled(!task.status.allowsNewSession)
-                            }
-                        }
-                        .disabled(model.sessionPlanHasPendingLocation)
-
-                        if case .newTask = model.newSessionDraft.taskChoice {
-                            TextField("Task Title", text: $model.newSessionDraft.newTaskTitle)
-                                .accessibilityHint("작업 제목에 맞춰 추천 브랜치 이름도 채웁니다")
-                            Picker("작업 절차", selection: $model.newSessionDraft.workflowPreset) {
-                                Text("선택 안 함").tag(TaskWorkflowPreset?.none)
-                                ForEach(TaskWorkflowPreset.allCases) { preset in
-                                    Text(preset.title).tag(Optional(preset))
-                                }
-                            }
-                            if let preset = model.newSessionDraft.workflowPreset {
-                                Text(preset.summary).font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
+                    Section("에이전트") {
+                        sessionOptions
                     }
 
                     Section("작업 위치") {
-                        sessionLocationPlan
+                        VStack(alignment: .leading, spacing: 5) {
+                            Label(plannedLocationLabel, systemImage: "arrow.triangle.branch")
+                                .font(.callout.weight(.medium))
+                                .textSelection(.enabled)
+                            Text(locationStrategyDetail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            if model.newSessionDraft.locationStrategy == model.sessionLocationRecommendation.strategy {
+                                Text("추천 이유: \(model.sessionLocationRecommendation.reason)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            if let selectedSourceTree {
+                                Text("\(model.newSessionDraft.locationStrategy == .newWorktree ? "기준 폴더" : "작업 폴더"): \(selectedSourceTree.url.path)")
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .help(selectedSourceTree.url.path)
+                            }
+                        }
+                        DisclosureGroup("작업 위치 변경", isExpanded: $showsLocationDetails) {
+                            sessionLocationPlan
+                        }
 
+                        // Safety information is outside the optional details: a
+                        // collapsed plan never hides existing uncommitted work.
+                        if model.newSessionDraft.locationStrategy == .currentCheckout {
+                            if let warning = sourceTreeWarning {
+                                Label(warning, systemImage: "exclamationmark.triangle")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
+                            if sourceTreeIsModified {
+                                Toggle("기존 변경이 있는 작업 폴더에서 시작", isOn: $model.newSessionDraft.acceptsModifiedWorkingTree)
+                                    .accessibilityHint("커밋하지 않은 기존 변경에 영향을 줄 수 있음을 확인합니다")
+                            }
+                        }
                         if let constraint = model.launchConstraintMessage {
                             Label(constraint, systemImage: "xmark.octagon")
                                 .font(.caption)
@@ -1072,56 +1102,22 @@ private struct NewWorkspaceSessionSheet: View {
                         }
                     }
 
-                    Section("Agent") {
-                        sessionOptions
-
-                        if let warning = model.sessionPersistenceWarning {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Label(warning, systemImage: "exclamationmark.triangle")
-                                    .font(.caption)
-                                    .foregroundStyle(.orange)
-                                // The warning used to end here, with nothing the
-                                // user could act on. Settings installs tmux now,
-                                // so it says where. Reopening this sheet re-reads
-                                // tmux, so the warning clears once it is done.
-                                Text("Settings → 설정 개요에서 tmux를 설치할 수 있습니다.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .accessibilityElement(children: .combine)
-                            .accessibilityHint("Sessions started now will end when Byori quits")
+                    Section {
+                        DisclosureGroup("고급 설정", isExpanded: $showsAdvanced) {
+                            advancedOptions
                         }
                     }
 
-                    Section("ByoriDB Context") {
-                        Picker("Depth", selection: $model.newSessionDraft.contextDepth) {
-                            ForEach(WorkspaceContextDepth.allCases) { depth in
-                                Text(depth.label).tag(depth)
-                            }
+                    if let warning = model.sessionPersistenceWarning {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Label(warning, systemImage: "exclamationmark.triangle")
+                                .foregroundStyle(.orange)
+                            Text("설정 → 설정 개요에서 tmux를 설치할 수 있습니다.")
+                                .foregroundStyle(.secondary)
                         }
-                        .pickerStyle(.segmented)
-
-                        Text(model.newSessionDraft.contextDepth.detail)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        Text("This controls the Context inspector after launch. The agent accesses project memory through its configured ByoriDB MCP and Memory Skill.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Label(
-                        "After launch, type directly in the real agent terminal. Byori does not place prompt text in process arguments.",
-                        systemImage: "terminal"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                    if let error = model.newSessionError {
-                        Label(error, systemImage: "xmark.octagon")
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .textSelection(.enabled)
+                        .font(.caption)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityHint("지금 시작하는 세션은 Byori를 종료하면 함께 끝납니다")
                     }
                 }
                 .formStyle(.grouped)
@@ -1131,57 +1127,103 @@ private struct NewWorkspaceSessionSheet: View {
 
             Divider()
 
-            HStack {
-                // A disabled Start Session is a refusal, and the requirement it
-                // waits on is often scrolled out of view — Agent sits at the
-                // bottom of the form. Saying it here puts the reason beside the
-                // button that is refusing, which is where it gets read.
-                if let blocked = model.startSessionBlockedReason {
-                    Label(blocked, systemImage: "exclamationmark.circle")
+            VStack(alignment: .leading, spacing: 8) {
+                // The launch result stays beside the action, even when the user
+                // is looking at the beginning of a long advanced form.
+                if let error = model.newSessionError {
+                    Label(error, systemImage: "xmark.octagon")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
-                // Said at the point of no return, in words rather than as a
-                // flag: a loosened permission should not be something the user
-                // has to recognise from argv.
-                } else if let danger = dangerNotice {
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                }
+                if let danger = dangerNotice {
                     Label(danger, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
                         .foregroundStyle(.orange)
-                } else {
-                    Text("Byori does not alter the launch provider or model. Provider-side terminal commands remain outside Byori's control.")
+                }
+                HStack(spacing: 12) {
+                    Text(model.startSessionBlockedReason ?? "확인한 작업 위치와 에이전트로 시작합니다.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("Cancel") { model.dismissNewSession() }
-                    .keyboardShortcut(.cancelAction)
-                    .disabled(model.isStartingSession)
-                Button {
-                    Task { await model.startSession() }
-                } label: {
-                    if model.isStartingSession {
-                        HStack(spacing: 7) {
-                            ProgressView().controlSize(.small)
-                            Text("Starting…")
+                    Spacer(minLength: 8)
+                    Button("취소") { model.dismissNewSession() }
+                        .keyboardShortcut(.cancelAction)
+                        .disabled(model.isStartingSession)
+                    Button {
+                        Task { await model.startSession() }
+                    } label: {
+                        if model.isStartingSession {
+                            HStack(spacing: 7) {
+                                ProgressView().controlSize(.small)
+                                Text("시작 중…")
+                            }
+                        } else {
+                            Text("세션 시작")
                         }
-                    } else {
-                        Text("Start Session")
                     }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!model.canStartSession)
+                    .accessibilityHint(model.startSessionBlockedReason ?? "")
                 }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .disabled(!model.canStartSession)
-                // VoiceOver lands on the button without the footer text beside
-                // it, so the reason travels with the control too.
-                .accessibilityHint(model.startSessionBlockedReason ?? "")
             }
             .padding(16)
         }
         .frame(width: 560)
-        .frame(minHeight: 560, idealHeight: 720)
+        .frame(minHeight: 560, idealHeight: 680)
         .interactiveDismissDisabled(model.isStartingSession)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("New coding session")
+        .accessibilityLabel("새 코딩 세션")
+        .onAppear {
+            if case .newTask = model.newSessionDraft.taskChoice {
+                taskTitleIsFocused = true
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var advancedOptions: some View {
+        TextField("세션 별칭", text: $model.newSessionDraft.sessionName)
+            .accessibilityHint("작업 이력에서 이 세션을 구분하는 이름입니다")
+        if let message = model.sessionNameValidationMessage {
+            Label(message, systemImage: "exclamationmark.circle")
+                .font(.caption)
+                .foregroundStyle(.red)
+        }
+        if case .newTask = model.newSessionDraft.taskChoice {
+            Picker("작업 절차", selection: $model.newSessionDraft.workflowPreset) {
+                Text("선택 안 함").tag(TaskWorkflowPreset?.none)
+                ForEach(TaskWorkflowPreset.allCases) { preset in
+                    Text(preset.title).tag(Optional(preset))
+                }
+            }
+            if let preset = model.newSessionDraft.workflowPreset {
+                Text(preset.summary).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        Picker("프로젝트 기억 범위", selection: $model.newSessionDraft.contextDepth) {
+            Text("핵심").tag(WorkspaceContextDepth.focused)
+            Text("관련").tag(WorkspaceContextDepth.related)
+            Text("넓게").tag(WorkspaceContextDepth.broad)
+        }
+        .pickerStyle(.segmented)
+        Text("검사기에 표시할 기억 범위입니다. 에이전트는 별도로 연결한 ByoriDB MCP와 Memory Skill을 통해 기억을 읽습니다.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        if !model.launchOptions.isEmpty {
+            Divider()
+            ForEach(model.launchOptions) { option in
+                launchOptionControl(option)
+            }
+        }
+        TextField("추가 CLI 인자 (선택)", text: $model.newSessionDraft.additionalArguments)
+            .accessibilityHint("CLI 명령 뒤에 그대로 붙입니다. 공백이 있는 값은 따옴표로 감싸세요")
+        Text("추가 인자는 그대로 전달하며 셸 확장은 하지 않습니다. 권한을 바꾸는 옵션은 매 세션 직접 선택해야 합니다.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        Text("에이전트·모델은 시작 시점의 선택을 기록합니다. 이후 터미널에서 바꾼 설정은 해당 CLI가 관리합니다.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
     }
 
     @ViewBuilder
@@ -1265,30 +1307,6 @@ private struct NewWorkspaceSessionSheet: View {
             }
         }
 
-        LabeledContent("작업 위치", value: model.plannedSessionLocation)
-
-        if let selectedSourceTree {
-            LabeledContent(model.newSessionDraft.locationStrategy == .newWorktree ? "기준 작업 폴더" : "작업 폴더") {
-                Text(selectedSourceTree.url.path)
-                    .font(.caption.monospaced())
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(selectedSourceTree.url.path)
-                    .textSelection(.enabled)
-            }
-        }
-
-        if model.newSessionDraft.locationStrategy == .currentCheckout {
-            if let warning = sourceTreeWarning {
-                Label(warning, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-            if sourceTreeIsModified {
-                Toggle("Start in this modified working tree", isOn: $model.newSessionDraft.acceptsModifiedWorkingTree)
-                    .accessibilityHint("Confirms that existing uncommitted changes may be affected")
-            }
-        }
     }
 
     private var locationStrategyDetail: String {
@@ -1308,7 +1326,7 @@ private struct NewWorkspaceSessionSheet: View {
         case .idle, .loading:
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text("Reading installed provider models…")
+                Text("설치된 에이전트를 확인하고 있습니다…")
                     .foregroundStyle(.secondary)
             }
         case let .failed(message):
@@ -1316,63 +1334,44 @@ private struct NewWorkspaceSessionSheet: View {
                 Label(message, systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.red)
-                Button("Try Again") {
+                Button("다시 확인") {
                     Task { await model.retrySessionOptions() }
                 }
             }
         case .ready where model.sessionOptions.isEmpty:
-            Label("No installed provider is available. Open Settings to connect one.", systemImage: "terminal")
+            Label("사용할 수 있는 에이전트가 없습니다. 설정에서 설치 상태를 확인하세요.", systemImage: "terminal")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         case .ready:
-            Picker("Provider", selection: providerBinding) {
-                Text("Choose Provider").tag(String?.none)
+            Picker("에이전트", selection: providerBinding) {
+                Text("에이전트 선택").tag(String?.none)
                 ForEach(model.sessionOptions) { provider in
                     Text(providerLabel(provider)).tag(String?.some(provider.id))
                 }
             }
-            .accessibilityHint("This provider is used for the Byori launch request")
+            .accessibilityHint("이 세션에서 실행할 에이전트입니다")
 
-            Picker("Model", selection: modelBinding) {
-                Text("Choose Model").tag(String?.none)
+            Picker("모델", selection: modelBinding) {
+                Text("모델 선택").tag(String?.none)
                 ForEach(model.availableModels) { option in
                     Text(modelLabel(option)).tag(String?.some(option.id))
                 }
             }
             .disabled(model.newSessionDraft.providerID == nil)
-            .accessibilityHint("This model is used for the Byori launch request")
+            .accessibilityHint("세션을 시작할 때 전달할 모델입니다")
 
             if let selectedModelOption, selectedModelOption.acceptsCustomIdentifier {
                 TextField(
-                    selectedModelOption.customIdentifierPlaceholder ?? "Provider model identifier",
+                    selectedModelOption.customIdentifierPlaceholder ?? "모델 식별자",
                     text: $model.newSessionDraft.customModelID
                 )
-                .accessibilityLabel("Custom model identifier")
-                .accessibilityHint("Enter the exact model identifier accepted by the selected provider")
+                .accessibilityLabel("직접 입력할 모델 식별자")
+                .accessibilityHint("선택한 CLI에서 지원하는 정확한 모델 식별자를 입력하세요")
 
-                Text("The concrete identifier entered here is recorded as this session's Byori launch selection.")
+                Text("입력한 모델 식별자를 이 세션의 시작 설정으로 기록합니다.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-
-            if !model.launchOptions.isEmpty {
-                Divider()
-
-                ForEach(model.launchOptions) { option in
-                    launchOptionControl(option)
-                }
-            }
-
-            TextField(
-                "Additional CLI arguments (optional)",
-                text: $model.newSessionDraft.additionalArguments
-            )
-            .accessibilityLabel("Additional CLI arguments")
-            .accessibilityHint("Passed to the CLI as written, for example --dangerously-skip-permissions")
-
-            Text("Appended to the CLI invocation exactly as typed, after Byori's own arguments. Quote values containing spaces; no shell expansion is performed.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
 
             if let availabilityMessage {
                 Label(availabilityMessage, systemImage: "exclamationmark.circle")
@@ -1396,7 +1395,7 @@ private struct NewWorkspaceSessionSheet: View {
                         if option.isDangerous {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundStyle(.orange)
-                                .accessibilityLabel("Dangerous option")
+                                .accessibilityLabel("권한을 완화하는 옵션")
                         }
                     }
                 }
@@ -1404,7 +1403,7 @@ private struct NewWorkspaceSessionSheet: View {
                 Picker(option.title, selection: choiceBinding(option)) {
                     // The CLI's own default is a real choice, and it is not
                     // Byori's to guess, so "unset" means "pass nothing".
-                    Text("CLI default").tag(String?.none)
+                    Text("CLI 기본값").tag(String?.none)
                     ForEach(values, id: \.self) { value in
                         Text(value).tag(String?.some(value))
                     }
@@ -1451,11 +1450,25 @@ private struct NewWorkspaceSessionSheet: View {
         let selected = model.selectedDangerousLaunchOptions
         guard !selected.isEmpty else { return nil }
         let titles = selected.map(\.title).joined(separator: ", ")
-        return "This session runs without its usual confirmations: \(titles)."
+        return "일반적인 승인 절차를 완화하여 실행합니다: \(titles)."
     }
 
     private var projectName: String {
-        model.projects.first(where: { $0.id == model.newSessionDraft.projectID })?.name ?? "Unknown Project"
+        model.projects.first(where: { $0.id == model.newSessionDraft.projectID })?.name ?? "알 수 없는 프로젝트"
+    }
+
+    private var plannedLocationLabel: String {
+        guard model.newSessionDraft.locationStrategy == .currentCheckout,
+              !model.sessionPlanHasPendingLocation, let sourceTree = selectedSourceTree else {
+            return model.plannedSessionLocation
+        }
+        let kind: String
+        switch sourceTree.kind {
+        case .primary: kind = "기본 작업 폴더"
+        case .managedWorktree: kind = "Byori 워크트리"
+        case .externalCheckout: kind = "외부 작업 폴더"
+        }
+        return "\(sourceTree.branch) · \(kind)"
     }
 
     private var selectedSourceTree: WorkspaceSourceTreeItem? {
@@ -1484,7 +1497,7 @@ private struct NewWorkspaceSessionSheet: View {
         switch sourceTree.workingState {
         case .clean: return nil
         case let .modified(changeCount):
-            return "This working tree already has \(changeCount) uncommitted changes."
+            return "이 작업 폴더에 커밋하지 않은 변경 \(changeCount)개가 있습니다."
         case let .unavailable(reason):
             return reason
         }
@@ -1523,7 +1536,7 @@ private struct NewWorkspaceSessionSheet: View {
         if let reason = model.availability.unavailableReason {
             return "\(model.displayName) — \(reason)"
         }
-        return model.detail.map { "\(model.displayName) — \($0)" } ?? model.displayName
+        return model.acceptsCustomIdentifier ? "직접 입력" : (model.displayName == "CLI default" ? "CLI 기본값" : model.displayName)
     }
 }
 

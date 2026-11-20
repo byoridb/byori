@@ -84,7 +84,7 @@ prototype and compatibility path.
   a new task with a recommended checkout; a task/session `+` preserves that exact task and
   checkout. Rows expose `+` and overflow actions. The sheet proposes an editable two-word session
   name, while legacy unnamed sessions retain the provider/model fallback.
-- A task row's **More Actions → Remove Task from Byori…** moves its task/session metadata to
+- A task row's **More Actions → 작업 보관…** moves its task/session metadata to
   `~/.byori/archived-tasks` after every session has ended. It does not change repository files,
   the worktree or branch, or ByoriDB context.
 - A clean Byori-managed worktree with no tasks can be removed through
@@ -136,6 +136,11 @@ prototype and compatibility path.
   knowledge belongs in the Context inspector.
 
 ## Suggested work location
+
+New Session puts task title and agent/model before the work-location summary. **고급 설정**
+contains the generated editable session alias, optional procedure, Context depth and CLI options.
+The project remembers its last successfully launched agent/model when still available; execution
+flags and dirty-checkout consent are never remembered. Launch errors stay beside the Start button.
 
 The New Session sheet fills in a work strategy before launch and explains its recommendation:
 
@@ -194,9 +199,21 @@ partial failures are reported without undoing successful entries.
 The **보관함** tab lists archived tasks and restores selected records without starting sessions.
 Restoration requires the original project and checkout and refuses an existing task with the same
 ID. An incomplete bounded listing is shown as partial, rather than implying all history was read.
+Both lists can be searched by task or project name. Successful archives offer **실행 취소**;
+the receipt remains available after closing the sheet. A failed undo keeps its remaining records
+available for retry and never starts a session.
+
+Workspace search also matches task, branch and session names. Pin a project from its row menu,
+or choose **열린 세션** to focus the sidebar without changing the active terminal. **Command-K**
+opens a keyboard-accessible quick switcher; the bottom **열린 세션 N개** button opens its session
+view. **프로젝트 기억 N개** opens the currently loaded Context records. Elapsed time is available
+in session details/help rather than taking permanent status-bar space.
 
 ## Settings and administration
 
+- Search agent MCP/Skill inventories by name and filter by ownership. Expand a row for its path
+  or maintenance actions. A failed inventory shows an unknown count with a retry action, not zero
+  registrations. A verified registration does not mean that a live connection or login was checked.
 - Install or repair the bundled MCP and Skill assets and a downloaded compatible
   ByoriDB engine; update to the latest release; and check authenticated readiness and launchd status
 - Report the installed engine build next to the newest published engine release, so

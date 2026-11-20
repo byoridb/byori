@@ -282,6 +282,98 @@ final class WorkspaceCleanupTests: XCTestCase {
         XCTAssertEqual(source.lastArchivedProjectID, "two")
     }
 
+    func testCleanupSearchClearsHiddenSelectionsAndSearchesArchive() async {
+        let source = makeSource(tasks: [task("Café", daysAgo: 60), task("한글", daysAgo: 60)])
+        let model = await open(source)
+        model.selectedCleanupTaskIDs = ["Café", "한글"]
+        model.cleanupSearchQuery = "  CAFE "
+        XCTAssertEqual(model.cleanupCandidates.map(\.id), ["Café"])
+        XCTAssertTrue(model.selectedCleanupTaskIDs.isEmpty)
+        model.selectedCleanupTaskIDs = ["Café"]
+        await model.archiveSelectedCleanupTasks()
+        XCTAssertEqual(model.archivedCleanupTasks.map(\.id), ["Café"])
+        model.cleanupSearchQuery = "한글"
+        XCTAssertTrue(model.archivedCleanupTasks.isEmpty)
+        XCTAssertEqual(model.cleanupCandidates.map(\.id), ["한글"])
+        model.cleanupSearchQuery = "project"
+        XCTAssertEqual(model.archivedCleanupTasks.map(\.id), ["Café"])
+    }
+
+    func testUndoArchiveSurvivesSheetDismissalAndDoesNotLaunchSession() async {
+        let source = makeSource(tasks: [task("one", daysAgo: 60), task("two", daysAgo: 60)])
+        let model = await open(source)
+        model.selectedCleanupTaskIDs = ["one", "two"]
+        await model.archiveSelectedCleanupTasks()
+        XCTAssertEqual(Set(model.archiveUndoItems.map(\.id)), ["one", "two"])
+        model.dismissSessionCleanup()
+        await model.undoLastArchive()
+        XCTAssertEqual(Set(source.restoredIDs), ["one", "two"])
+        XCTAssertTrue(model.archiveUndoItems.isEmpty)
+        XCTAssertNil(model.archiveUndoError)
+        XCTAssertEqual(source.launchCalls, 0)
+    }
+
+    func testPartialUndoRetainsOnlyFailedItemsForRetry() async {
+        let source = makeSource(tasks: [task("one", daysAgo: 60), task("two", daysAgo: 60)])
+        let model = await open(source)
+        model.selectedCleanupTaskIDs = ["one", "two"]
+        await model.archiveSelectedCleanupTasks()
+        source.restoreFailures = ["two"]
+        await model.undoLastArchive()
+        XCTAssertEqual(source.restoredIDs, ["one"])
+        XCTAssertEqual(model.archiveUndoItems.map(\.id), ["two"])
+        XCTAssertTrue(model.archiveUndoError?.contains("two") == true)
+        source.restoreFailures = []
+        await model.undoLastArchive()
+        XCTAssertEqual(source.restoredIDs, ["one", "two"])
+        XCTAssertTrue(model.archiveUndoItems.isEmpty)
+        XCTAssertEqual(source.launchCalls, 0)
+    }
+
+    func testUndoRevalidatesLocationAndKeepsArchiveWhenCheckoutIsMissing() async {
+        let source = makeSource(tasks: [task("old", daysAgo: 60)])
+        let model = await open(source)
+        model.selectedCleanupTaskIDs = ["old"]
+        await model.archiveSelectedCleanupTasks()
+        source.snapshot.projects[0].sourceTrees = []
+        await model.undoLastArchive()
+        XCTAssertTrue(source.restoredIDs.isEmpty)
+        XCTAssertEqual(model.archiveUndoItems.map(\.id), ["old"])
+        XCTAssertNotNil(model.archiveUndoError)
+    }
+
+    func testSingleTaskArchivePreservesOtherSelectedTaskAndCanUndo() async {
+        let source = makeSource(tasks: [task("old", daysAgo: 60), task("selected", daysAgo: 40)])
+        let model = await open(source)
+        model.select(.task("selected"))
+        await model.archiveTask(source.snapshot.projects[0].sourceTrees[0].tasks[0])
+        XCTAssertEqual(model.selection, .task("selected"))
+        XCTAssertEqual(model.archiveUndoItems.map(\.id), ["old"])
+        await model.undoLastArchive()
+        XCTAssertEqual(model.selection, .task("selected"))
+        XCTAssertEqual(source.launchCalls, 0)
+    }
+
+    func testArchiveQueuesFreshSnapshotWhenEarlierRefreshIsInFlight() async {
+        let source = makeSource(tasks: [task("old", daysAgo: 60)])
+        let model = await open(source)
+        let original = source.snapshot.projects[0].sourceTrees[0].tasks[0]
+        let held = expectation(description: "older refresh captured")
+        source.holdNextLoad = true
+        source.onHeldLoad = { held.fulfill() }
+        let refresh = Task { await model.load(force: true) }
+        await fulfillment(of: [held], timeout: 2)
+        await model.archiveTask(original)
+        XCTAssertEqual(source.archivedIDs, ["old"])
+        source.releaseHeldLoad()
+        await refresh.value
+        XCTAssertTrue(model.projects[0].sourceTrees[0].tasks.isEmpty)
+        XCTAssertEqual(model.archiveUndoItems.map(\.id), ["old"])
+        await model.undoLastArchive()
+        XCTAssertEqual(model.projects[0].sourceTrees[0].tasks.map(\.id), ["old"])
+        XCTAssertEqual(source.launchCalls, 0)
+    }
+
     private func open(_ source: CleanupDataSource) async -> WorkspaceViewModel {
         let model = WorkspaceViewModel(dataSource: source)
         await model.load()
@@ -323,16 +415,33 @@ private final class CleanupDataSource: WorkspaceDataSource {
     var archivedIDs: [String] = []
     var restoredIDs: [String] = []
     var archiveFailures: Set<String> = []
+    var restoreFailures: Set<String> = []
     var afterArchive: ((CleanupDataSource) -> Void)?
     var launchCalls = 0
     var loadFailure = false
     var lastArchivedProjectID: String?
+    var holdNextLoad = false
+    var onHeldLoad: (() -> Void)?
+    private var heldLoad: CheckedContinuation<Void, Never>?
     private var archivedOriginals: [String: WorkspaceTaskItem] = [:]
 
     init(snapshot: WorkspacePresentationSnapshot) { self.snapshot = snapshot }
     func loadWorkspace() async throws -> WorkspacePresentationSnapshot {
         if loadFailure { throw WorkspaceAdapterError.invalidState("Workspace unavailable") }
+        if holdNextLoad {
+            holdNextLoad = false
+            let captured = snapshot
+            await withCheckedContinuation { continuation in
+                heldLoad = continuation
+                onHeldLoad?()
+            }
+            return captured
+        }
         return snapshot
+    }
+    func releaseHeldLoad() {
+        heldLoad?.resume()
+        heldLoad = nil
     }
     func loadSessionOptions(projectID: String) async throws -> [WorkspaceProviderOption] { [] }
     func startSession(_ request: WorkspaceSessionLaunchRequest) async throws -> WorkspaceSessionLaunchResult {
@@ -364,6 +473,7 @@ private final class CleanupDataSource: WorkspaceDataSource {
         throw WorkspaceAdapterError.invalidState("Task missing")
     }
     func restoreTask(id: String) async throws {
+        if restoreFailures.contains(id) { throw WorkspaceAdapterError.invalidState("Restore refused") }
         guard let row = archiveRows.first(where: { $0.id == id }), let task = archivedOriginals[id],
               let projectIndex = snapshot.projects.firstIndex(where: { $0.id == row.projectID }),
               let treeIndex = snapshot.projects[projectIndex].sourceTrees.firstIndex(where: { $0.id == row.sourceTreeID }) else {
