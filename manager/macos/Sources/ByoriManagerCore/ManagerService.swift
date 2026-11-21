@@ -1211,15 +1211,61 @@ public actor ManagerService: CodeIndexProviding {
             mcpServers: mcp.servers,
             skillsState: skillScan.state,
             skills: skillScan.skills,
-            skillsWereTruncated: skillScan.wasTruncated
+            skillsWereTruncated: skillScan.wasTruncated,
+            byoriMCPProbe: mcp.probe
         )
     }
 
     private func discoverMCPServers(
         _ kind: AgentKind,
         cli: URL
-    ) async -> (state: AgentInventoryState, servers: [MCPServerSummary]) {
-        let parsed: [MCPInventoryParser.ParsedServer]
+    ) async -> (state: AgentInventoryState, servers: [MCPServerSummary], probe: ByoriMCPProbe) {
+        // A slow unrelated server must not erase ByoriDB's own health result.
+        // Both commands belong to this refresh; no cached snapshot is reused.
+        async let inventory = discoverMCPInventory(kind, cli: cli)
+        async let byoriProbe = probeByoriMCP(kind, cli: cli)
+        let (discovery, directProbe) = await (inventory, byoriProbe)
+        guard !Task.isCancelled else {
+            return (.unavailable, [], ByoriMCPProbe(registrationConfirmed: false, status: .unknown))
+        }
+        let probe: ByoriMCPProbe
+        if kind != .claude, directProbe.registrationConfirmed,
+           let listed = discovery.servers.first(where: { $0.name == "byoridb" && !$0.isClaudeCloud }) {
+            // Codex's get only verifies registration; its current JSON list
+            // carries enabled/auth state. Antigravity reads those from config.
+            probe = ByoriMCPProbe(registrationConfirmed: true, status: listed.status)
+        } else {
+            probe = directProbe
+        }
+        var summaries = discovery.servers.map { server in
+            let management: MCPServerManagement
+            if server.isClaudeCloud {
+                management = .claudeCloudReadOnly
+            } else if server.name == "byoridb", probe.registrationConfirmed {
+                management = .byoriManaged
+            } else {
+                management = .unmanaged
+            }
+            return MCPServerSummary(
+                agent: kind,
+                name: server.name,
+                status: management == .byoriManaged ? probe.status : server.status,
+                management: management
+            )
+        }
+        if probe.registrationConfirmed, !summaries.contains(where: { $0.name == "byoridb" }) {
+            summaries.append(MCPServerSummary(
+                agent: kind, name: "byoridb", status: probe.status, management: .byoriManaged
+            ))
+        }
+        summaries.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        return (discovery.state, summaries, probe)
+    }
+
+    private func discoverMCPInventory(
+        _ kind: AgentKind,
+        cli: URL
+    ) async -> (state: AgentInventoryState, servers: [MCPInventoryParser.ParsedServer]) {
         switch kind {
         case .claude, .codex:
             let arguments = kind == .claude ? ["mcp", "list"] : ["mcp", "list", "--json"]
@@ -1230,15 +1276,30 @@ public actor ManagerService: CodeIndexProviding {
                 workingDirectory: paths.home.path,
                 timeout: kind == .claude ? 20 : 10
             ))
-            guard result.succeeded else { return (.unavailable, []) }
-            if kind == .claude {
-                parsed = MCPInventoryParser.claudeServers(fromText: result.output)
-            } else {
-                guard let codex = MCPInventoryParser.codexServers(fromJSON: result.output) else {
-                    return (.unavailable, [])
-                }
-                parsed = codex
+            guard !result.cancelled, !Task.isCancelled, result.outputEncodingValid else {
+                return (.unavailable, [])
             }
+            let complete = result.succeeded && !result.outputTruncated
+            if kind == .claude {
+                // The runner retains a bounded tail if output overflows. Drop
+                // its possibly cut first line before parsing complete rows.
+                let output: String
+                if result.outputTruncated {
+                    output = result.output.firstIndex(of: "\n").map {
+                        String(result.output[result.output.index(after: $0)...])
+                    } ?? ""
+                } else {
+                    output = result.output
+                }
+                return (
+                    complete ? .ready : .unavailable,
+                    MCPInventoryParser.claudeServers(fromText: output, onlyExplicitStatuses: !complete)
+                )
+            }
+            guard complete, let parsed = MCPInventoryParser.codexServers(fromJSON: result.output) else {
+                return (.unavailable, [])
+            }
+            return (.ready, parsed)
         case .antigravity:
             // `agy mcp list` has no JSON format and `mcp get` is unavailable.
             // Read only names and disabled status from its documented global
@@ -1246,37 +1307,10 @@ public actor ManagerService: CodeIndexProviding {
             guard let inventory = MCPInventoryParser.antigravityServers(in: paths.antigravityConfig) else {
                 return (.unavailable, [])
             }
-            parsed = inventory
+            return (.ready, inventory)
         case .cursorAgent, .opencode:
-            // Byori does not manage MCP for these, so it reports nothing rather
-            // than guessing at a config location.
             return (.unavailable, [])
         }
-
-        let hasByoriName = parsed.contains { $0.name == "byoridb" }
-        let byoriIsManaged: Bool
-        if hasByoriName {
-            byoriIsManaged = await isMCPConnected(kind, cli: cli)
-        } else {
-            byoriIsManaged = false
-        }
-        let summaries = parsed.map { server in
-            let management: MCPServerManagement
-            if server.isClaudeCloud {
-                management = .claudeCloudReadOnly
-            } else if server.name == "byoridb", byoriIsManaged {
-                management = .byoriManaged
-            } else {
-                management = .unmanaged
-            }
-            return MCPServerSummary(
-                agent: kind,
-                name: server.name,
-                status: server.status,
-                management: management
-            )
-        }
-        return (.ready, summaries)
     }
 
     private func skillStates(_ kind: AgentKind) -> [ManagedSkill: ManagedFileState] {
@@ -1312,36 +1346,48 @@ public actor ManagerService: CodeIndexProviding {
     }
 
     private func isMCPConnected(_ kind: AgentKind, cli: URL) async -> Bool {
-        guard let verification = kind.descriptor.mcp?.verification else { return false }
+        await probeByoriMCP(kind, cli: cli).registrationConfirmed
+    }
+
+    private func probeByoriMCP(_ kind: AgentKind, cli: URL) async -> ByoriMCPProbe {
+        let unverified = ByoriMCPProbe(registrationConfirmed: false, status: .unknown)
+        guard !Task.isCancelled, let verification = kind.descriptor.mcp?.verification else {
+            return unverified
+        }
         switch verification {
         case let .cliGet(requiresUserScope):
             let result = await runner.run(CommandSpec(
                 executable: cli.path,
                 arguments: ["mcp", "get", "byoridb"],
                 environment: commonEnvironment,
+                workingDirectory: paths.home.path,
                 timeout: 15
             ))
-            guard result.succeeded,
+            guard !Task.isCancelled, result.succeeded,
+                  !result.outputTruncated, result.outputEncodingValid,
                   mcpField("command", in: result.output) == paths.mcpRunner.path else {
-                return false
+                return unverified
             }
-            guard requiresUserScope else { return true }
-            guard let scope = mcpField("scope", in: result.output) else { return false }
-            // `claude mcp get` prints the scope as "User config (available in all
-            // your projects)". Drop a trailing parenthetical before matching so a
-            // real user-scope registration verifies, while a different scope word
-            // (e.g. "User config backup") still fails the exact comparison.
-            let base = scope.split(separator: "(", maxSplits: 1).first
-                .map { $0.trimmingCharacters(in: .whitespaces) } ?? scope
-            return base.lowercased() == "user config"
+            if requiresUserScope {
+                guard let scope = mcpField("scope", in: result.output) else { return unverified }
+                // Claude appends a parenthetical to "User config". Match the
+                // base exactly; "User config backup" must still be refused.
+                let base = scope.split(separator: "(", maxSplits: 1).first
+                    .map { $0.trimmingCharacters(in: .whitespaces) } ?? scope
+                guard base.lowercased() == "user config" else { return unverified }
+            }
+            return ByoriMCPProbe(
+                registrationConfirmed: true,
+                status: kind == .claude
+                    ? MCPInventoryParser.claudeServerStatus(fromDetailText: result.output)
+                    : .configured
+            )
         case let .settingsJSON(serversKey, commandKey):
-            guard let config = configFile(kind) else { return false }
-            return Self.settingsMCPCommand(
-                name: "byoridb",
-                in: config,
-                serversKey: serversKey,
-                commandKey: commandKey
-            ) == paths.mcpRunner.path
+            guard let config = configFile(kind),
+                  Self.settingsMCPCommand(
+                    name: "byoridb", in: config, serversKey: serversKey, commandKey: commandKey
+                  ) == paths.mcpRunner.path else { return unverified }
+            return ByoriMCPProbe(registrationConfirmed: true, status: .configured)
         }
     }
 
@@ -1366,7 +1412,8 @@ public actor ManagerService: CodeIndexProviding {
     private func mcpField(_ name: String, in output: String) -> String? {
         let expected = name.lowercased()
         for line in output.components(separatedBy: .newlines) {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmed = SafeDisplayText.strippingTerminalControls(line)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             guard let separator = trimmed.firstIndex(of: ":") else { continue }
             let key = trimmed[..<separator]
                 .trimmingCharacters(in: .whitespacesAndNewlines)

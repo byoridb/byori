@@ -90,4 +90,113 @@ final class AgentInventoryPresentationTests: XCTestCase {
             "미등록"
         )
     }
+
+    func testIndependentHealthyProbeSurvivesWholeInventoryFailure() {
+        let probe = ByoriMCPProbe(registrationConfirmed: true, status: .connected)
+        XCTAssertEqual(
+            AgentInventoryPresentation.byoriMCPStatus(
+                registrationConfirmed: false, inventoryState: .unavailable, serverStatus: nil,
+                independentProbe: probe
+            ),
+            "연결 확인됨"
+        )
+        XCTAssertEqual(
+            AgentInventoryPresentation.byoriMCPVerifiedStatus(
+                registrationConfirmed: false, inventoryState: .unavailable, serverStatus: nil,
+                independentProbe: probe
+            ),
+            .connected,
+            "The icon must use the same independent verification as the label."
+        )
+    }
+
+    func testFailedIndependentProbeDoesNotReusePreviousRegistrationOrHealth() {
+        let probe = ByoriMCPProbe(registrationConfirmed: false, status: .unknown)
+        XCTAssertEqual(
+            AgentInventoryPresentation.byoriMCPStatus(
+                registrationConfirmed: true, inventoryState: .unavailable, serverStatus: .connected,
+                independentProbe: probe
+            ),
+            "등록 미확인"
+        )
+        XCTAssertNil(
+            AgentInventoryPresentation.byoriMCPVerifiedStatus(
+                registrationConfirmed: true, inventoryState: .unavailable, serverStatus: .connected,
+                independentProbe: probe
+            )
+        )
+    }
+
+    func testIndependentRegistrationWithoutHealthDoesNotClaimConnection() {
+        for status in [MCPServerStatus.configured, .unknown] {
+            let probe = ByoriMCPProbe(registrationConfirmed: true, status: status)
+            XCTAssertEqual(
+                AgentInventoryPresentation.byoriMCPStatus(
+                    registrationConfirmed: true, inventoryState: .unavailable, serverStatus: .connected,
+                    independentProbe: probe
+                ),
+                "등록됨 · 연결 미확인"
+            )
+            XCTAssertNotEqual(
+                AgentInventoryPresentation.byoriMCPVerifiedStatus(
+                    registrationConfirmed: true, inventoryState: .unavailable, serverStatus: .connected,
+                    independentProbe: probe
+                ),
+                .connected
+            )
+        }
+    }
+
+    func testSuccessfulListCannotProveRegistrationWhenIndependentProbeFails() {
+        XCTAssertEqual(
+            AgentInventoryPresentation.byoriMCPStatus(
+                registrationConfirmed: true, inventoryState: .ready, serverStatus: .connected,
+                independentProbe: ByoriMCPProbe(registrationConfirmed: false, status: .unknown)
+            ),
+            "등록 미확인",
+            "An unknown managed-registration probe is not evidence that registration is missing."
+        )
+    }
+
+    func testIndependentHealthRequiresManagedRegistration() {
+        let probe = ByoriMCPProbe(registrationConfirmed: false, status: .connected)
+        XCTAssertEqual(
+            AgentInventoryPresentation.byoriMCPStatus(
+                registrationConfirmed: true, inventoryState: .ready, serverStatus: .connected,
+                independentProbe: probe
+            ),
+            "미등록"
+        )
+        XCTAssertNil(
+            AgentInventoryPresentation.byoriMCPVerifiedStatus(
+                registrationConfirmed: true, inventoryState: .ready, serverStatus: .connected,
+                independentProbe: probe
+            ),
+            "A same-named external server must not become a verified Byori-managed connection."
+        )
+    }
+
+    func testIndependentFailureAndAuthenticationRemainVisible() {
+        let expectations: [(MCPServerStatus, String)] = [
+            (.unavailable, "등록됨 · 연결 실패"),
+            (.authenticationRequired, "등록됨 · 인증 필요"),
+            (.disabled, "등록됨 · 비활성"),
+            (.pendingApproval, "등록됨 · 승인 대기")
+        ]
+        for (status, label) in expectations {
+            XCTAssertEqual(
+                AgentInventoryPresentation.byoriMCPStatus(
+                    registrationConfirmed: true, inventoryState: .unavailable, serverStatus: .connected,
+                    independentProbe: ByoriMCPProbe(registrationConfirmed: true, status: status)
+                ),
+                label
+            )
+        }
+        XCTAssertNil(
+            AgentInventoryPresentation.byoriMCPVerifiedStatus(
+                registrationConfirmed: true, inventoryState: .unavailable, serverStatus: .connected
+            ),
+            "A failed list without an independent probe cannot light the connected icon."
+        )
+    }
 }

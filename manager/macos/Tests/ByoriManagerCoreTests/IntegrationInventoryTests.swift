@@ -57,6 +57,27 @@ final class IntegrationInventoryTests: XCTestCase {
         XCTAssertTrue(parsed.allSatisfy { Mirror(reflecting: $0).children.count == 3 })
     }
 
+    func testClaudeGetParsesOnlyAnExactExplicitStatusField() {
+        XCTAssertEqual(MCPInventoryParser.claudeServerStatus(fromDetailText: """
+          Args: --status=failed --token secret
+          \u{001B}[32mStatus:\u{001B}[0m ✓ Connected
+        """), .connected)
+        for (value, expected) in [
+            ("✗ Failed to connect", MCPServerStatus.unavailable),
+            ("Needs authentication", .authenticationRequired),
+            ("Disabled", .disabled),
+            ("Pending approval", .pendingApproval),
+            ("Not connected", .unavailable),
+            ("Connected previously", .unknown),
+            ("✓ Unknown", .unknown),
+        ] {
+            XCTAssertEqual(MCPInventoryParser.claudeServerStatus(fromDetailText: "Status: \(value)"), expected)
+        }
+        XCTAssertEqual(MCPInventoryParser.claudeServerStatus(fromDetailText: "Args: Status: Connected"), .unknown)
+        XCTAssertEqual(MCPInventoryParser.claudeServerStatus(fromDetailText: "Status: Connected\nStatus: Failed"), .unknown)
+        XCTAssertEqual(MCPInventoryParser.claudeServerStatus(fromDetailText: "Command: /bin/connected"), .unknown)
+    }
+
     func testSkillScannerIsDirectBoundedAndSymlinkSafe() throws {
         let home = root.appendingPathComponent("home", isDirectory: true)
         let claudeSkills = home.appendingPathComponent(".claude/skills", isDirectory: true)
