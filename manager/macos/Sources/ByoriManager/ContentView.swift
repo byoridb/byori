@@ -805,6 +805,7 @@ private struct AgentInventoryPane: View {
                     registrationConfirmed: byoriRegistrationConfirmed,
                     inventoryState: inventory?.mcpState,
                     serverStatus: managedMCPServer?.status,
+                    independentProbe: inventory?.byoriMCPProbe,
                     connect: { model.request(connectAction) },
                     disconnect: { model.request(disconnectAction, confirmation: true) }
                 )
@@ -822,9 +823,9 @@ private struct AgentInventoryPane: View {
                             ? "terminal.fill" : "exclamationmark.triangle.fill",
                         title: inventory.mcpState == .cliMissing
                             ? "CLI 설치 후 MCP 목록을 확인할 수 있습니다."
-                            : "MCP 목록을 확인하지 못했습니다.",
+                            : "전체 MCP 목록을 끝까지 확인하지 못했습니다.",
                         detail: inventory.mcpState == .unavailable
-                            ? "등록이 없는 상태와 다릅니다. CLI 응답이나 설정 파일을 다시 확인하세요."
+                            ? "확인된 서버의 상태는 위에 표시됩니다. 목록에 없는 서버도 등록되어 있을 수 있습니다."
                             : nil,
                         actionTitle: inventory.mcpState == .unavailable ? "다시 확인" : nil,
                         action: refreshInventory
@@ -909,12 +910,13 @@ private struct AgentInventoryPane: View {
     }
 
     private var managedMCPServer: MCPServerSummary? {
-        guard inventory?.mcpState == .ready else { return nil }
         return inventory?.mcpServers.first { $0.management == .byoriManaged }
     }
 
     private var byoriRegistrationConfirmed: Bool {
-        if inventory?.mcpState == .ready { return managedMCPServer != nil }
+        if let inventory {
+            return inventory.byoriMCPProbe?.registrationConfirmed ?? (managedMCPServer != nil)
+        }
         return status?.mcpConnected == true
     }
 
@@ -1486,13 +1488,14 @@ private struct ByoriMCPInventoryRow: View {
     let registrationConfirmed: Bool
     let inventoryState: AgentInventoryState?
     let serverStatus: MCPServerStatus?
+    let independentProbe: ByoriMCPProbe?
     let connect: () -> Void
     let disconnect: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: serverStatus == .connected ? "checkmark.circle.fill" : "circle.dashed")
-                .foregroundStyle(serverStatus == .connected ? .green : .secondary)
+            Image(systemName: verifiedStatus == .connected ? "checkmark.circle.fill" : "circle.dashed")
+                .foregroundStyle(verifiedStatus == .connected ? .green : .secondary)
                 .frame(width: 26)
             VStack(alignment: .leading, spacing: 3) {
                 Text("byoridb").font(.body.weight(.medium))
@@ -1526,7 +1529,17 @@ private struct ByoriMCPInventoryRow: View {
         AgentInventoryPresentation.byoriMCPStatus(
             registrationConfirmed: registrationConfirmed,
             inventoryState: inventoryState,
-            serverStatus: serverStatus
+            serverStatus: serverStatus,
+            independentProbe: independentProbe
+        )
+    }
+
+    private var verifiedStatus: MCPServerStatus? {
+        AgentInventoryPresentation.byoriMCPVerifiedStatus(
+            registrationConfirmed: registrationConfirmed,
+            inventoryState: inventoryState,
+            serverStatus: serverStatus,
+            independentProbe: independentProbe
         )
     }
 }

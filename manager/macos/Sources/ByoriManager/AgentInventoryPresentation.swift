@@ -57,15 +57,36 @@ enum AgentInventoryPresentation {
         }
     }
 
-    /// AgentStatus.mcpConnected verifies the registered command and scope. Only
-    /// a successful inventory result may claim that the vendor reached a server.
+    /// A fresh independent probe can verify ByoriDB even when the whole list
+    /// times out. Without one, only a complete inventory may supply health.
+    /// Keep icons and text on the same evidence, and never reuse an older scan.
+    static func byoriMCPVerifiedStatus(
+        registrationConfirmed: Bool,
+        inventoryState: AgentInventoryState?,
+        serverStatus: MCPServerStatus?,
+        independentProbe: ByoriMCPProbe? = nil
+    ) -> MCPServerStatus? {
+        if let independentProbe {
+            return independentProbe.registrationConfirmed ? independentProbe.status : nil
+        }
+        guard registrationConfirmed, inventoryState == .ready else { return nil }
+        return serverStatus
+    }
+
+    /// AgentStatus.mcpConnected verifies registration, not live connectivity.
     static func byoriMCPStatus(
         registrationConfirmed: Bool,
         inventoryState: AgentInventoryState?,
-        serverStatus: MCPServerStatus?
+        serverStatus: MCPServerStatus?,
+        independentProbe: ByoriMCPProbe? = nil
     ) -> String {
-        if registrationConfirmed {
-            switch inventoryState == .ready ? serverStatus : nil {
+        if independentProbe?.registrationConfirmed ?? registrationConfirmed {
+            switch byoriMCPVerifiedStatus(
+                registrationConfirmed: registrationConfirmed,
+                inventoryState: inventoryState,
+                serverStatus: serverStatus,
+                independentProbe: independentProbe
+            ) {
             case .connected: return "연결 확인됨"
             case .authenticationRequired: return "등록됨 · 인증 필요"
             case .disabled: return "등록됨 · 비활성"
@@ -73,6 +94,9 @@ enum AgentInventoryPresentation {
             case .unavailable: return "등록됨 · 연결 실패"
             default: return "등록됨 · 연결 미확인"
             }
+        }
+        if independentProbe?.status == .unknown {
+            return "등록 미확인"
         }
         return inventoryState == .ready ? "미등록" : "등록 미확인"
     }

@@ -47,6 +47,18 @@ public enum AgentInventoryState: String, Equatable, Sendable {
     case unavailable
 }
 
+/// A fresh check of Byori's own registration, independent of the full inventory.
+/// Registration alone is not evidence that the vendor reached the MCP server.
+public struct ByoriMCPProbe: Equatable, Sendable {
+    public let registrationConfirmed: Bool
+    public let status: MCPServerStatus
+
+    public init(registrationConfirmed: Bool, status: MCPServerStatus) {
+        self.registrationConfirmed = registrationConfirmed
+        self.status = status
+    }
+}
+
 public enum UserSkillOrigin: String, Equatable, Sendable {
     case claudeUser
     case codexShared
@@ -90,6 +102,7 @@ public struct AgentIntegrationInventory: Identifiable, Equatable, Sendable {
     public let skillsState: AgentInventoryState
     public let skills: [UserSkillSummary]
     public let skillsWereTruncated: Bool
+    public let byoriMCPProbe: ByoriMCPProbe?
 
     public var id: String { kind.id }
 
@@ -99,7 +112,8 @@ public struct AgentIntegrationInventory: Identifiable, Equatable, Sendable {
         mcpServers: [MCPServerSummary],
         skillsState: AgentInventoryState,
         skills: [UserSkillSummary],
-        skillsWereTruncated: Bool
+        skillsWereTruncated: Bool,
+        byoriMCPProbe: ByoriMCPProbe? = nil
     ) {
         self.kind = kind
         self.mcpState = mcpState
@@ -107,6 +121,7 @@ public struct AgentIntegrationInventory: Identifiable, Equatable, Sendable {
         self.skillsState = skillsState
         self.skills = skills
         self.skillsWereTruncated = skillsWereTruncated
+        self.byoriMCPProbe = byoriMCPProbe
     }
 }
 
@@ -231,7 +246,11 @@ public enum MCPInventoryParser {
     /// Claude's human-readable list can include full command arguments. This
     /// parser never returns a raw line: it extracts a conservative server name,
     /// a coarse state and whether the item belongs to a claude.ai cloud section.
-    public static func claudeServers(fromText output: String, limit: Int = 200) -> [ParsedServer] {
+    public static func claudeServers(
+        fromText output: String,
+        limit: Int = 200,
+        onlyExplicitStatuses: Bool = false
+    ) -> [ParsedServer] {
         let boundedLimit = max(0, min(limit, 500))
         guard boundedLimit > 0 else { return [] }
         var servers: [ParsedServer] = []
@@ -244,23 +263,7 @@ public enum MCPInventoryParser {
             guard !line.isEmpty else { continue }
             let lower = line.lowercased()
 
-            if lower.hasPrefix("claude.ai "), let separator = line.firstIndex(of: ":") {
-                let nameStart = line.index(line.startIndex, offsetBy: "claude.ai ".count)
-                let rawName = String(line[nameStart..<separator])
-                if let name = safeDisplayName(rawName), seen.insert(name).inserted {
-                    servers.append(ParsedServer(
-                        name: name,
-                        status: coarseClaudeStatus(line),
-                        isClaudeCloud: true
-                    ))
-                    if servers.count >= boundedLimit { break }
-                }
-                continue
-            }
-
-            if lower.contains("claude.ai"),
-               lower.contains("connector"),
-               !line.contains(": ") {
+            if lower.contains("claude.ai"), lower.contains("connector"), !line.contains(": ") {
                 inClaudeCloudSection = true
                 continue
             }
@@ -268,6 +271,35 @@ public enum MCPInventoryParser {
                 inClaudeCloudSection = false
                 continue
             }
+
+            // Failed commands can also print `Error:` or a detail block. Only
+            // finished list rows with a recognized health suffix survive a
+            // partial scan; never interpret arbitrary diagnostics as servers.
+            let explicitStatus: MCPServerStatus?
+            if onlyExplicitStatuses {
+                guard let separator = line.range(of: " - ", options: .backwards),
+                      let status = explicitClaudeStatus(String(line[separator.upperBound...])) else {
+                    continue
+                }
+                explicitStatus = status
+            } else {
+                explicitStatus = nil
+            }
+
+            if lower.hasPrefix("claude.ai "), let separator = line.firstIndex(of: ":") {
+                let nameStart = line.index(line.startIndex, offsetBy: "claude.ai ".count)
+                let rawName = String(line[nameStart..<separator])
+                if let name = safeDisplayName(rawName), seen.insert(name).inserted {
+                    servers.append(ParsedServer(
+                        name: name,
+                        status: explicitStatus ?? coarseClaudeStatus(line),
+                        isClaudeCloud: true
+                    ))
+                    if servers.count >= boundedLimit { break }
+                }
+                continue
+            }
+
             if lower.hasPrefix("checking mcp") || lower.hasPrefix("no mcp") {
                 continue
             }
@@ -276,6 +308,9 @@ public enum MCPInventoryParser {
             var rawName = String(line[..<separator])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             rawName = rawName.trimmingCharacters(in: CharacterSet(charactersIn: "-•✓✔✗×⏸ "))
+            if onlyExplicitStatuses,
+               ["error", "warning", "status", "command", "args", "scope", "type", "env"]
+                .contains(rawName.lowercased()) { continue }
             guard let name = safeServerName(rawName), seen.insert(name).inserted else { continue }
 
             let explicitlyCloud = lower.contains("[claude.ai]")
@@ -283,12 +318,43 @@ public enum MCPInventoryParser {
                 || lower.contains("claude.ai connector")
             servers.append(ParsedServer(
                 name: name,
-                status: coarseClaudeStatus(line),
+                status: explicitStatus ?? coarseClaudeStatus(line),
                 isClaudeCloud: inClaudeCloudSection || explicitlyCloud
             ))
             if servers.count >= boundedLimit { break }
         }
         return servers.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// `mcp get` contains commands and arguments as well as health. Accept only
+    /// one explicit Status field, never a status word appearing elsewhere.
+    static func claudeServerStatus(fromDetailText output: String) -> MCPServerStatus {
+        let fields = output.components(separatedBy: .newlines).compactMap { rawLine -> String? in
+            let line = SafeDisplayText.strippingTerminalControls(rawLine)
+            guard let separator = line.firstIndex(of: ":"),
+                  line[..<separator].trimmingCharacters(in: .whitespaces).lowercased() == "status" else {
+                return nil
+            }
+            return String(line[line.index(after: separator)...])
+        }
+        guard fields.count == 1, let field = fields.first else { return .unknown }
+        return explicitClaudeStatus(field) ?? .unknown
+    }
+
+    private static func explicitClaudeStatus(_ rawValue: String) -> MCPServerStatus? {
+        let value = SafeDisplayText.strippingTerminalControls(rawValue)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "✓✔✗×⏸⚠! \u{FE0F}"))
+            .lowercased()
+        switch value {
+        case "connected": return .connected
+        case "failed", "failed to connect", "disconnected", "not connected", "unavailable":
+            return .unavailable
+        case "needs authentication", "authentication required": return .authenticationRequired
+        case "disabled": return .disabled
+        case "pending", "pending approval", "needs approval": return .pendingApproval
+        default: return nil
+        }
     }
 
     public static func safeServerName(_ rawValue: String) -> String? {
